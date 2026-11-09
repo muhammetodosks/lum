@@ -17,7 +17,7 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | Feature | Status | Proof |
 |---------|--------|-------|
 | Magic `PYRA\r\n\x1A\n` | ✅ | Byte-exact, 8B, text-translation-safe control chars |
-| Lossless pipeline | ✅ | `test_lossless.py` 119+ checks |
+| Lossless pipeline | ✅ | `test_lossless.py` 158 checks |
 | Deterministic encoder | ✅ | Same input → identical bytes |
 | Unsafe-input fuzz | ✅ | 200 RLE / 100 LZ / 80 pipeline / 150 corruption trials, 0 leaks |
 | CRC32 integrity | ✅ | verify command + decoder |
@@ -164,8 +164,8 @@ pyra/
 ├── color.py           reversible YCoCg
 ├── tile.py            split / assemble
 ├── security.py        limits + typed errors
-├── pngbench.py        stdlib-only PNG writer (benchmark reference only)
-└── tests/test_lossless.py   119-check verification suite
+├── pngbench.py        stdlib-only PNG reader/writer (benchmark reference + write/read loop test)
+└── tests/test_lossless.py   158-check verification suite
 ```
 
 ## Running Tests

@@ -424,6 +424,92 @@ def _side_for(total: int, channels: int) -> int:
     return math.isqrt(total // channels)
 
 
+# ---------------------------------------------------------------- new CLI/API features
+
+def test_forced_methods():
+    # encode() with a forced method: roundtrip for all three, header honored
+    w, h = 40, 30
+    for kind, cs in (("photo", CS_RGB), ("solid", CS_RGB), ("gradient", CS_RGB)):
+        px = make_pixels(kind, w, h, 3, 8)
+        for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+            data = PyraCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16, method)
+            mymeta, decoded = decode(data)
+            check(f"forced method {method} roundtrip ({kind})", decoded == px)
+            hdr, _t = PyraContainer.unpack_file(data)
+            check(f"forced method {method} header honored ({kind})", hdr["method"] == method)
+    # gray forced methods too
+    pxg = make_pixels("photo", w, h, 1, 8)
+    for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+        data = encode(pxg, w, h, 8, CS_GRAY, PRED_LEFT, 16, method)
+        hdr, _t = PyraContainer.unpack_file(data)
+        _m, dec = decode(data)
+        check(f"forced method {method} gray roundtrip", dec == pxg and hdr["method"] == method)
+    # invalid method rejected before encoding
+    try:
+        encode(pxg, w, h, 8, CS_GRAY, PRED_LEFT, 16, 7)
+        check("invalid forced method raises ValueError", False)
+    except ValueError:
+        check("invalid forced method raises ValueError", True)
+
+
+def test_png_roundtrip():
+    from pyra.pngbench import encode_png, decode_png
+    for kind, cs, ch, bd in (("photo", CS_RGB, 3, 8), ("solid", CS_GRAY, 1, 8), ("noise", CS_RGBA, 4, 8)):
+        w, h = 33, 17
+        px = make_pixels(kind, w, h, ch, bd)
+        png = encode_png(px, w, h, bd, cs)
+        check(f"png signature ({kind})", png[:4] == b"\x89PNG")
+        meta, out = decode_png(png)
+        check(f"png write->read loop ({kind})", out == px)
+        check(f"png meta ({kind})", meta["width"] == w and meta["height"] == h
+              and meta["bit_depth"] == bd and meta["channels"] == ch)
+    # corrupted PNG must raise, not crash silently
+    bad = png[:-10] + b"x" * 10
+    try:
+        decode_png(bad)
+        check("corrupted PNG rejected", False)
+    except (ValueError, zlib.error):
+        check("corrupted PNG rejected", True)
+
+
+def test_cli_flags_e2e():
+    import subprocess
+    tmp = tempfile.mkdtemp(prefix="pyra_cli_")
+    ppm = os.path.join(tmp, "in.ppm")
+    w, h = 48, 32
+    with open(ppm, "wb") as f:
+        f.write(f"P6\n{w} {h}\n255\n".encode()
+                + bytes(make_pixels("photo", w, h, 3, 8)))
+    pyra = os.path.join(tmp, "out.pyra")
+    pnm = os.path.join(tmp, "out.ppm")
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = dict(os.environ, PYTHONPATH=root)
+
+    r = subprocess.run([sys.executable, "-m", "pyra.cli", "encode", ppm, pyra,
+                        "--method", "lz", "--tile", "48"],
+                       capture_output=True, text=True, cwd=tmp, env=env)
+    check(f"cli encode --method lz rc=0 ({r.returncode})", r.returncode == 0)
+    check("cli encode logs method", "method: lz" in (r.stdout + r.stderr))
+    r = subprocess.run([sys.executable, "-m", "pyra.cli", "decode", pyra, pnm],
+                       capture_output=True, text=True, cwd=tmp, env=env)
+    check("cli decode rc=0", r.returncode == 0)
+    with open(ppm, "rb") as f:
+        a = f.read()
+    with open(pnm, "rb") as f:
+        b = f.read()
+    check("cli flag-encode roundtrip byte-identical", a == b)
+    r = subprocess.run([sys.executable, "-m", "pyra.cli", "inspect", pyra],
+                       capture_output=True, text=True, cwd=tmp, env=env)
+    check("cli inspect mentions forced values", r.returncode == 0
+          and "tile_size: 48" in r.stdout and "method: lz" in r.stdout)
+    r = subprocess.run([sys.executable, "-m", "pyra.cli", "benchmark", ppm],
+                       capture_output=True, text=True, cwd=tmp, env=env)
+    check("cli benchmark rc=0 + roundtrip OK", r.returncode == 0 and "roundtrip: OK" in r.stdout)
+    r = subprocess.run([sys.executable, "-m", "pyra.cli", "verify", ppm],
+                       capture_output=True, text=True, cwd=tmp, env=env)
+    check("cli verify rejects non-PYRA (rc=1)", r.returncode == 1 and "VERIFICATION FAILED" in (r.stdout + r.stderr))
+
+
 def main():
     print("=== PYRA lossless test suite ===")
     test_roundtrips()
@@ -435,6 +521,9 @@ def main():
     test_compression_sanity()
     test_animation()
     test_compress_methods()
+    test_forced_methods()
+    test_png_roundtrip()
+    test_cli_flags_e2e()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

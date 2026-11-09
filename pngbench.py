@@ -109,3 +109,81 @@ def encode_png(pixels: list[int], width: int, height: int, bit_depth: int = 8,
             + _chunk(b"IHDR", ihdr)
             + _chunk(b"IDAT", zlib.compress(filtered, 9))
             + _chunk(b"IEND", b""))
+
+
+def decode_png(png: bytes) -> tuple[dict, list[int]]:
+    """Strict minimal PNG reader (uninterlaced ct 0/2/6, 8/16-bit).
+    Verifies signature, every chunk CRC and IEND terminator; used to close
+    the loop on encode_png (write -> read -> pixel-exact check)."""
+    import struct as _s
+
+    if png[:8] != _PNG_SIG:
+        raise ValueError("bad PNG signature")
+    pos = 8
+    ihdr = None
+    idat = bytearray()
+    iend = False
+    while pos + 12 <= len(png):
+        chunk_len, = _s.unpack(">I", png[pos:pos + 4])
+        tag = png[pos + 4:pos + 8]
+        if pos + 12 + chunk_len > len(png):
+            raise ValueError(f"truncated {tag!r} chunk")
+        chunk = png[pos + 8:pos + 8 + chunk_len]
+        crc_stored, = _s.unpack(">I", png[pos + 8 + chunk_len:pos + 12 + chunk_len])
+        if zlib.crc32(tag + chunk) & 0xFFFFFFFF != crc_stored:
+            raise ValueError(f"chunk CRC mismatch in {tag!r}")
+        pos += 12 + chunk_len
+        if tag == b"IHDR":
+            ihdr = _s.unpack(">IIBBBBB", chunk)
+        elif tag == b"IDAT":
+            idat.extend(chunk)
+        elif tag == b"IEND":
+            iend = True
+            break
+    if ihdr is None or not iend:
+        raise ValueError("missing IHDR or IEND")
+    width, height, bit_depth, color_type, _comp, _filter, interlace = ihdr
+    if interlace or bit_depth not in (8, 16) or color_type not in (0, 2, 6):
+        raise ValueError("unsupported PNG variant")
+    channels = {0: 1, 2: 3, 6: 4}[color_type]
+    stride = width * channels * (bit_depth // 8)
+    bpp = channels * (bit_depth // 8)
+
+    raw = zlib.decompress(bytes(idat), bufsize=stride * height + height)
+    if len(raw) != (stride + 1) * height:
+        raise ValueError("truncated image data")
+
+    def paeth(a: int, b: int, c: int) -> int:
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        if pa <= pb and pa <= pc:
+            return a
+        if pb <= pc:
+            return b
+        return c
+
+    out = bytearray()
+    for y in range(height):
+        ftype = raw[y * (stride + 1)]
+        row = bytearray(raw[(y * (stride + 1)) + 1:(y + 1) * (stride + 1)])
+        prev = out[(y - 1) * stride:] if y else bytearray(stride)
+        for i in range(stride):
+            a = row[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            if ftype == 1:
+                row[i] = (row[i] + a) & 0xFF
+            elif ftype == 2:
+                row[i] = (row[i] + b) & 0xFF
+            elif ftype == 3:
+                row[i] = (row[i] + ((a + b) >> 1)) & 0xFF
+            elif ftype == 4:
+                row[i] = (row[i] + paeth(a, b, c)) & 0xFF
+            elif ftype != 0:
+                raise ValueError(f"unknown PNG row filter {ftype}")
+        out.extend(row)
+
+    pixels = list(out) if bit_depth == 8 else list(_s.unpack(f">{width*height*channels}H", bytes(out)))
+    meta = {"width": width, "height": height, "bit_depth": bit_depth,
+            "channels": channels}
+    return meta, pixels
