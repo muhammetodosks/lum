@@ -1,4 +1,5 @@
 from .constants import *
+from . import native as _native
 
 def paeth_predictor(a: int, b: int, c: int) -> int:
     """Paeth predictor as used in PNG."""
@@ -46,6 +47,10 @@ def apply_predictor_row(row: list[int], prev_row: Optional[list[int]], pred_type
 
     `mod` is the full modular alphabet width (already includes every
     value produced by prediction + transform stages)."""
+    native_result = _native.apply_predictor_row(row, prev_row, pred_type, channels, mod)
+    if native_result is not None:
+        return native_result
+
     width_channels = len(row)
     residuals = [0] * width_channels
 
@@ -67,6 +72,10 @@ def apply_predictor_row(row: list[int], prev_row: Optional[list[int]], pred_type
 
 def reconstruct_row(residuals: list[int], prev_row: Optional[list[int]], pred_type: int, channels: int, mod: int) -> list[int]:
     """Reconstructs row from residuals using the same modular alphabet."""
+    native_result = _native.reconstruct_row(residuals, prev_row, pred_type, channels, mod)
+    if native_result is not None:
+        return native_result
+
     width_channels = len(residuals)
     row = [0] * width_channels
 

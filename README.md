@@ -166,7 +166,14 @@ output bit:
 Ported stages (bit-exact to the Python reference, proven by the test suite):
 `pack_residuals`, `unpack_residuals`, `rle_encode`, `rle_decode`, `lz_encode`
 plus a batch-mode `lz_decode_tokens` (the streaming LZ decoder stays in
-Python because it consumes symbols lazily from the range coder).
+Python because it consumes symbols lazily from the range coder), the
+predictor row kernels `apply_predictor_row` / `reconstruct_row` (all 7
+predictor types, Python `%` semantics via `((x % m) + m) % m`), the
+reversible YCoCg transform `transform_forward` / `transform_inverse`, and
+two **fused pipelines** in the same spirit as `PyraCodec._residual_stream`
+and the decode tail: `pipe_forward` (color transform → canonicalization →
+per-row prediction, one buffer conversion per call) and `pipe_reconstruct`
+(row reconstruction → descaling → inverse YCoCg).
 
 ```bash
 scripts/build_native.sh        # -> _libpyra_core.so (loaded automatically)
@@ -176,18 +183,27 @@ PYRA_NATIVE=0 ...              # same effect
 
 Dispatch flags are read at **call time** (not import time), so the test suite
 re-encodes whole containers in both modes and asserts the container bytes are
-identical — 189 checks pass with the native core, the same core set passes on
+identical — 225 checks pass with the native core, the same core set passes on
 the pure-Python path.
 
 Measured speedups (256k samples, best of 3):
 
-| stage       | native | pure   | speedup |
-|-------------|--------|--------|---------|
-| rle (noise) | 1.8 ms | 73 ms  | 41x     |
-| lz (smooth) | 18 ms  | 235 ms | 13x     |
-| lz (noise)  | 107 ms | 465 ms | 4.3x    |
-| pack 64k    | 1.6 ms | 8.4 ms | 5.3x    |
-| unpack 64k  | 13 ms  | 34 ms  | 2.6x    |
+| stage              | native | pure   | speedup |
+|--------------------|--------|--------|---------|
+| rle (noise)        | 1.8 ms | 73 ms  | 41x     |
+| lz (smooth)        | 18 ms  | 235 ms | 13x     |
+| lz (noise)         | 107 ms | 465 ms | 4.3x    |
+| pack 64k           | 1.6 ms | 8.4 ms | 5.3x    |
+| unpack 64k         | 13 ms  | 34 ms  | 2.6x    |
+
+Whole-container effect of the fused pipelines (256×256 tiles, range-coder
+dominates both directions; the coder itself is intentionally pure Python):
+
+| path            | encode | decode |
+|-----------------|--------|--------|
+| 256² GRAY + LZ  | 2.6x   | ~1.0x (entropy-decode-bound) |
+| 256² RGB  + LZ  | 2.75x  | ~1.0x (entropy-decode-bound) |
+| 256² RGB  + RLE | 1.16x  | ~1.0x (entropy-decode-bound) |
 
 The native library is never required: if `rustc` or the `.so` is missing,
 `native.py` returns `None` and the pure path takes over transparently.

@@ -687,6 +687,93 @@ def test_native_backend():
     d1 = encode(px2, 128, 128, 8, CS_GRAY, PRED_PAETH, 128, METHOD_LZ)
     check("native forced-LZ gray roundtrip", decode(d1)[1] == px2)
 
+    # --- predictor row kernels: native == pure, bit-exact ---------------
+    from pyra.predictors import apply_predictor_row, reconstruct_row
+
+    for pt in range(7):  # PRED_NONE..PRED_MEDIAN
+        for ch in (1, 3, 4):
+            row = [rng.randrange(1024) for _ in range(12 * ch)]
+            prev = [rng.randrange(1024) for _ in range(12 * ch)]
+            a_nat = apply_predictor_row(row, prev, pt, ch, 1024)
+            a_pure = pure(apply_predictor_row, row, prev, pt, ch, 1024)
+            a_nat0 = apply_predictor_row(row, None, pt, ch, 1024)
+            a_pure0 = pure(apply_predictor_row, row, None, pt, ch, 1024)
+            r_nat = reconstruct_row(a_nat, prev, pt, ch, 1024)
+            r_pure = pure(reconstruct_row, a_pure, prev, pt, ch, 1024)
+            check(f"native predictor == pure (pred={pt} ch={ch})",
+                  a_nat == a_pure and a_nat0 == a_pure0
+                  and r_nat == r_pure == row)
+
+    # --- YCoCg transform: native == pure, bit-exact ---------------------
+    from pyra.color import transform_pixels_forward, transform_pixels_inverse
+
+    rng2 = random.Random(606)
+    for cs in (CS_GRAY, CS_RGB, CS_RGBA, 9, -4):
+        n = 9 if cs != CS_RGBA else 8  # always a multiple of the pixel stride
+        px_c = [rng2.randrange(256) for _ in range(n)]
+        f_nat = [transform_pixels_forward(px_c, cs),
+                 transform_pixels_inverse(px_c, cs)]
+        f_pure = [pure(transform_pixels_forward, px_c, cs),
+                  pure(transform_pixels_inverse, px_c, cs)]
+        check(f"native YCoCg == pure (cs={cs})", f_nat == f_pure)
+    for cs in (CS_RGB, CS_RGBA):
+        px_c = [rng2.randrange(256) for _ in range(64 * cs if cs == CS_RGBA else 192)]
+        fwd = transform_pixels_forward(px_c, cs)
+        check(f"YCoCg native roundtrip (cs={cs})",
+              transform_pixels_inverse(fwd, cs)
+              == pure(transform_pixels_inverse, fwd, cs) == px_c)
+
+    # RGBA container goes through the native transform + predictor path
+    w, h, ch = 24, 18, 4
+    px3 = make_pixels("photo", w, h, ch, 8)
+    d_nat = encode(px3, w, h, 8, CS_RGBA, PRED_MEDIAN, 16, -1)
+    d_pure = pure(encode, px3, w, h, 8, CS_RGBA, PRED_MEDIAN, 16, -1)
+    check("native RGBA container == pure", d_nat == d_pure)
+    check("native RGBA roundtrip", decode(d_nat)[1] == px3)
+
+    # --- fused pipeline parity: codec front/back halves ------------------
+    # pipe_residuals == _residual_stream composition (transform ->
+    # canonicalize -> per-row predict) and pipe_reconstruct == the decode
+    # tail (row reconstruction -> descale -> inverse YCoCg).
+    from pyra.codec import PyraCodec
+    from pyra.color import transform_pixels_forward as _tfwd
+    from pyra.color import transform_pixels_inverse as _tinv
+
+    for cs, chx in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
+        wt, ht = 37, 23
+        stride = wt * chx
+        modf = PyraCodec._residual_mod(cs, 8)
+        offf = PyraCodec._canonical_offset(cs, 8)
+        pxf = make_pixels("photo", wt, ht, chx, 8)
+
+        nat_res = native.pipe_residuals(pxf, stride, offf, modf, PRED_PAETH, chx, cs)
+        tr = _tfwd(pxf, cs)
+        if offf:
+            tr = [v + offf for v in tr]
+        pure_res = []
+        prev = None
+        for y in range(ht):
+            rs = y * stride
+            pure_res.extend(apply_predictor_row(tr[rs:rs + stride], prev,
+                                                PRED_PAETH, chx, modf))
+            prev = tr[rs:rs + stride]
+        check(f"native fused pipe_residuals == pure (cs={cs})", nat_res == pure_res)
+
+        nat_px = native.pipe_reconstruct(nat_res, stride, offf, modf,
+                                         PRED_PAETH, chx, cs)
+        rows = []
+        prev = None
+        for y in range(ht):
+            rs = y * stride
+            seg = reconstruct_row(nat_res[rs:rs + stride], prev,
+                                  PRED_PAETH, chx, modf)
+            rows.extend(seg)
+            prev = seg
+        if offf:
+            rows = [v - offf for v in rows]
+        check(f"native fused pipe_reconstruct == pure (cs={cs})",
+              nat_px == _tinv(rows, cs) == pxf)
+
 
 def main():
     print("=== PYRA lossless test suite ===")

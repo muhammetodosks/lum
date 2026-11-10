@@ -6,6 +6,7 @@ from .tile import split_into_tiles, assemble_from_tiles, Tile
 from .container import PyraContainer
 from .compress import (pack_residuals, unpack_residuals, rle_encode, rle_decode,
                        lz_encode, lz_decode, TOKEN_EOF, TOKEN_MATCH, TOKEN_SYMBOLS)
+from . import native as _native
 
 # Residual-space modular alphabet. For RGB/RGBA the reversible YCoCg
 # transform produces exact-integer values that fall outside [0, 2^bitdepth);
@@ -48,6 +49,14 @@ class PyraCodec:
         channels = PyraCodec._channels_for_colorspace(color_space)
         mod = PyraCodec._residual_mod(color_space, bit_depth)
         offset = PyraCodec._canonical_offset(color_space, bit_depth)
+
+        # 0. native fused front half (single buffer conversion for the
+        # whole transform + canonicalize + predict pipeline)
+        native_residuals = _native.pipe_residuals(
+            tile.data, tile.width * channels, offset, mod, pred_type,
+            channels, color_space)
+        if native_residuals is not None:
+            return native_residuals
 
         # 1. Color transform (reversible YCoCg for RGB/RGBA)
         transformed = transform_pixels_forward(tile.data, color_space)
@@ -179,6 +188,14 @@ class PyraCodec:
         offset = PyraCodec._canonical_offset(color_space, bit_depth)
 
         residuals = cls._decode_residuals(data, method, width * height * channels, mod)
+
+        # native fused back half (residuals -> rows -> descale -> inverse
+        # color transform in a single buffer pass)
+        native_pixels = _native.pipe_reconstruct(
+            residuals, width * channels, offset, mod, pred_type,
+            channels, color_space)
+        if native_pixels is not None:
+            return native_pixels
 
         transformed = []
         prev_row = None

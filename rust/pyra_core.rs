@@ -48,6 +48,13 @@ const E_LZ_BAD_EXTRA: isize = -25;     // extra symbol out of [0,255]
 const E_LZ_DIST: isize = -26;          // back-reference distance beyond output
 const E_LZ_MATCH_OVER: isize = -27;    // match overshoots target
 const E_LZ_MISMATCH: isize = -28;      // output length mismatch (no overshoot guard hit)
+const E_PRED_CHANNELS: isize = -200;   // channels == 0 passed to a row kernel
+const E_PIPE_SHAPE: isize = -300;      // fused pipeline shape mismatch
+
+// Color-space constants duplicated from constants.py (CS_RGB=2, CS_RGBA=3)
+// so the native core stays dependency-free.
+const CS_RGB_V: i32 = 2;
+const CS_RGBA_V: i32 = 3;
 
 // ------------------------------------------------------------- residuals
 
@@ -302,9 +309,178 @@ pub unsafe extern "C" fn pyra_lz_encode(
     t as isize
 }
 
-/// Token-array LZ77 decode with the reference guard set. `tokens` holds the
-/// full symbol stream (0..255 literal, 256 MATCH + 3, 257 EOF); reconstructs
-/// exactly `target` bytes.
+// ------------------------------------------------------------ predictors
+
+/// Python-exact modular arithmetic: ((x % m) + m) % m on i64 so negative
+/// intermediates map into [0, m) like Python's `%`.
+#[inline]
+fn py_mod(x: i64, m: i64) -> i32 {
+    let r = ((x % m) + m) % m;
+    r as i32
+}
+
+#[inline]
+fn paeth(a: i64, b: i64, c: i64) -> i64 {
+    let p = a + b - c;
+    let pa = (p - a).abs();
+    let pb = (p - b).abs();
+    let pc = (p - c).abs();
+    if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c }
+}
+
+#[inline]
+fn median(a: i64, b: i64, c: i64) -> i64 {
+    if c >= a.max(b) { a.min(b) } else if c <= a.min(b) { a.max(b) } else { a + b - c }
+}
+
+#[inline]
+fn pred_value(pt: i32, left: i64, up: i64, ul: i64) -> i64 {
+    match pt {
+        0 => 0,
+        1 => left,
+        2 => up,
+        // Python (a + b) >> 1 floors; Rust i64 >> is arithmetic (same)
+        3 => (left + up) >> 1,
+        4 => paeth(left, up, ul),
+        5 => left + up - ul,
+        6 => median(left, up, ul),
+        _ => 0,
+    }
+}
+
+/// Shared predicates for the row kernels (kept inline via macro expansion).
+macro_rules! row_kernel {
+    ($name:ident, $recon:expr) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            row_in: *const i32, len: usize,
+            prev_row: *const i32, prev_len: usize,
+            pred_type: i32, channels: usize, modv: i64,
+            out: *mut i32,
+        ) -> isize {
+            if channels == 0 {
+                return E_PRED_CHANNELS;
+            }
+            let row = std::slice::from_raw_parts(row_in, len);
+            let has_prev = !prev_row.is_null() && prev_len >= len;
+            let prev: &[i32] = if has_prev {
+                std::slice::from_raw_parts(prev_row, len)
+            } else {
+                &[]
+            };
+            let out = std::slice::from_raw_parts_mut(out, len);
+            for i in 0..len {
+                let x = i / channels;
+                // apply: left context comes from the input row (original
+                // values, like the Python reference); reconstruct: left
+                // comes from the row being built.
+                let left = if x > 0 {
+                    if $recon { out[i - channels] as i64 } else { row[i - channels] as i64 }
+                } else {
+                    0
+                };
+                let up = if has_prev { prev[i] as i64 } else { 0 };
+                let ul = if has_prev && x > 0 { prev[i - channels] as i64 } else { 0 };
+                let pred = pred_value(pred_type, left, up, ul);
+                out[i] = if $recon {
+                    py_mod(row[i] as i64 + pred, modv)
+                } else {
+                    py_mod(row[i] as i64 - pred, modv)
+                };
+            }
+            len as isize
+        }
+    };
+}
+
+row_kernel!(pyra_apply_predictor_row, false);
+row_kernel!(pyra_reconstruct_row, true);
+
+// ----------------------------------------------------------- YCoCg
+
+/// Reversible RGB->YCoCg over an interleaved pixel list (passthrough for
+/// non-RGB/RGBa color spaces, alpha untouched). Byte-identical to Python.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_transform_forward(
+    vals: *const i32, n: usize, color_space: i32, out: *mut i32,
+) -> isize {
+    if color_space != CS_RGB_V && color_space != CS_RGBA_V {
+        if n > 0 {
+            std::ptr::copy_nonoverlapping(vals, out, n);
+        }
+        return n as isize; // passthrough (Python returns the same list)
+    }
+    let channels: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
+    let vals = std::slice::from_raw_parts(vals, n);
+    let out = std::slice::from_raw_parts_mut(out, n);
+    let mut i = 0usize;
+    while i + channels <= n {
+        let r = vals[i + 0] as i64;
+        let g = vals[i + 1] as i64;
+        let b = vals[i + 2] as i64;
+        let co = r - b;
+        let t = b + (co >> 1);
+        let cg = g - t;
+        let y = t + (cg >> 1);
+        out[i + 0] = y as i32;
+        out[i + 1] = co as i32;
+        out[i + 2] = cg as i32;
+        if channels == 4 {
+            out[i + 3] = vals[i + 3];
+        }
+        i += channels;
+    }
+    // trailing partial pixel: Python would crash on index; keep parity by
+    // copying the remainder unchanged (len < channels buffers are never
+    // produced by the codec pipeline)
+    while i < n {
+        out[i] = vals[i];
+        i += 1;
+    }
+    n as isize
+}
+
+/// Inverse of pyra_transform_forward.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_transform_inverse(
+    vals: *const i32, n: usize, color_space: i32, out: *mut i32,
+) -> isize {
+    if color_space != CS_RGB_V && color_space != CS_RGBA_V {
+        if n > 0 {
+            std::ptr::copy_nonoverlapping(vals, out, n);
+        }
+        return n as isize;
+    }
+    let channels: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
+    let vals = std::slice::from_raw_parts(vals, n);
+    let out = std::slice::from_raw_parts_mut(out, n);
+    let mut i = 0usize;
+    while i + channels <= n {
+        let y = vals[i + 0] as i64;
+        let co = vals[i + 1] as i64;
+        let cg = vals[i + 2] as i64;
+        let t = y - (cg >> 1);
+        let g = cg + t;
+        let b = t - (co >> 1);
+        let r = co + b;
+        out[i + 0] = r as i32;
+        out[i + 1] = g as i32;
+        out[i + 2] = b as i32;
+        if channels == 4 {
+            out[i + 3] = vals[i + 3];
+        }
+        i += channels;
+    }
+    while i < n {
+        out[i] = vals[i];
+        i += 1;
+    }
+    n as isize
+}
+
+/// Token-array LZ77 decode: expands literals and back-references until EOF
+/// or exactly `target` output bytes are produced. Token-identical to the
+/// Python reference (compress.py equivalent pipeline).
 #[no_mangle]
 pub unsafe extern "C" fn pyra_lz_decode_tokens(
     tokens: *const u32, ntok: usize, target: usize, out: *mut u8,
@@ -369,4 +545,142 @@ pub unsafe extern "C" fn pyra_lz_decode_tokens(
         return E_LZ_MISMATCH;
     }
     o as isize
+}
+
+// ------------------------------------------------ pipeline fusion
+
+// Fused codec front/back halves: one buffer conversion per call instead of
+// one per stage (transform / per-row prediction / packing). Semantics are
+// the exact composition of PyraCodec._residual_stream / decode_tile on the
+// pure-Python side, proven by container-parity tests.
+
+/// Forward half: YCoCg transform -> canonicalize (+offset) -> per-row
+/// predictor residuals. Writes residuals into `out`; prediction contexts
+/// come from an internal copy of the canonicalized input, mirroring the
+/// Python reference (prev_row = canonicalized transformed slice above).
+#[no_mangle]
+pub unsafe extern "C" fn pyra_pipe_forward(
+    vals: *const i32, n: usize, stride: usize,
+    color_space: i32, offset: i64, modv: i64,
+    pred_type: i32, channels: usize, out: *mut i32,
+) -> isize {
+    if channels == 0 || modv <= 0 || n % stride != 0 {
+        return E_PIPE_SHAPE;
+    }
+    let vals = std::slice::from_raw_parts(vals, n);
+    let out = std::slice::from_raw_parts_mut(out, n);
+    let mut tmp: Vec<i32> = vec![0; n];
+
+    // 1. reversible color transform (passthrough for other spaces)
+    let is_cs = color_space == CS_RGB_V || color_space == CS_RGBA_V;
+    let ch: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
+    if is_cs {
+        let mut i = 0usize;
+        while i + ch <= n {
+            let r = vals[i] as i64;
+            let g = vals[i + 1] as i64;
+            let b = vals[i + 2] as i64;
+            let co = r - b;
+            let t = b + (co >> 1);
+            let cg = g - t;
+            let y = t + (cg >> 1);
+            tmp[i] = y as i32;
+            tmp[i + 1] = co as i32;
+            tmp[i + 2] = cg as i32;
+            if ch == 4 {
+                tmp[i + 3] = vals[i + 3];
+            }
+            i += ch;
+        }
+        while i < n {
+            tmp[i] = vals[i];
+            i += 1;
+        }
+    } else {
+        tmp.copy_from_slice(vals);
+    }
+
+    // 2. canonicalize into the predictor domain (plain integer shift, no mod)
+    if offset != 0 {
+        for v in tmp.iter_mut() {
+            *v = (*v as i64 + offset) as i32;
+        }
+    }
+
+    // 3. predictor pass, row by row (left = canonicalized input row,
+    //    up/upper-left = previous canonicalized row, none for row 0)
+    let mut r = 0usize;
+    while r < n {
+        let row_end = r + stride;
+        for i in r..row_end {
+            let x = (i - r) / channels;
+            let left = if x > 0 { tmp[i - channels] as i64 } else { 0 };
+            let up = if r > 0 { tmp[i - stride] as i64 } else { 0 };
+            let ul = if r > 0 && x > 0 { tmp[i - stride - channels] as i64 } else { 0 };
+            let pred = pred_value(pred_type, left, up, ul);
+            out[i] = py_mod(tmp[i] as i64 - pred, modv);
+        }
+        r = row_end;
+    }
+    n as isize
+}
+
+/// Backward half: reconstruct rows from residuals (left from the row being
+/// built, up/upper-left from already-reconstructed rows) -> descale
+/// (-offset) -> inverse YCoCg. Bit-identical to the pure-python tail of
+/// decode_tile.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_pipe_reconstruct(
+    res: *const i32, n: usize, stride: usize,
+    color_space: i32, offset: i64, modv: i64,
+    pred_type: i32, channels: usize, out: *mut i32,
+) -> isize {
+    if channels == 0 || modv <= 0 || n % stride != 0 {
+        return E_PIPE_SHAPE;
+    }
+    let res = std::slice::from_raw_parts(res, n);
+    let out = std::slice::from_raw_parts_mut(out, n);
+
+    // 1. predictor reconstruction, row by row
+    let mut r = 0usize;
+    while r < n {
+        let row_end = r + stride;
+        for i in r..row_end {
+            let x = (i - r) / channels;
+            let left = if x > 0 { out[i - channels] as i64 } else { 0 };
+            let up = if r > 0 { out[i - stride] as i64 } else { 0 };
+            let ul = if r > 0 && x > 0 { out[i - stride - channels] as i64 } else { 0 };
+            let pred = pred_value(pred_type, left, up, ul);
+            out[i] = py_mod(res[i] as i64 + pred, modv);
+        }
+        r = row_end;
+    }
+
+    // 2. undo canonicalization (plain integer shift, no mod)
+    if offset != 0 {
+        for v in out.iter_mut() {
+            *v = (*v as i64 - offset) as i32;
+        }
+    }
+
+    // 3. inverse color transform in place (passthrough for other spaces)
+    let is_cs = color_space == CS_RGB_V || color_space == CS_RGBA_V;
+    let ch: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
+    if is_cs {
+        let mut i = 0usize;
+        while i + ch <= n {
+            let y = out[i] as i64;
+            let co = out[i + 1] as i64;
+            let cg = out[i + 2] as i64;
+            let t = y - (cg >> 1);
+            let g = cg + t;
+            let b = t - (co >> 1);
+            let rr = co + b;
+            out[i] = rr as i32;
+            out[i + 1] = g as i32;
+            out[i + 2] = b as i32;
+            i += ch;
+        }
+    }
+    n as isize
 }

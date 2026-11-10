@@ -1,4 +1,5 @@
 from .constants import *
+from . import native as _native
 
 def rgb_to_ycocg(r: int, g: int, b: int) -> tuple[int, int, int]:
     """Reversible RGB to YCoCg transform."""
@@ -17,6 +18,10 @@ def ycocg_to_rgb(y: int, co: int, cg: int) -> tuple[int, int, int]:
     return r, g, b
 
 def transform_pixels_forward(pixels: list[int], color_space: int) -> list[int]:
+    native_result = _native.transform_forward(pixels, color_space)
+    if native_result is not None:
+        return native_result
+
     if color_space not in (CS_RGB, CS_RGBA):
         return pixels
     
@@ -39,6 +44,10 @@ def transform_pixels_forward(pixels: list[int], color_space: int) -> list[int]:
     return out
 
 def transform_pixels_inverse(pixels: list[int], color_space: int) -> list[int]:
+    native_result = _native.transform_inverse(pixels, color_space)
+    if native_result is not None:
+        return native_result
+
     if color_space not in (CS_RGB, CS_RGBA):
         return pixels
     

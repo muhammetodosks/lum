@@ -26,6 +26,13 @@ def _u32_ptr(values) -> tuple:
     ptr = ctypes.cast(a.buffer_info()[0], ctypes.POINTER(ctypes.c_uint32))
     return a, ptr
 
+
+def _i32_ptr(values) -> tuple:
+    """Signed i32 array for row/pixel kernels (residuals and pixel values)."""
+    a = _array("i", values)
+    ptr = ctypes.cast(a.buffer_info()[0], ctypes.POINTER(ctypes.c_int32))
+    return a, ptr
+
 # --- Rust error codes (must match rust/pyra_core.rs) ---
 _E_RLE_TRUNC = -1
 _E_RLE_ESCAPE_TRUNC = -2
@@ -80,6 +87,7 @@ def _load():
             _sz = ctypes.c_size_t
             _u32 = ctypes.c_uint32
             _u64 = ctypes.c_uint64
+            _i64 = ctypes.c_int64
             lib.pyra_pack_residuals.restype = _isize
             lib.pyra_pack_residuals.argtypes = [
                 ctypes.POINTER(_u32), _sz, _sz, _u64,
@@ -103,6 +111,29 @@ def _load():
             lib.pyra_lz_decode_tokens.argtypes = [
                 ctypes.POINTER(_u32), _sz, _sz,
                 ctypes.POINTER(ctypes.c_ubyte)]
+            _i32 = ctypes.c_int32
+            lib.pyra_apply_predictor_row.restype = _isize
+            lib.pyra_apply_predictor_row.argtypes = [
+                ctypes.POINTER(_i32), _sz, ctypes.POINTER(_i32), _sz,
+                _i32, _sz, _i64, ctypes.POINTER(_i32)]
+            lib.pyra_reconstruct_row.restype = _isize
+            lib.pyra_reconstruct_row.argtypes = [
+                ctypes.POINTER(_i32), _sz, ctypes.POINTER(_i32), _sz,
+                _i32, _sz, _i64, ctypes.POINTER(_i32)]
+            lib.pyra_transform_forward.restype = _isize
+            lib.pyra_transform_forward.argtypes = [
+                ctypes.POINTER(_i32), _sz, _i32, ctypes.POINTER(_i32)]
+            lib.pyra_transform_inverse.restype = _isize
+            lib.pyra_transform_inverse.argtypes = [
+                ctypes.POINTER(_i32), _sz, _i32, ctypes.POINTER(_i32)]
+            lib.pyra_pipe_forward.restype = _isize
+            lib.pyra_pipe_forward.argtypes = [
+                ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
+                _i32, _sz, ctypes.POINTER(_i32)]
+            lib.pyra_pipe_reconstruct.restype = _isize
+            lib.pyra_pipe_reconstruct.argtypes = [
+                ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
+                _i32, _sz, ctypes.POINTER(_i32)]
             _lib = lib
         except OSError:
             _lib = None
@@ -223,3 +254,123 @@ def lz_decode_tokens(tokens: list[int], target_len: int) -> bytes | None:
             raise CorruptedFileError("invalid LZ back-reference distance")
         raise CorruptedFileError("corrupted LZ token stream")
     return bytes(memoryview(out))
+
+
+def apply_predictor_row(row: list[int], prev_row: list[int] | None,
+                        pred_type: int, channels: int, mod: int) -> list[int] | None:
+    """Native counterpart of predictors.apply_predictor_row."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(row)
+    a, buf = _i32_ptr(row)
+    if prev_row is not None and len(prev_row) >= n:
+        pa, prev = _i32_ptr(prev_row[:n]) if len(prev_row) != n else _i32_ptr(prev_row)
+        prow, plen = prev, n
+    else:
+        pa, prow, plen = None, None, 0
+    out = (ctypes.c_int32 * n)()
+    rc = lib.pyra_apply_predictor_row(buf, n, prow, plen, pred_type, channels, mod, out)
+    if rc < 0:
+        raise ValueError("native predictor failure (invalid channels)")
+    return list(out)
+
+
+def reconstruct_row(residuals: list[int], prev_row: list[int] | None,
+                    pred_type: int, channels: int, mod: int) -> list[int] | None:
+    """Native counterpart of predictors.reconstruct_row."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(residuals)
+    a, buf = _i32_ptr(residuals)
+    if prev_row is not None and len(prev_row) >= n:
+        pa, prev = _i32_ptr(prev_row[:n]) if len(prev_row) != n else _i32_ptr(prev_row)
+        prow, plen = prev, n
+    else:
+        pa, prow, plen = None, None, 0
+    out = (ctypes.c_int32 * n)()
+    rc = lib.pyra_reconstruct_row(buf, n, prow, plen, pred_type, channels, mod, out)
+    if rc < 0:
+        raise ValueError("native predictor failure (invalid channels)")
+    return list(out)
+
+
+def transform_forward(pixels: list[int], color_space: int) -> list[int] | None:
+    """Native counterpart of color.transform_pixels_forward."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(pixels)
+    a, buf = _i32_ptr(pixels)
+    out = (ctypes.c_int32 * n)()
+    rc = lib.pyra_transform_forward(buf, n, color_space, out)
+    if rc < 0:
+        raise ValueError("native YCoCg transform failure")
+    return list(out)
+
+
+def transform_inverse(pixels: list[int], color_space: int) -> list[int] | None:
+    """Native counterpart of color.transform_pixels_inverse."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(pixels)
+    a, buf = _i32_ptr(pixels)
+    out = (ctypes.c_int32 * n)()
+    rc = lib.pyra_transform_inverse(buf, n, color_space, out)
+    if rc < 0:
+        raise ValueError("native YCoCg transform failure")
+    return list(out)
+
+
+# ------------------------------------------------------- fused pipelines
+# Single-conversion counterparts of PyraCodec._residual_stream (color
+# transform + canonicalization + row prediction) and the decode-side tail
+# (row reconstruction + descaling + inverse transform). Returns None on
+# shape mismatch so the caller falls back to the reference composition.
+
+def pipe_residuals(data: list[int], stride: int, offset: int, mod: int,
+                   pred_type: int, channels: int,
+                   color_space: int) -> list[int] | None:
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(data)
+    if n % stride:
+        return None
+    try:
+        a, buf = _i32_ptr(data)
+    except (OverflowError, TypeError):
+        return None
+    out = (ctypes.c_int32 * n)()
+    rc = lib.pyra_pipe_forward(buf, n, stride, color_space, offset, mod,
+                               pred_type, channels, out)
+    if rc < 0:
+        if rc == _E_PIPE_SHAPE:
+            return None
+        raise ValueError(f"native pipeline failure ({rc})")
+    return list(out)
+
+
+def pipe_reconstruct(residuals: list[int], stride: int, offset: int, mod: int,
+                     pred_type: int, channels: int,
+                     color_space: int) -> list[int] | None:
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(residuals)
+    if n % stride:
+        return None
+    try:
+        a, buf = _i32_ptr(residuals)
+    except (OverflowError, TypeError):
+        return None
+    out = (ctypes.c_int32 * n)()
+    rc = lib.pyra_pipe_reconstruct(buf, n, stride, color_space, offset, mod,
+                                   pred_type, channels, out)
+    if rc < 0:
+        if rc == _E_PIPE_SHAPE:
+            return None
+        raise ValueError(f"native pipeline failure ({rc})")
+    return list(out)
