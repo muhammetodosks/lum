@@ -92,21 +92,28 @@ def decode_region(file_bytes: bytes, rx: int, ry: int, rw: int, rh: int) -> tupl
     pred_type = meta["pred_type"]
     method = meta["method"]
     channels = PyraCodec._channels_for_colorspace(color_space)
-    
+
     # Identify tiles intersecting region
     region_pixels = [0] * (rw * rh * channels)
-    
+
     tile_idx = 0
     for ty in range(0, height, tile_size):
         th = min(tile_size, height - ty)
         for tx in range(0, width, tile_size):
             tw = min(tile_size, width - tx)
-            
+
             # Check intersection
             if not (tx + tw <= rx or tx >= rx + rw or ty + th <= ry or ty >= ry + rh):
                 # Decode tile
                 tile_bytes = compressed_tiles[tile_idx]
-                tile_pixels = PyraCodec.decode_tile(tile_bytes, tw, th, color_space, pred_type, bit_depth, method)
+                tile_method = method
+                if method == METHOD_MIX:
+                    if not tile_bytes:
+                        raise CorruptedFileError("empty MIX tile (missing method byte)")
+                    tile_method, tile_bytes = tile_bytes[0], tile_bytes[1:]
+                    if tile_method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+                        raise CorruptedFileError(f"invalid per-tile method {tile_method}")
+                tile_pixels = PyraCodec.decode_tile(tile_bytes, tw, th, color_space, pred_type, bit_depth, tile_method)
                 
                 # Copy intersecting pixels into region buffer
                 for y in range(th):
@@ -143,7 +150,14 @@ def iter_tiles(file_bytes: bytes) -> Generator[tuple[dict, list[int]], None, Non
         for tx in range(0, width, tile_size):
             tw = min(tile_size, width - tx)
             tile_bytes = compressed_tiles[tile_idx]
-            tile_pixels = PyraCodec.decode_tile(tile_bytes, tw, th, color_space, pred_type, bit_depth, method)
+            tile_method = method
+            if method == METHOD_MIX:
+                if not tile_bytes:
+                    raise CorruptedFileError("empty MIX tile (missing method byte)")
+                tile_method, tile_bytes = tile_bytes[0], tile_bytes[1:]
+                if tile_method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+                    raise CorruptedFileError(f"invalid per-tile method {tile_method}")
+            tile_pixels = PyraCodec.decode_tile(tile_bytes, tw, th, color_space, pred_type, bit_depth, tile_method)
             tile_meta = {"x": tx, "y": ty, "width": tw, "height": th}
             yield tile_meta, tile_pixels
             tile_idx += 1

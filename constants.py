@@ -25,7 +25,9 @@ PRED_MEDIAN = 6
 METHOD_RAW = 0   # residual symbols straight into the entropy coder
 METHOD_RLE = 1   # packed bytes -> RLE -> literal tokens -> entropy
 METHOD_LZ  = 2   # packed bytes -> RLE -> LZ77 tokens -> entropy
-METHOD_COUNT = 3
+METHOD_MIX = 3   # per-tile best of RAW/RLE/LZ; each tile body starts with a method byte
+METHOD_COUNT = 3 # candidate count for global auto-select (RAW/RLE/LZ)
+_VALID_METHODS = (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX)
 
 class PyraError(Exception):
     pass

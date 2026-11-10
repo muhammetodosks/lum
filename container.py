@@ -7,7 +7,7 @@ class PyraContainer:
     @staticmethod
     def pack_file(width: int, height: int, bit_depth: int, color_space: int, pred_type: int, method: int, tile_size: int, compressed_tiles: list[bytes]) -> bytes:
         validate_dimensions(width, height)
-        if method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+        if method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX):
             raise ValueError(f"invalid compression method: {method}")
 
         header = struct.pack(
@@ -65,7 +65,7 @@ class PyraContainer:
         magic, version, width, height, bit_depth, color_space, pred_type, method, tile_size, num_tiles = struct.unpack(header_fmt, data[:header_size])
 
         validate_dimensions(width, height)
-        if method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+        if method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX):
             raise CorruptedFileError(f"invalid compression method in header: {method}")
         
         offset = header_size

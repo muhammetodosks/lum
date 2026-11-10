@@ -8,11 +8,11 @@ from .container import PyraContainer
 from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
                         PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE,
                         PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN,
-                        METHOD_RAW, METHOD_RLE, METHOD_LZ,
+                        METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX,
                         PyraError, CorruptedFileError)
 from .pngbench import encode_png
 
-_METHOD_NAMES = {METHOD_RAW: "raw", METHOD_RLE: "rle", METHOD_LZ: "lz"}
+_METHOD_NAMES = {METHOD_RAW: "raw", METHOD_RLE: "rle", METHOD_LZ: "lz", METHOD_MIX: "mix"}
 _PRED_NAMES = {
     PRED_NONE: "none", PRED_LEFT: "left", PRED_UP: "up",
     PRED_AVERAGE: "average", PRED_PAETH: "paeth",
@@ -32,7 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("encode", help="encode a PNM image into a .pyra file")
     e.add_argument("input")
     e.add_argument("output")
-    e.add_argument("--method", choices=["auto", "raw", "rle", "lz"], default="auto")
+    e.add_argument("--method", choices=["auto", "raw", "rle", "lz", "mix"], default="auto")
     e.add_argument("--predictor", choices=list(_PRED_BY_NAME), default="paeth")
     e.add_argument("--tile", type=int, default=256)
     e.add_argument("--colorspace", choices=["auto", "gray", "rgb", "rgba"], default="auto")
@@ -49,7 +49,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     b = sub.add_parser("benchmark", help="encode/decode timings and PNG size comparison")
     b.add_argument("input")
-    b.add_argument("--method", choices=["auto", "raw", "rle", "lz"], default="auto")
+    b.add_argument("--method", choices=["auto", "raw", "rle", "lz", "mix"], default="auto")
     b.add_argument("--predictor", choices=list(_PRED_BY_NAME), default="paeth")
     b.add_argument("--tile", type=int, default=256)
     return p

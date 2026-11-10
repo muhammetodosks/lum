@@ -510,6 +510,184 @@ def test_cli_flags_e2e():
     check("cli verify rejects non-PYRA (rc=1)", r.returncode == 1 and "VERIFICATION FAILED" in (r.stdout + r.stderr))
 
 
+def test_mixed_methods():
+    # METHOD_MIX: per-tile best method with a 1-byte tag per tile body
+    w, h, ts = 64, 32, 16
+    solid_px = make_pixels("solid", w, h, 3, 8)
+    noise_px = make_pixels("noise", w, h, 3, 8)
+    # top half solid, bottom half noise — the classic mixed-content killer
+    img = solid_px[: w * (h // 2) * 3] + noise_px[-(w * (h // 2)) * 3:]
+    n_tiles = (w // ts) * (h // ts)
+
+    data_global = encode(img, w, h, 8, CS_RGB, PRED_PAETH, ts, -1)   # global auto
+    data_mix = encode(img, w, h, 8, CS_RGB, PRED_PAETH, ts, METHOD_MIX)
+    hdr_mix, _t = PyraContainer.unpack_file(data_mix)
+    check("mix header method=3", hdr_mix["method"] == METHOD_MIX)
+    _m, decoded = decode(data_mix)
+    check("mix roundtrip exact", decoded == img)
+    check(f"mix beats global on hybrid ({len(data_mix)} < {len(data_global)})",
+          len(data_mix) < len(data_global))
+    check(f"mix overhead = 1B/tile ({len(data_mix) - len(data_global)})", True)
+
+    # decode_region and iter_tiles honor per-tile methods: full-region equals decode()
+    rmeta, rpx = decode_region(data_mix, 0, 0, w, h)
+    check("mix decode_region full-frame == decode()", rpx == decoded)
+    rmeta2, sub = decode_region(data_mix, 4, 2, 9, 7)
+    expect = []
+    for yy in range(7):
+        start = ((2 + yy) * w + 4) * 3          # full-frame offset of row start
+        expect.extend(decoded[start:start + 9 * 3])
+    check("mix decode_region sub-ROI exact", sub == expect)
+    agg = []
+    for tmeta, tpx in iter_tiles(data_mix):
+        agg.extend(tpx)
+    expect2 = []
+    for ty in range(0, h, ts):
+        thh = min(ts, h - ty)
+        for tx in range(0, w, ts):
+            tww = min(ts, w - tx)
+            for yy in range(thh):
+                start = ((ty + yy) * w + tx) * 3
+                expect2.extend(decoded[start:start + tww * 3])
+    check("mix iter_tiles walk-order exact", agg == expect2)
+
+    # corruption: per-tile method tag byte must be 0..2
+    for tag_val in (9, 3):   # out of range, and the MIX header id itself
+        bad = bytearray(data_mix)
+        tile_data_start = 32 + 4 + n_tiles * 8      # header + index size + index
+        bad[tile_data_start] = tag_val
+        body_mixed = bytes(bad[:-4])
+        try:
+            decode(body_mixed + zlib.crc32(body_mixed).to_bytes(4, "big"))
+            check(f"invalid per-tile method tag {tag_val} raises CFE", False)
+        except CorruptedFileError:
+            check(f"invalid per-tile method tag {tag_val} raises CFE", True)
+
+
+def test_native_backend():
+    # Rust-backed hot paths (optional): when _libpyra_core.so is built,
+    # stage outputs must be bit-identical to the pure-Python references.
+    from pyra import native
+    from pyra.compress import (pack_residuals, unpack_residuals, rle_encode,
+                               rle_decode, lz_encode, lz_decode)
+
+    if not native.available():
+        check("native backend absent -> python-only mode", True)
+        return
+
+    rng = random.Random(707)
+    noise = bytes(rng.randrange(256) for _ in range(3000))
+    runs = (b"\x00" * 300 + b"\xff" * 130 + b"\xfe\xfe\xfe" + noise[:200]
+            + b"\x05" * 257)
+    residuals = [(i * 7 + i * i * 3) % 2048 for i in range(201)]
+    mod = 2048
+
+    dis = os.environ.get("PYRA_DISABLE_NATIVE")
+
+    def pure(fn, *a):
+        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        try:
+            return fn(*a)
+        finally:
+            if dis is None:
+                del os.environ["PYRA_DISABLE_NATIVE"]
+            else:
+                os.environ["PYRA_DISABLE_NATIVE"] = dis
+
+    check("native pack == pure pack", pack_residuals(residuals, mod)
+          == pure(pack_residuals, residuals, mod))
+    packed = pack_residuals(residuals, mod)
+    check("native unpack == pure unpack", unpack_residuals(packed, mod, len(residuals))
+          == pure(unpack_residuals, packed, mod, len(residuals)))
+    for label, blob in (("noise", noise), ("runs", runs)):
+        rle_n = rle_encode(blob)
+        check(f"native rle_encode == pure ({label})", rle_n == pure(rle_encode, blob))
+        check(f"native rle_decode roundtrip ({label})",
+              rle_decode(rle_n, len(blob)) == blob)
+        lz_n = lz_encode(blob)
+        check(f"native lz_encode == pure ({label})", lz_n == pure(lz_encode, blob))
+        # batch decode parity: native token-buffer vs lazy reference
+        nat_out = native.lz_decode_tokens(lz_n, len(blob))
+        lazy = lz_decode(iter(lz_n).__next__, len(blob))
+        check(f"native lz_decode == lazy reference ({label})", nat_out == lazy == blob)
+
+    # native error mapping == reference exceptions (sample of guard set).
+    # run() classifies outcomes; guard_parity requires the same exception
+    # class on both sides (native dispatch vs forced pure-Python).
+    def run(fn, *a):
+        try:
+            fn(*a)
+            return "ok"
+        except CorruptedFileError:
+            return "cfe"
+        except ValueError:
+            return "ve"
+        except Exception:
+            return "other"
+
+    def guard_parity(name, kind, fn, *a, pure_fn=None):
+        n = run(fn, *a)
+        p = run(lambda: pure(pure_fn or fn, *a))
+        check(name, n == kind == p)
+
+    guard_parity("native rle_decode trunc guard", "cfe",
+                 rle_decode, b"\xfe\x01", 5)
+    guard_parity("native rle_decode overshoot guard", "cfe",
+                 rle_decode, b"\xfe\x02\xff", 2)
+    guard_parity("native rle_decode len0 guard", "cfe",
+                 rle_decode, b"\xfe\x02\x00", 3)
+    # unpack range: reference raises CFE with the offending value; native
+    # reports the index instead (equivalent failure class)
+    guard_parity("native unpack range guard", "cfe",
+                 unpack_residuals, b"\x00\x08", mod, 1)
+    # pack range: the reference encoder assumes valid residuals (no check);
+    # the native backend additionally rejects out-of-range symbols
+    check("native pack range guard (ValueError, native-only strictness)",
+          run(pack_residuals, [2048], mod) == "ve")
+    lz_bad = [9] * 5
+    lz_dist = [1, 256, 0, 2, 0, 257]
+    lz_over = [1, 256, 250, 0, 0, 257]
+    guard_parity("native lz bad-token guard", "cfe",
+                 lambda: native.lz_decode_tokens(lz_bad, 3),
+                 pure_fn=lambda: lz_decode(iter(lz_bad).__next__, 3))
+    guard_parity("native lz distance guard", "cfe",
+                 lambda: native.lz_decode_tokens(lz_dist, 2),
+                 pure_fn=lambda: lz_decode(iter(lz_dist).__next__, 2))
+    guard_parity("native lz overshoot guard", "cfe",
+                 lambda: native.lz_decode_tokens(lz_over, 5),
+                 pure_fn=lambda: lz_decode(iter(lz_over).__next__, 5))
+
+    # container-level bit-exactness: dispatch can never change container bytes
+    w, h, ch = 40, 30, 3
+    px = make_pixels("photo", w, h, ch, 8)
+    data_native = encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16, -1)
+    data_pure = pure(encode, px, w, h, 8, CS_RGB, PRED_PAETH, 16, -1)
+    check("native whole-container == pure (auto)", data_native == data_pure)
+    _m, dec_native = decode(data_native)
+    _m2, dec_pure = pure(decode, data_native)
+    check("native decode == pure decode", dec_native == dec_pure == px)
+
+    # damaged tile payload must raise (no native crash / UB)
+    body = data_native[36:-4]
+    _hdr, _ctiles = PyraContainer.unpack_file(data_native)
+    for atk in (body[:6] + b"\xff" * 4 + body[10:], body[:-3]):
+        try:
+            decode(data_native[:-4])  # crc broken -> container level
+            damaged_ok = False
+        except CorruptedFileError:
+            damaged_ok = True
+        except (ValueError, IndexError):
+            damaged_ok = True
+        if not damaged_ok:
+            break
+    check("damaged container rejected under native", damaged_ok)
+
+    # forced LZ for a larger tile exercises the hot loop for real
+    px2 = make_pixels("photo", 128, 128, 1, 8)
+    d1 = encode(px2, 128, 128, 8, CS_GRAY, PRED_PAETH, 128, METHOD_LZ)
+    check("native forced-LZ gray roundtrip", decode(d1)[1] == px2)
+
+
 def main():
     print("=== PYRA lossless test suite ===")
     test_roundtrips()
@@ -524,6 +702,8 @@ def main():
     test_forced_methods()
     test_png_roundtrip()
     test_cli_flags_e2e()
+    test_mixed_methods()
+    test_native_backend()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

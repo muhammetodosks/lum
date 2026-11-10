@@ -1,11 +1,11 @@
 # PYRA - Pure Python reversible image format & codec (stdlib only).
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .constants import (
     MAGIC, VERSION,
     CS_GRAY, CS_RGB, CS_RGBA,
     PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE, PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN,
-    METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_COUNT,
+    METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX, METHOD_COUNT,
     PyraError, SecurityError, CorruptedFileError,
 )
 from .codec import PyraCodec
@@ -21,7 +21,7 @@ __all__ = [
     "MAGIC", "VERSION",
     "CS_GRAY", "CS_RGB", "CS_RGBA",
     "PRED_NONE", "PRED_LEFT", "PRED_UP", "PRED_AVERAGE", "PRED_PAETH", "PRED_GRADIENT", "PRED_MEDIAN",
-    "METHOD_RAW", "METHOD_RLE", "METHOD_LZ", "METHOD_COUNT",
+    "METHOD_RAW", "METHOD_RLE", "METHOD_LZ", "METHOD_MIX", "METHOD_COUNT",
     "PyraError", "SecurityError", "CorruptedFileError",
     "PyraCodec", "PyraContainer",
     "Tile", "split_into_tiles", "assemble_from_tiles",

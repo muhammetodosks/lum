@@ -203,7 +203,15 @@ class PyraCodec:
             raise ValueError(f"Pixel count ({len(pixels)}) != {width}x{height}x{channels}")
 
         tiles = split_into_tiles(pixels, width, height, channels, tile_size)
-        if method in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+        if method == METHOD_MIX:
+            # Per-tile best method: each tile body starts with a 1-byte
+            # method tag, decoded independently (mixed-content images win).
+            compressed_tiles = []
+            for t in tiles:
+                cand = cls._tile_candidates(t, color_space, pred_type, bit_depth)
+                m = min((len(d), mid) for mid, d in cand.items())[1]
+                compressed_tiles.append(bytes([m]) + cand[m])
+        elif method in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
             # Forced method: single rescue-free encode per tile.
             compressed_tiles = [cls.encode_tile(t, color_space, pred_type, bit_depth, method)
                                 for t in tiles]
@@ -243,7 +251,15 @@ class PyraCodec:
             for tx in range(0, width, tile_size):
                 tw = min(tile_size, width - tx)
                 tile_bytes = compressed_tiles[tile_idx]
-                tile_pixels = cls.decode_tile(tile_bytes, tw, th, color_space, pred_type, bit_depth, method)
+                tile_method = method
+                if method == METHOD_MIX:
+                    if not tile_bytes:
+                        raise CorruptedFileError("empty MIX tile (missing method byte)")
+                    tile_method, tile_body = tile_bytes[0], tile_bytes[1:]
+                    if tile_method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+                        raise CorruptedFileError(f"invalid per-tile method {tile_method}")
+                    tile_bytes = tile_body
+                tile_pixels = cls.decode_tile(tile_bytes, tw, th, color_space, pred_type, bit_depth, tile_method)
                 tiles.append(Tile(tx, ty, tw, th, tile_pixels))
                 tile_idx += 1
 

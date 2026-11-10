@@ -24,6 +24,7 @@
 # the decoder enforces that cap against infinite/decompression-bomb streams.
 
 from .constants import CorruptedFileError
+from . import native
 
 # Token alphabet
 TOKEN_MATCH = 256
@@ -41,6 +42,9 @@ def pack_residuals(residuals: list[int], mod: int) -> bytes:
     """Pack residual symbols (each in [0, mod)) into a byte stream with a
     fixed little-endian width of ceil(bits) bytes per symbol."""
     width = (mod.bit_length() + 7) // 8
+    _native = native.pack_residuals(residuals, mod)
+    if _native is not None:
+        return _native
     out = bytearray()
     for r in residuals:
         out.extend(r.to_bytes(width, "little"))
@@ -50,6 +54,9 @@ def pack_residuals(residuals: list[int], mod: int) -> bytes:
 def unpack_residuals(data: bytes, mod: int, count: int) -> list[int]:
     """Inverse of pack_residuals for exactly `count` symbols."""
     width = (mod.bit_length() + 7) // 8
+    _native = native.unpack_residuals(data, mod, count)
+    if _native is not None:
+        return _native
     if len(data) < count * width:
         raise CorruptedFileError("truncated packed residual stream")
     out = []
@@ -64,6 +71,9 @@ def unpack_residuals(data: bytes, mod: int, count: int) -> list[int]:
 
 def rle_encode(data: bytes) -> bytes:
     """Byte-level RLE. Greedy maximal-run policy, deterministic."""
+    _native = native.rle_encode(data)
+    if _native is not None:
+        return _native
     out = bytearray()
     i = 0
     n = len(data)
@@ -105,6 +115,9 @@ def rle_decode(data: bytes, target_len: int) -> bytes:
     Any inconsistency raises CorruptedFileError."""
     if target_len < 0:
         raise CorruptedFileError("negative RLE target length")
+    _native = native.rle_decode(data, target_len) if target_len >= 0 else None
+    if _native is not None:
+        return _native
     out = bytearray()
     i = 0
     n = len(data)
@@ -155,6 +168,9 @@ def lz_encode(data: bytes) -> list[int]:
 
     Greedy longest-match with hash buckets. Ties (equal length) resolve to
     the most recent candidate (smallest distance) => deterministic."""
+    _native = native.lz_encode(data)
+    if _native is not None:
+        return _native
     out: list[int] = []
     i = 0
     n = len(data)
@@ -220,6 +236,9 @@ def lz_encode(data: bytes) -> list[int]:
     out.append(TOKEN_EOF)
     return out
 
+
+# lz_decode stays pure-Python: it consumes symbols lazily from the range
+# decoder (bytes(data) for one shot). Note the count*width size guard.
 
 def lz_decode(src, target_len: int) -> bytes:
     """Decode LZ77 tokens lazily from symbol generator `src` until the EOF
