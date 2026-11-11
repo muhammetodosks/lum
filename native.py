@@ -17,7 +17,11 @@ import ctypes
 import os
 from array import array as _array
 
-from .constants import CorruptedFileError
+from .constants import CorruptedFileError, PyraError
+
+# LZ/RLE token alphabet size (0..255 literal, 256 MATCH, 257 EOF).
+# Duplicated here to avoid a circular import with compress.py.
+_TOKEN_SYMBOLS = 258
 
 
 def _u32_ptr(values) -> tuple:
@@ -134,6 +138,23 @@ def _load():
             lib.pyra_pipe_reconstruct.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
                 _i32, _sz, ctypes.POINTER(_i32)]
+            lib.pyra_range_encode.restype = _isize
+            lib.pyra_range_encode.argtypes = [
+                ctypes.POINTER(_u32), _sz, _sz,
+                ctypes.POINTER(ctypes.c_ubyte), _sz]
+            lib.pyra_range_decode.restype = _isize
+            lib.pyra_range_decode.argtypes = [
+                ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz,
+                ctypes.POINTER(_u32)]
+            lib.pyra_decode_rle_method.restype = _isize
+            lib.pyra_decode_rle_method.argtypes = [
+                ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz, _sz, _u64,
+                _sz, ctypes.POINTER(_u32), ctypes.POINTER(_i32)]
+            lib.pyra_decode_lz_method.restype = _isize
+            lib.pyra_decode_lz_method.argtypes = [
+                ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz, _sz, _sz, _u64,
+                _sz, ctypes.POINTER(_u32), ctypes.POINTER(_u32),
+                ctypes.POINTER(_i32)]
             _lib = lib
         except OSError:
             _lib = None
@@ -373,4 +394,94 @@ def pipe_reconstruct(residuals: list[int], stride: int, offset: int, mod: int,
         if rc == _E_PIPE_SHAPE:
             return None
         raise ValueError(f"native pipeline failure ({rc})")
+    return list(out)
+
+
+# ----------------------------------------------------------- range coder
+# Adaptive arithmetic coder (Fenwick model + WNC renormalization).
+# The Rust side is a line-for-line port of entropy.py, so the encoded bit
+# stream is byte-identical to RangeEncoder.flush().
+
+def range_encode(symbols: list[int], n_symbols: int) -> bytes | None:
+    """Encode a symbol list with the adaptive range coder.
+
+    Returns None when the backend is unavailable/disabled (caller falls back
+    to the pure-Python RangeEncoder) or when the native side refuses the
+    input (defensive: symbol outside the alphabet)."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    if n_symbols < 1:
+        raise PyraError("model needs at least 1 symbol")
+    n = len(symbols)
+    a, buf = _u32_ptr(symbols)
+    # Worst-case output size: the range coder emits at most
+    # ceil(log2(model_total)) + 1 bits per symbol, and the adaptive model
+    # total is capped at max(2^15, 2 * n_symbols).
+    bits_per = max(15, n_symbols.bit_length() + 1) + 1
+    cap = (n * bits_per) // 8 + 64
+    out = (ctypes.c_ubyte * cap)()
+    rc = lib.pyra_range_encode(buf, n, n_symbols, out, cap)
+    if rc < 0:
+        return None
+    return bytes(memoryview(out)[:rc])
+
+
+def range_decode(data: bytes, n_symbols: int, count: int) -> list[int] | None:
+    """Decode exactly `count` symbols. Returns None when unavailable."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    if n_symbols < 1:
+        raise PyraError("model needs at least 1 symbol")
+    buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
+    out = (ctypes.c_uint32 * count)()
+    rc = lib.pyra_range_decode(buf, len(data), n_symbols, count, out)
+    if rc < 0:
+        return None
+    return list(out)
+
+
+# ------------------------------------------------- fused method decoders
+# One native call per tile stage: range decode -> RLE/LZ -> residual
+# unpacking. On ANY error the wrapper returns None so the caller re-runs
+# the pure-Python reference and raises the exact reference exception
+# (bit-exact error semantics in both modes).
+
+def decode_rle_method(data: bytes, count: int, mod: int) -> list[int] | None:
+    """METHOD_RLE residuals in one native call (None => use the reference)."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    width = (mod.bit_length() + 7) // 8
+    packed_len = count * width
+    buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
+    out = (ctypes.c_uint32 * count)()
+    detail = ctypes.c_int32(0)
+    rc = lib.pyra_decode_rle_method(buf, len(data), _TOKEN_SYMBOLS,
+                                    packed_len, width, ctypes.c_uint64(mod),
+                                    count, out, ctypes.byref(detail))
+    if rc < 0:
+        return None
+    return list(out)
+
+
+def decode_lz_method(data: bytes, count: int, mod: int) -> list[int] | None:
+    """METHOD_LZ residuals in one native call (None => use the reference)."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    width = (mod.bit_length() + 7) // 8
+    packed_len = count * width
+    max_rle_len = 2 * packed_len + 64
+    buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
+    out = (ctypes.c_uint32 * count)()
+    rle_len = ctypes.c_uint32(0)
+    detail = ctypes.c_int32(0)
+    rc = lib.pyra_decode_lz_method(buf, len(data), _TOKEN_SYMBOLS,
+                                   max_rle_len, packed_len, width,
+                                   ctypes.c_uint64(mod), count, out,
+                                   ctypes.byref(rle_len), ctypes.byref(detail))
+    if rc < 0:
+        return None
     return list(out)

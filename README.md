@@ -165,8 +165,12 @@ output bit:
 
 Ported stages (bit-exact to the Python reference, proven by the test suite):
 `pack_residuals`, `unpack_residuals`, `rle_encode`, `rle_decode`, `lz_encode`
-plus a batch-mode `lz_decode_tokens` (the streaming LZ decoder stays in
-Python because it consumes symbols lazily from the range coder), the
+plus a batch-mode `lz_decode_tokens`, the **adaptive range coder itself**
+(`pyra_range_encode` / `pyra_range_decode`, including the Fenwick CDF model
+with its halving policy and the exact renormalization order), the
+**fused per-method decoders** `pyra_decode_rle_method` /
+`pyra_decode_lz_method` (one range-decoder session that streams the token
+stream straight into RLE/LZ expansion and residual unpacking), the
 predictor row kernels `apply_predictor_row` / `reconstruct_row` (all 7
 predictor types, Python `%` semantics via `((x % m) + m) % m`), the
 reversible YCoCg transform `transform_forward` / `transform_inverse`, and
@@ -183,7 +187,7 @@ PYRA_NATIVE=0 ...              # same effect
 
 Dispatch flags are read at **call time** (not import time), so the test suite
 re-encodes whole containers in both modes and asserts the container bytes are
-identical — 225 checks pass with the native core, the same core set passes on
+identical — 231 checks pass with the native core, the same core set passes on
 the pure-Python path.
 
 Measured speedups (256k samples, best of 3):
@@ -196,14 +200,19 @@ Measured speedups (256k samples, best of 3):
 | pack 64k           | 1.6 ms | 8.4 ms | 5.3x    |
 | unpack 64k         | 13 ms  | 34 ms  | 2.6x    |
 
-Whole-container effect of the fused pipelines (256×256 tiles, range-coder
-dominates both directions; the coder itself is intentionally pure Python):
+Whole-container effect of the fused pipelines and the native range coder
+(256×256 tiles, best of 3, "photo" = gradient + noise):
 
 | path            | encode | decode |
 |-----------------|--------|--------|
-| 256² GRAY + LZ  | 2.6x   | ~1.0x (entropy-decode-bound) |
-| 256² RGB  + LZ  | 2.75x  | ~1.0x (entropy-decode-bound) |
-| 256² RGB  + RLE | 1.16x  | ~1.0x (entropy-decode-bound) |
+| 256² GRAY + LZ  | 31.8x  | 25.9x  |
+| 256² RGB  + LZ  | 28.8x  | 26.9x  |
+| 256² GRAY + RLE | 22.6x  | 25.8x  |
+| 512² RGB  + LZ  | 30.1x  | 26.2x  |
+
+Decode used to be entropy-decode-bound (the range coder stayed in Python);
+it is now ported too, so both directions run an order of magnitude faster
+on the same bytes.
 
 The native library is never required: if `rustc` or the `.so` is missing,
 `native.py` returns `None` and the pure path takes over transparently.

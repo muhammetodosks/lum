@@ -81,6 +81,9 @@ class PyraCodec:
     @staticmethod
     def _encode_raw(residuals: list[int], mod: int) -> bytes:
         """METHOD_RAW: residual symbols straight into the entropy coder."""
+        native = _native.range_encode(residuals, mod)
+        if native is not None:
+            return native
         coder = RangeEncoder(mod)
         for r in residuals:
             coder.encode_symbol(r)
@@ -89,6 +92,9 @@ class PyraCodec:
     @staticmethod
     def _encode_rle(rle_bytes: bytes) -> bytes:
         """METHOD_RLE: RLE byte stream as literal tokens + EOF terminator."""
+        native = _native.range_encode(list(rle_bytes) + [TOKEN_EOF], TOKEN_SYMBOLS)
+        if native is not None:
+            return native
         coder = RangeEncoder(TOKEN_SYMBOLS)
         for b in rle_bytes:
             coder.encode_symbol(b)
@@ -100,10 +106,15 @@ class PyraCodec:
         """METHOD_LZ: 4-byte big-endian RLE-stream-length header (so the
         decoder knows the LZ output target) + LZ77 token stream (already
         EOF-terminated)."""
+        tokens = lz_encode(rle_bytes)
+        header = [(len(rle_bytes) >> shift) & 0xFF for shift in (24, 16, 8, 0)]
+        native = _native.range_encode(header + tokens, TOKEN_SYMBOLS)
+        if native is not None:
+            return native
         coder = RangeEncoder(TOKEN_SYMBOLS)
         for shift in (24, 16, 8, 0):
             coder.encode_symbol((len(rle_bytes) >> shift) & 0xFF)
-        for t in lz_encode(rle_bytes):
+        for t in tokens:
             coder.encode_symbol(t)
         return coder.flush()
 
@@ -126,12 +137,21 @@ class PyraCodec:
         """Residual symbols from a tile byte stream for any method, with
         strict bounded-decode guards (no unbounded memory)."""
         if method == METHOD_RAW:
+            native = _native.range_decode(data, mod, count)
+            if native is not None:
+                return native
             coder = RangeDecoder(data, mod)
             return [coder.decode_symbol() for _ in range(count)]
 
         packed_len = count * ((mod.bit_length() + 7) // 8)
 
         if method == METHOD_RLE:
+            # Fused native path: range decode + RLE decode + residual unpack
+            # in one call. On any error it returns None and the reference
+            # path below re-derives the exact reference exception.
+            native = _native.decode_rle_method(data, count, mod)
+            if native is not None:
+                return native
             coder = RangeDecoder(data, TOKEN_SYMBOLS)
             # RLE cannot exceed ~2x packed size (worst-case 2-byte escapes);
             # + EOF. Each symbol read beyond that is corruption.
@@ -152,6 +172,9 @@ class PyraCodec:
             return unpack_residuals(packed, mod, count)
 
         if method == METHOD_LZ:
+            native = _native.decode_lz_method(data, count, mod)
+            if native is not None:
+                return native
             coder = RangeDecoder(data, TOKEN_SYMBOLS)
             # 4-byte big-endian length header of the RLE byte stream
             rle_len = 0

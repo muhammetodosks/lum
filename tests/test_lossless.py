@@ -775,6 +775,173 @@ def test_native_backend():
               nat_px == _tinv(rows, cs) == pxf)
 
 
+def test_range_coder():
+    """Native range coder + fused per-method decoders must be bit-identical
+    to the pure-Python reference (encoder bytes, decoder symbols, and the
+    final container bytes)."""
+    from pyra import native
+    from pyra.entropy import RangeEncoder, RangeDecoder
+    from pyra.codec import PyraCodec
+    from pyra.compress import (pack_residuals, rle_encode, lz_encode,
+                               rle_decode)
+
+    if not native.available():
+        check("range coder backend absent -> python-only mode", True)
+        return
+
+    dis = os.environ.get("PYRA_DISABLE_NATIVE")
+
+    def pure(fn, *a):
+        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        try:
+            return fn(*a)
+        finally:
+            if dis is None:
+                del os.environ["PYRA_DISABLE_NATIVE"]
+            else:
+                os.environ["PYRA_DISABLE_NATIVE"] = dis
+
+    def py_encode(symbols, n_symbols):
+        enc = RangeEncoder(n_symbols)
+        for s in symbols:
+            enc.encode_symbol(s)
+        return enc.flush()
+
+    rng = random.Random(31337)
+
+    # --- encoder: native bytes == reference bytes ----------------------
+    enc_ok = True
+    dec_ok = True
+    for n_sym in (2, 5, 17, 258, 1000, 65536):
+        for n in (0, 1, 7, 64, 1000, 20000):
+            syms = [rng.randrange(n_sym) for _ in range(n)]
+            ref = py_encode(syms, n_sym)
+            nat = native.range_encode(syms, n_sym)
+            if nat is None or nat != ref:
+                enc_ok = False
+            # decoder: native symbols == reference symbols
+            coder = RangeDecoder(ref, n_sym)
+            ref_syms = [coder.decode_symbol() for _ in range(n)]
+            nat_syms = native.range_decode(ref, n_sym, n)
+            if nat_syms is None or nat_syms != ref_syms:
+                dec_ok = False
+    check("native range_encode == pure (byte-identical)", enc_ok)
+    check("native range_decode == pure (symbol-identical)", dec_ok)
+
+    # --- fused per-method decoders == reference ------------------------
+    # The reference tail of _decode_residuals: range decode -> (RLE|LZ) ->
+    # residual unpack. Compare native fused output against the pure
+    # Python path for every color space x method combination.
+    fused_ok = True
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
+        for bd in (8, 16):
+            w, h = 29, 17
+            px = make_pixels("photo", w, h, ch, bd)
+            mod = PyraCodec._residual_mod(cs, bd)
+            offset = PyraCodec._canonical_offset(cs, bd)
+            from pyra.predictors import apply_predictor_row
+            from pyra.color import transform_pixels_forward
+            tr = transform_pixels_forward(px, cs)
+            if offset:
+                tr = [v + offset for v in tr]
+            res = []
+            prev = None
+            for y in range(h):
+                seg = tr[y * w * ch:(y + 1) * w * ch]
+                res.extend(apply_predictor_row(seg, prev, PRED_PAETH, ch, mod))
+                prev = seg
+            count = len(res)
+
+            # RAW: range-coded residuals
+            raw_bytes = pure(PyraCodec._encode_raw, res, mod)
+            nat = native.range_decode(raw_bytes, mod, count)
+            ref = pure(PyraCodec._decode_residuals, raw_bytes,
+                       METHOD_RAW, count, mod)
+            if nat is None or nat != ref or ref != res:
+                fused_ok = False
+
+            # RLE: packed + RLE + range-coded token stream
+            packed = pure(pack_residuals, res, mod)
+            rle = pure(rle_encode, packed)
+            rle_bytes = pure(PyraCodec._encode_rle, rle)
+            nat = native.decode_rle_method(rle_bytes, count, mod)
+            ref = pure(PyraCodec._decode_residuals, rle_bytes,
+                       METHOD_RLE, count, mod)
+            if nat is None or nat != ref or ref != res:
+                fused_ok = False
+
+            # LZ: packed + RLE + LZ tokens + range-coded stream
+            lz_bytes = pure(PyraCodec._encode_lz, rle)
+            nat = native.decode_lz_method(lz_bytes, count, mod)
+            ref = pure(PyraCodec._decode_residuals, lz_bytes,
+                       METHOD_LZ, count, mod)
+            if nat is None or nat != ref or ref != res:
+                fused_ok = False
+    check("native fused method decoders == pure (cs x bd x method)", fused_ok)
+
+    # --- container bytes: native == pure for every forced method -------
+    cont_ok = True
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
+        w, h = 33, 21
+        px = make_pixels("photo", w, h, ch, 8)
+        for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX, -1):
+            nat = PyraCodec.encode(px, w, h, 8, cs, PRED_PAETH, 64, method)
+            ref = pure(PyraCodec.encode, px, w, h, 8, cs, PRED_PAETH, 64,
+                       method)
+            if nat != ref:
+                cont_ok = False
+            if PyraCodec.decode(nat)[1] != px:
+                cont_ok = False
+    check("native container bytes == pure (cs x method)", cont_ok)
+
+    # --- corrupted streams: native must not crash the process ---------
+    # A damaged token stream must raise CorruptedFileError (or decode to
+    # a valid image) exactly like the pure path -- never a native crash.
+    w, h, ch = 20, 12, 3
+    px = make_pixels("photo", w, h, ch, 8)
+    base = PyraCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 64, METHOD_LZ)
+    _hdr, ctiles = PyraContainer.unpack_file(base)
+    body = ctiles[0]
+    crash_ok = True
+    rng2 = random.Random(4242)
+    for _ in range(120):
+        pos = rng2.randrange(len(body))
+        mutated = bytearray(body)
+        mutated[pos] ^= 1 << rng2.randrange(8)
+        try:
+            PyraCodec.decode_tile(bytes(mutated), w, h, CS_RGB,
+                                  PRED_PAETH, 8, METHOD_LZ)
+        except CorruptedFileError:
+            pass
+        except (ValueError, IndexError):
+            pass
+        except Exception:
+            crash_ok = False
+            break
+    check("native fused LZ decoder survives corruption", crash_ok)
+
+    # --- LZ header / length guards still raise the reference errors ---
+    def outcome(fn):
+        try:
+            fn()
+            return "ok"
+        except CorruptedFileError as e:
+            return f"cfe:{e}"
+        except Exception as e:
+            return f"{type(e).__name__}"
+
+    # implausible RLE stream length header: encode a 4-byte big-endian
+    # length of 0xFFFFFFFF (symbol 255 x 4) -- far beyond the guard.
+    enc = RangeEncoder(258)
+    for _ in range(4):
+        enc.encode_symbol(255)
+    bogus = enc.flush()
+    guard = outcome(lambda: PyraCodec._decode_residuals(
+        bogus, METHOD_LZ, 16, 256))
+    check(f"LZ implausible length guard ({guard})",
+          guard.startswith("cfe:implausible RLE stream length"))
+
+
 def main():
     print("=== PYRA lossless test suite ===")
     test_roundtrips()
@@ -791,6 +958,7 @@ def main():
     test_cli_flags_e2e()
     test_mixed_methods()
     test_native_backend()
+    test_range_coder()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")
