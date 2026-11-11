@@ -655,7 +655,7 @@ pub unsafe extern "C" fn pyra_lz_decode_tokens(
 pub unsafe extern "C" fn pyra_pipe_forward(
     vals: *const i32, n: usize, stride: usize,
     color_space: i32, offset: i64, modv: i64,
-    pred_type: i32, channels: usize, out: *mut i32,
+    pred_type: i32, channels: usize, out: *mut i32, transform: i32,
 ) -> isize {
     if channels == 0 || modv <= 0 || n % stride != 0 {
         return E_PIPE_SHAPE;
@@ -664,8 +664,10 @@ pub unsafe extern "C" fn pyra_pipe_forward(
     let out = std::slice::from_raw_parts_mut(out, n);
     let mut tmp: Vec<i32> = vec![0; n];
 
-    // 1. reversible color transform (passthrough for other spaces)
-    let is_cs = color_space == CS_RGB_V || color_space == CS_RGBA_V;
+    // 1. reversible color transform (passthrough for other spaces and for
+    //    TRANSFORM_NONE, which predicts the channels as they are)
+    let is_cs = (color_space == CS_RGB_V || color_space == CS_RGBA_V)
+        && transform == 0;
     let ch: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
     if is_cs {
         let mut i = 0usize;
@@ -734,7 +736,7 @@ pub unsafe extern "C" fn pyra_pipe_forward(
 pub unsafe extern "C" fn pyra_pipe_reconstruct(
     res: *const i32, n: usize, stride: usize,
     color_space: i32, offset: i64, modv: i64,
-    pred_type: i32, channels: usize, out: *mut i32,
+    pred_type: i32, channels: usize, out: *mut i32, transform: i32,
 ) -> isize {
     if channels == 0 || modv <= 0 || n % stride != 0 {
         return E_PIPE_SHAPE;
@@ -773,7 +775,8 @@ pub unsafe extern "C" fn pyra_pipe_reconstruct(
     }
 
     // 3. inverse color transform in place (passthrough for other spaces)
-    let is_cs = color_space == CS_RGB_V || color_space == CS_RGBA_V;
+    let is_cs = (color_space == CS_RGB_V || color_space == CS_RGBA_V)
+        && transform == 0;
     let ch: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
     if is_cs {
         let mut i = 0usize;
@@ -1268,7 +1271,7 @@ pub unsafe extern "C" fn pyra_pipe_reconstruct_into(
     res: *const i32, n: usize, stride: usize,
     color_space: i32, offset: i64, modv: i64,
     pred_type: i32, channels: usize,
-    dst: *mut i32, dst_stride: usize,
+    dst: *mut i32, dst_stride: usize, transform: i32,
 ) -> isize {
     if channels == 0 || modv <= 0 || n % stride != 0 {
         return E_PIPE_SHAPE;
@@ -1276,7 +1279,8 @@ pub unsafe extern "C" fn pyra_pipe_reconstruct_into(
     let res = std::slice::from_raw_parts(res, n);
     let rows = n / stride;
     let px = stride / channels;
-    let is_cs = color_space == CS_RGB_V || color_space == CS_RGBA_V;
+    let is_cs = (color_space == CS_RGB_V || color_space == CS_RGBA_V)
+        && transform == 0;
     let ch: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
 
     let mut cur: Vec<i32> = vec![0; stride];
@@ -1302,6 +1306,234 @@ pub unsafe extern "C" fn pyra_pipe_reconstruct_into(
         }
 
         // 2. descale + inverse color transform straight into the canvas row
+        let dst_row = std::slice::from_raw_parts_mut(dst.add(r * dst_stride), stride);
+        if is_cs {
+            let mut p = 0usize;
+            while p + ch <= stride {
+                let y = (cur[p] as i64) - offset;
+                let co = (cur[p + 1] as i64) - offset;
+                let cg = (cur[p + 2] as i64) - offset;
+                let t = y - (cg >> 1);
+                let g = cg + t;
+                let b = t - (co >> 1);
+                let rr = co + b;
+                dst_row[p] = rr as i32;
+                dst_row[p + 1] = g as i32;
+                dst_row[p + 2] = b as i32;
+                if ch == 4 {
+                    dst_row[p + 3] = (cur[p + 3] as i64 - offset) as i32;
+                }
+                p += ch;
+            }
+            while p < stride {
+                dst_row[p] = (cur[p] as i64 - offset) as i32;
+                p += 1;
+            }
+        } else {
+            let mut i = 0usize;
+            while i < stride {
+                dst_row[i] = (cur[i] as i64 - offset) as i32;
+                i += 1;
+            }
+        }
+
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    n as isize
+}
+
+/// Read the per-row predictor table (3 bits per row, MSB first).
+/// Missing bytes read as zero, exactly like the Python reference.
+unsafe fn read_filter_bits(data: &[u8], rows: usize) -> Vec<i32> {
+    let mut out: Vec<i32> = Vec::with_capacity(rows);
+    let mut acc: u32 = 0;
+    let mut nbits: u32 = 0;
+    let mut pos = 0usize;
+    for _ in 0..rows {
+        while nbits < 3 {
+            if pos >= data.len() {
+                acc <<= 3;
+                nbits += 3;
+                break;
+            }
+            acc = (acc << 8) | data[pos] as u32;
+            pos += 1;
+            nbits += 8;
+        }
+        out.push(((acc >> (nbits - 3)) & 7) as i32);
+        nbits -= 3;
+        acc &= (1u32 << nbits) - 1;
+    }
+    out
+}
+
+/// Adaptive front half: colour transform -> canonicalization -> per-row
+/// predictor selection (seven candidates scored by the modular L1 distance).
+/// Writes the residuals and the packed 3-bit-per-row predictor table.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_pipe_forward_adaptive_into(
+    vals: *const i32, n: usize, stride: usize,
+    color_space: i32, offset: i64, modv: i64,
+    channels: usize, transform: i32,
+    out_res: *mut i32, out_bits: *mut u8,
+) -> isize {
+    if channels == 0 || modv <= 0 || n % stride != 0 {
+        return E_PIPE_SHAPE;
+    }
+    let vals = std::slice::from_raw_parts(vals, n);
+    let out = std::slice::from_raw_parts_mut(out_res, n);
+    let rows = n / stride;
+    let px = stride / channels;
+    let is_cs = (color_space == CS_RGB_V || color_space == CS_RGBA_V)
+        && transform == 0;
+    let ch: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
+
+    // 1. reversible color transform
+    let mut tmp: Vec<i32> = vec![0; n];
+    if is_cs {
+        let mut i = 0usize;
+        while i + ch <= n {
+            let r = vals[i] as i64;
+            let g = vals[i + 1] as i64;
+            let b = vals[i + 2] as i64;
+            let co = r - b;
+            let t = b + (co >> 1);
+            let cg = g - t;
+            let y = t + (cg >> 1);
+            tmp[i] = y as i32;
+            tmp[i + 1] = co as i32;
+            tmp[i + 2] = cg as i32;
+            if ch == 4 {
+                tmp[i + 3] = vals[i + 3];
+            }
+            i += ch;
+        }
+        while i < n {
+            tmp[i] = vals[i];
+            i += 1;
+        }
+    } else {
+        tmp.copy_from_slice(vals);
+    }
+
+    // 2. canonicalize into the predictor domain
+    if offset != 0 {
+        for v in tmp.iter_mut() {
+            *v = (*v as i64 + offset) as i32;
+        }
+    }
+
+    // 3. per-row predictor selection
+    let mut bits: Vec<u8> = Vec::with_capacity((rows * 3 + 7) / 8);
+    let mut acc: u32 = 0;
+    let mut nbits: u32 = 0;
+    for r in 0..rows {
+        let row = &tmp[r * stride..r * stride + stride];
+        let has_prev = r > 0;
+        let prev: &[i32] = if has_prev { &tmp[(r - 1) * stride..r * stride] } else { &[] };
+
+        let mut best_score: i64 = -1;
+        let mut best_pt: i32 = 0;
+        for pt in 0..7 {
+            let mut score: i64 = 0;
+            let mut x = 0usize;
+            while x < px {
+                let base = x * channels;
+                let mut c = 0usize;
+                while c < channels {
+                    let i = base + c;
+                    let left = if x > 0 { row[i - channels] as i64 } else { 0 };
+                    let up = if has_prev { prev[i] as i64 } else { 0 };
+                    let ul = if has_prev && x > 0 { prev[i - channels] as i64 } else { 0 };
+                    let pred = pred_value(pt, left, up, ul);
+                    let rr = py_mod(row[i] as i64 - pred, modv) as i64;
+                    score += if rr <= modv - rr { rr } else { modv - rr };
+                    c += 1;
+                }
+                x += 1;
+            }
+            if best_score < 0 || score < best_score {
+                best_score = score;
+                best_pt = pt;
+            }
+        }
+
+        let mut x = 0usize;
+        while x < px {
+            let base = x * channels;
+            let mut c = 0usize;
+            while c < channels {
+                let i = base + c;
+                let left = if x > 0 { row[i - channels] as i64 } else { 0 };
+                let up = if has_prev { prev[i] as i64 } else { 0 };
+                let ul = if has_prev && x > 0 { prev[i - channels] as i64 } else { 0 };
+                let pred = pred_value(best_pt, left, up, ul);
+                out[r * stride + i] = py_mod(row[i] as i64 - pred, modv);
+                c += 1;
+            }
+            x += 1;
+        }
+
+        acc = (acc << 3) | (best_pt as u32 & 7);
+        nbits += 3;
+        if nbits >= 8 {
+            bits.push(((acc >> (nbits - 8)) & 0xFF) as u8);
+            nbits -= 8;
+            acc &= (1u32 << nbits) - 1;
+        }
+    }
+    if nbits > 0 {
+        bits.push(((acc << (8 - nbits)) & 0xFF) as u8);
+    }
+    std::ptr::copy_nonoverlapping(bits.as_ptr(), out_bits, bits.len());
+    n as isize
+}
+
+/// Adaptive back half: rebuild every row with the predictor it was encoded
+/// with -> descale -> inverse YCoCg, straight into the canvas.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_pipe_reconstruct_adaptive_into(
+    res: *const i32, n: usize, stride: usize,
+    color_space: i32, offset: i64, modv: i64,
+    channels: usize, transform: i32,
+    filter_bits: *const u8, filter_len: usize,
+    dst: *mut i32, dst_stride: usize,
+) -> isize {
+    if channels == 0 || modv <= 0 || n % stride != 0 {
+        return E_PIPE_SHAPE;
+    }
+    let res = std::slice::from_raw_parts(res, n);
+    let rows = n / stride;
+    let px = stride / channels;
+    let is_cs = (color_space == CS_RGB_V || color_space == CS_RGBA_V)
+        && transform == 0;
+    let ch: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
+
+    let bits: &[u8] = if filter_bits.is_null() { &[] } else { std::slice::from_raw_parts(filter_bits, filter_len) };
+    let preds = read_filter_bits(bits, rows);
+
+    let mut cur: Vec<i32> = vec![0; stride];
+    let mut prev: Vec<i32> = vec![0; stride];
+
+    for r in 0..rows {
+        let row = &res[r * stride..r * stride + stride];
+        let pred_type = preds[r];
+        let mut x = 0usize;
+        while x < px {
+            let base = x * channels;
+            let mut c = 0usize;
+            while c < channels {
+                let i = base + c;
+                let left = if x > 0 { cur[i - channels] as i64 } else { 0 };
+                let up = if r > 0 { prev[i] as i64 } else { 0 };
+                let ul = if r > 0 && x > 0 { prev[i - channels] as i64 } else { 0 };
+                let pred = pred_value(pred_type, left, up, ul);
+                cur[i] = py_mod(row[i] as i64 + pred, modv);
+                c += 1;
+            }
+            x += 1;
+        }
+
         let dst_row = std::slice::from_raw_parts_mut(dst.add(r * dst_stride), stride);
         if is_cs {
             let mut p = 0usize;
@@ -1470,4 +1702,224 @@ pub unsafe extern "C" fn pyra_encode_lz_method(
     syms.push(v & 0xFF);
     syms.extend_from_slice(&tokens[..n]);
     encode_symbols(&syms, TOKEN_SYMBOLS as usize, out, out_cap)
+}
+
+// --------------------------------------------------------------- planner
+
+const PRED_CANDIDATES_V: [i32; 7] = [0, 1, 2, 3, 4, 5, 6];
+const TRANSFORM_YCOCG_V: i32 = 0;
+const TRANSFORM_NONE_V: i32 = 1;
+const FILTER_GLOBAL_V: i32 = 0;
+const FILTER_ADAPTIVE_V: i32 = 1;
+
+/// In-place YCoCg on one row (alpha untouched). Passthrough for the NONE
+/// transform and for non-RGB/RGBA colour spaces.
+unsafe fn transform_row_inplace(row: &mut [i32], color_space: i32, transform: i32) {
+    if transform == TRANSFORM_NONE_V
+        || (color_space != CS_RGB_V && color_space != CS_RGBA_V) {
+        return;
+    }
+    let channels: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
+    let n = row.len();
+    let mut i = 0usize;
+    while i + channels <= n {
+        let r = row[i] as i64;
+        let g = row[i + 1] as i64;
+        let b = row[i + 2] as i64;
+        let co = r - b;
+        let t = b + (co >> 1);
+        let cg = g - t;
+        let y = t + (cg >> 1);
+        row[i] = y as i32;
+        row[i + 1] = co as i32;
+        row[i + 2] = cg as i32;
+        i += channels;
+    }
+}
+
+/// Residual row for one predictor (apply direction, Python semantics).
+unsafe fn predict_row_apply(
+    row: &[i32], prev: Option<&[i32]>, pred_type: i32, channels: usize,
+    modv: i64, out: &mut Vec<u32>,
+) {
+    out.clear();
+    let len = row.len();
+    for i in 0..len {
+        let x = i / channels;
+        let left = if x > 0 { row[i - channels] as i64 } else { 0 };
+        let up = match prev { Some(p) => p[i] as i64, None => 0 };
+        let ul = match prev {
+            Some(p) => if x > 0 { p[i - channels] as i64 } else { 0 },
+            None => 0,
+        };
+        let pred = pred_value(pred_type, left, up, ul);
+        out.push(py_mod(row[i] as i64 - pred, modv) as u32);
+    }
+}
+
+/// Pick the row predictor with the smallest modular L1 distance (ties go to
+/// the first candidate, like the Python reference).
+unsafe fn adaptive_row(
+    row: &[i32], prev: Option<&[i32]>, channels: usize, modv: i64,
+    out: &mut Vec<u32>, scratch: &mut Vec<u32>,
+) -> i32 {
+    let mut best_score: i64 = -1;
+    let mut best_pred: i32 = 0;
+    for &pt in PRED_CANDIDATES_V.iter() {
+        predict_row_apply(row, prev, pt, channels, modv, scratch);
+        let mut score: i64 = 0;
+        for &r in scratch.iter() {
+            let rr = r as i64;
+            score += if rr <= modv - rr { rr } else { modv - rr };
+        }
+        if best_score < 0 || score < best_score {
+            best_score = score;
+            best_pred = pt;
+            out.clear();
+            out.extend_from_slice(scratch);
+        }
+    }
+    best_pred
+}
+
+/// Cost of a candidate plan: the number of bytes the real range coder needs
+/// for the sampled rows.
+unsafe fn plan_cost(syms: &[u32], n_symbols: usize) -> i64 {
+    let cap = syms.len() * 4 + 128;
+    let mut buf: Vec<u8> = Vec::with_capacity(cap);
+    let r = encode_symbols(syms, n_symbols, buf.as_mut_ptr(), cap);
+    if r < 0 {
+        return i64::MAX;
+    }
+    r as i64
+}
+
+/// Choose (transform, filter_mode, pred_type) for an image.
+///
+/// The decision is taken on a spread sample of rows; every sampled row is
+/// measured with the *real* range coder (byte length), so the cost matches
+/// what the encoder will actually produce. The pure-Python reference
+/// planner uses the same rows and the same coder, so both backends always
+/// agree on the plan.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_plan(
+    pixels: *const i32, count: usize, width: usize, height: usize,
+    channels: usize, bit_depth: u32, color_space: i32, sample_rows: usize,
+    fixed_transform: i32, fixed_filter: i32, fixed_pred: i32,
+    out_plan: *mut i32,
+) -> isize {
+    if width == 0 || height == 0 || channels == 0 || sample_rows == 0 {
+        return E_PIPE_SHAPE;
+    }
+    if count < width * height * channels {
+        return E_PIPE_SHAPE;
+    }
+    let px = std::slice::from_raw_parts(pixels, count);
+    let row_len = width * channels;
+
+    let transforms: &[i32] = if fixed_transform >= 0 {
+        if fixed_transform == TRANSFORM_YCOCG_V {
+            &[TRANSFORM_YCOCG_V][..]
+        } else {
+            &[TRANSFORM_NONE_V][..]
+        }
+    } else if color_space == CS_RGB_V || color_space == CS_RGBA_V {
+        &[TRANSFORM_YCOCG_V, TRANSFORM_NONE_V][..]
+    } else {
+        &[TRANSFORM_NONE_V][..]
+    };
+
+    let rows = if height < sample_rows { height } else { sample_rows };
+
+    let mut best_cost: i64 = i64::MAX;
+    let mut best_plan: (i32, i32, i32) = (0, 0, 0);
+    let mut have = false;
+
+    for &transform in transforms.iter() {
+        let wide = (color_space == CS_RGB_V || color_space == CS_RGBA_V)
+            && transform == TRANSFORM_YCOCG_V;
+        let modv: i64 = if wide { 1i64 << (bit_depth + 3) } else { 1i64 << bit_depth };
+        let offset: i64 = if wide { modv >> 1 } else { 0 };
+        let n_symbols = modv as usize;
+
+        // transformed sample rows + their real up-context row
+        let mut trows: Vec<Vec<i32>> = Vec::with_capacity(rows);
+        let mut prevs: Vec<Vec<i32>> = Vec::with_capacity(rows);
+        for i in 0..rows {
+            let mut y = (i * height) / rows;
+            if y >= height {
+                y = height - 1;
+            }
+            let mut tr: Vec<i32> = px[y * row_len..(y + 1) * row_len].to_vec();
+            transform_row_inplace(&mut tr, color_space, transform);
+            if offset != 0 {
+                for v in tr.iter_mut() {
+                    *v += offset as i32;
+                }
+            }
+            trows.push(tr);
+            if y > 0 {
+                let mut pr: Vec<i32> = px[(y - 1) * row_len..y * row_len].to_vec();
+                transform_row_inplace(&mut pr, color_space, transform);
+                if offset != 0 {
+                    for v in pr.iter_mut() {
+                        *v += offset as i32;
+                    }
+                }
+                prevs.push(pr);
+            } else {
+                prevs.push(Vec::new());
+            }
+        }
+
+        let mut syms: Vec<u32> = Vec::with_capacity(rows * row_len);
+        let mut scratch: Vec<u32> = Vec::with_capacity(row_len);
+        let mut scratch2: Vec<u32> = Vec::with_capacity(row_len);
+
+        if fixed_filter != FILTER_ADAPTIVE_V {
+            let preds: &[i32] = if fixed_pred >= 0 {
+                &[fixed_pred][..]
+            } else {
+                &PRED_CANDIDATES_V[..]
+            };
+            for &pt in preds.iter() {
+                syms.clear();
+                for (k, tr) in trows.iter().enumerate() {
+                    let pv = if prevs[k].is_empty() { None } else { Some(prevs[k].as_slice()) };
+                    predict_row_apply(tr, pv, pt, channels, modv, &mut scratch);
+                    syms.extend_from_slice(&scratch);
+                }
+                let cost = plan_cost(&syms, n_symbols);
+                if !have || cost < best_cost {
+                    have = true;
+                    best_cost = cost;
+                    best_plan = (transform, FILTER_GLOBAL_V, pt);
+                }
+            }
+        }
+
+        if fixed_filter != FILTER_GLOBAL_V {
+            syms.clear();
+            for (k, tr) in trows.iter().enumerate() {
+                let pv = if prevs[k].is_empty() { None } else { Some(prevs[k].as_slice()) };
+                adaptive_row(tr, pv, channels, modv, &mut scratch, &mut scratch2);
+                syms.extend_from_slice(&scratch);
+            }
+            let cost = plan_cost(&syms, n_symbols);
+            if !have || cost < best_cost {
+                have = true;
+                best_cost = cost;
+                best_plan = (transform, FILTER_ADAPTIVE_V, 0);
+            }
+        }
+    }
+
+    if !have {
+        return E_PIPE_SHAPE;
+    }
+    let out = std::slice::from_raw_parts_mut(out_plan, 3);
+    out[0] = best_plan.0;
+    out[1] = best_plan.1;
+    out[2] = best_plan.2;
+    3
 }

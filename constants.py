@@ -5,7 +5,8 @@ import os
 from typing import List, Tuple, Optional, BinaryIO, Generator
 
 MAGIC = b"PYRA\r\n\x1A\n"
-VERSION = 1
+VERSION = 2
+VERSION_LEGACY = 1
 
 # Color Spaces
 CS_GRAY = 1
@@ -20,6 +21,23 @@ PRED_AVERAGE = 3
 PRED_PAETH = 4
 PRED_GRADIENT = 5
 PRED_MEDIAN = 6
+
+# Color transforms (stored in the container header)
+# TRANSFORM_YCOCG: reversible RGB->YCoCg (cross-channel decorrelation),
+#                   residual alphabet is 2^(bit_depth+3) wide.
+# TRANSFORM_NONE:  channels are predicted as-is, residual alphabet is
+#                   2^bit_depth wide (smaller alphabet -> better entropy
+#                   coding, no cross-channel decorrelation).
+TRANSFORM_YCOCG = 0
+TRANSFORM_NONE = 1
+_TRANSFORM_COUNT = 2
+
+# Row filter modes (stored in the container header)
+# FILTER_GLOBAL:    one predictor for the whole image (header pred_type)
+# FILTER_ADAPTIVE:  every row picks its own predictor; the selection is
+#                   stored per tile as 3 bits per row
+FILTER_GLOBAL = 0
+FILTER_ADAPTIVE = 1
 
 # Tile compression methods (stored in the container header)
 METHOD_RAW = 0   # residual symbols straight into the entropy coder

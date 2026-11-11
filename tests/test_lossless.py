@@ -250,11 +250,14 @@ def test_animation():
     body = anim[8:]
     # Each frame is a complete PYRA file; its length is discoverable from the
     # header: header + index_size_field + index + tiles + trailing CRC32.
-    hdr_size = struct.calcsize(">8sIIIBBBBII")
+    # v2 extends the header with two extra bytes (transform, filter_mode).
     pos = 0
     for i, frame in enumerate(frames):
+        version = struct.unpack(">I", body[pos + 8:pos + 12])[0]
+        hdr_fmt = ">8sIIIBBBBII" if version == VERSION_LEGACY else ">8sIIIBBBBIIBB"
+        hdr_size = struct.calcsize(hdr_fmt)
         magic, version, fw, fh, bd, cs, pd, mm, ts, nt = struct.unpack(
-            ">8sIIIBBBBII", body[pos:pos + hdr_size])
+            hdr_fmt, body[pos:pos + hdr_size])[:10]
         # tile offsets are absolute within this frame's file
         index_start = pos + hdr_size + 4
         last_off, last_len = struct.unpack(
@@ -552,9 +555,14 @@ def test_mixed_methods():
     check("mix iter_tiles walk-order exact", agg == expect2)
 
     # corruption: per-tile method tag byte must be 0..2
+    # The first tile body starts right after the header, the index size
+    # field and the tile index (v1 and v2 headers differ in size).
+    file_version = struct.unpack(">I", data_mix[8:12])[0]
+    hdr_size = struct.calcsize(
+        ">8sIIIBBBBII" if file_version == VERSION_LEGACY else ">8sIIIBBBBIIBB")
+    tile_data_start = hdr_size + 4 + n_tiles * 8
     for tag_val in (9, 3):   # out of range, and the MIX header id itself
         bad = bytearray(data_mix)
-        tile_data_start = 32 + 4 + n_tiles * 8      # header + index size + index
         bad[tile_data_start] = tag_val
         body_mixed = bytes(bad[:-4])
         try:
@@ -1105,6 +1113,140 @@ def test_buffer_pipeline():
             print(f"       - {f}")
 
 
+def test_v2_format():
+    """v2 container: auto colour transform, auto row filter, adaptive predictors."""
+    from pyra.constants import (TRANSFORM_YCOCG, TRANSFORM_NONE,
+                                FILTER_GLOBAL, FILTER_ADAPTIVE,
+                                VERSION, VERSION_LEGACY, MAGIC)
+
+    def pure(fn, *args, **kwargs):
+        old = os.environ.get("PYRA_DISABLE_NATIVE")
+        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if old is None:
+                os.environ.pop("PYRA_DISABLE_NATIVE", None)
+            else:
+                os.environ["PYRA_DISABLE_NATIVE"] = old
+
+    # (1) header carries the transform / filter mode
+    w, h = 40, 24
+    px = make_pixels("photo", w, h, 3, 8)
+    blob = PyraCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16, METHOD_LZ)
+    meta, tiles = PyraContainer.unpack_file(blob)
+    check("v2 container version == 2", meta["version"] == VERSION)
+    check("v2 container stores transform",
+          meta["transform"] in (TRANSFORM_YCOCG, TRANSFORM_NONE))
+    check("v2 container stores filter mode",
+          meta["filter_mode"] in (FILTER_GLOBAL, FILTER_ADAPTIVE))
+
+    # (2) every forced transform / filter combination roundtrips
+    fails = []
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
+        for bd in (8, 16):
+            for kind in ("solid", "gradient", "photo", "noise"):
+                for transform in (TRANSFORM_YCOCG, TRANSFORM_NONE):
+                    for filter_mode in (FILTER_GLOBAL, FILTER_ADAPTIVE):
+                        for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX, -1):
+                            p = make_pixels(kind, 33, 19, ch, bd)
+                            data = PyraCodec.encode(p, 33, 19, bd, cs, PRED_PAETH,
+                                                    16, method, transform, filter_mode)
+                            m, decoded = PyraCodec.decode(data)
+                            if decoded != p:
+                                fails.append(f"cs{cs} bd{bd} {kind} t{transform} f{filter_mode} m{method}")
+                                continue
+                            if m["transform"] != transform or m["filter_mode"] != filter_mode:
+                                fails.append(f"meta cs{cs} t{transform} f{filter_mode}")
+    check(f"v2 forced transform/filter roundtrip ({len(fails)} failures)", not fails)
+    if fails:
+        for f in fails[:5]:
+            print(f"       - {f}")
+
+    # (3) auto planning is deterministic and native/pure agree byte for byte
+    fails = []
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
+        for kind in ("gradient", "photo", "noise"):
+            p = make_pixels(kind, 45, 31, ch, 8)
+            a = PyraCodec.encode(p, 45, 31, 8, cs, -1, 16, -1)
+            b = PyraCodec.encode(p, 45, 31, 8, cs, -1, 16, -1)
+            ref = pure(PyraCodec.encode, p, 45, 31, 8, cs, -1, 16, -1)
+            if a != b:
+                fails.append(f"non-deterministic cs{cs} {kind}")
+            if a != ref:
+                fails.append(f"native != pure cs{cs} {kind}")
+    check(f"v2 auto plan deterministic + native == pure ({len(fails)} failures)", not fails)
+    if fails:
+        for f in fails[:5]:
+            print(f"       - {f}")
+
+    # (4) the plan really differs between the transforms on a real image
+    p = make_pixels("photo", 60, 40, 3, 8)
+    ycocg = PyraCodec.encode(p, 60, 40, 8, CS_RGB, PRED_PAETH, 32, METHOD_LZ,
+                             TRANSFORM_YCOCG, FILTER_GLOBAL)
+    none = PyraCodec.encode(p, 60, 40, 8, CS_RGB, PRED_PAETH, 32, METHOD_LZ,
+                            TRANSFORM_NONE, FILTER_GLOBAL)
+    check("v2 transform changes the encoded stream", ycocg != none)
+
+    # (5) v1 files (no transform / filter bytes) still decode
+    def pack_v1(width, height, bit_depth, color_space, pred_type, method,
+                tile_size, tile_blobs):
+        header = struct.pack(">8sIIIBBBBII", MAGIC, VERSION_LEGACY, width,
+                              height, bit_depth, color_space, pred_type, method,
+                              tile_size, len(tile_blobs))
+        index_size = len(tile_blobs) * 8
+        offset = len(header) + 4 + index_size
+        index = bytearray()
+        data = bytearray()
+        for tb in tile_blobs:
+            index += struct.pack(">II", offset, len(tb))
+            offset += len(tb)
+            data += tb
+        body = header + struct.pack(">I", len(index)) + bytes(index) + bytes(data)
+        return body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    from pyra.tile import split_into_tiles
+    fails = []
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3)):
+        w, h = 32, 24
+        p = make_pixels("photo", w, h, ch, 8)
+        tiles = split_into_tiles(p, w, h, ch, 16)
+        bodies = [PyraCodec.encode_tile(t, cs, PRED_PAETH, 8, METHOD_LZ,
+                                        TRANSFORM_YCOCG, FILTER_GLOBAL)
+                  for t in tiles]
+        legacy = pack_v1(w, h, 8, cs, PRED_PAETH, METHOD_LZ, 16, bodies)
+        m, decoded = PyraCodec.decode(legacy)
+        if decoded != p:
+            fails.append(f"v1 decode cs{cs}")
+        if m["version"] != VERSION_LEGACY or m["transform"] != TRANSFORM_YCOCG \
+                or m["filter_mode"] != FILTER_GLOBAL:
+            fails.append(f"v1 meta cs{cs}")
+    check(f"v1 legacy container still decodes ({len(fails)} failures)", not fails)
+    if fails:
+        for f in fails[:5]:
+            print(f"       - {f}")
+
+    # (6) a corrupt v2 header byte (transform / filter) is rejected
+    v2_header = struct.calcsize(">8sIIIBBBBIIBB")
+    fails = []
+    for offset in (v2_header - 2, v2_header - 1):  # transform, filter_mode
+        broken = bytearray(blob)
+        broken[offset] = 0x7F
+        body = bytes(broken[:-4])
+        broken[-4:] = struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+        try:
+            PyraContainer.unpack_file(bytes(broken))
+            fails.append(f"offset {offset} accepted")
+        except CorruptedFileError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            fails.append(f"offset {offset} -> {type(e).__name__}")
+    check(f"v2 rejects an invalid transform/filter byte ({len(fails)} failures)", not fails)
+    if fails:
+        for f in fails[:5]:
+            print(f"       - {f}")
+
+
 def main():
     print("=== PYRA lossless test suite ===")
     test_roundtrips()
@@ -1123,6 +1265,7 @@ def main():
     test_native_backend()
     test_range_coder()
     test_buffer_pipeline()
+    test_v2_format()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

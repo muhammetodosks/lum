@@ -4,10 +4,12 @@ from .codec import PyraCodec
 from .container import PyraContainer
 from .tile import split_into_tiles, Tile
 
-def encode(pixels: list[int], width: int, height: int, bit_depth: int = 8, color_space: int = CS_RGB, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1) -> bytes:
+def encode(pixels: list[int], width: int, height: int, bit_depth: int = 8, color_space: int = CS_RGB, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1, transform: int = -1, filter_mode: int = -1) -> bytes:
     """Encode raw pixels into PYRA byte format. method=-1 auto-selects the
-    compression method; otherwise forced to METHOD_*/-constants."""
-    return PyraCodec.encode(pixels, width, height, bit_depth, color_space, pred_type, tile_size, method)
+    compression method; otherwise forced to METHOD_*/-constants.
+    transform=-1 and filter_mode=-1 auto-select the colour transform and the
+    row filter mode (pred_type=-1 auto-selects the global predictor)."""
+    return PyraCodec.encode(pixels, width, height, bit_depth, color_space, pred_type, tile_size, method, transform, filter_mode)
 
 def decode(file_bytes: bytes) -> tuple[dict, list[int]]:
     """Decode PYRA byte format into metadata and raw pixels."""
@@ -44,14 +46,15 @@ def _parse_pnm(input_path: str) -> tuple[int, int, int, list[int], int, int]:
             pixels = list(struct.unpack(f">{width*height*channels}H", pixel_data))
     return magic, width, height, pixels, bit_depth, max_val
 
-def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1) -> dict:
+def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1, transform: int = -1, filter_mode: int = -1) -> dict:
     """Encode an image file (PGM P5 / PPM P6, 8- or 16-bit) into a .pyra file.
     color_space=-1 auto-detects from the PNM magic; method=-1 picks the
-    method automatically. Returns encode metadata."""
+    method automatically. transform=-1 / filter_mode=-1 pick the colour
+    transform and the row filter mode automatically. Returns encode metadata."""
     magic, width, height, pixels, bit_depth, extent_max = _parse_pnm(input_path)
     if color_space == -1:
         color_space = CS_GRAY if magic == b"P5" else CS_RGB
-    encoded = encode(pixels, width, height, bit_depth, color_space, pred_type, tile_size, method)
+    encoded = encode(pixels, width, height, bit_depth, color_space, pred_type, tile_size, method, transform, filter_mode)
     with open(output_path, "wb") as f:
         f.write(encoded)
     return {"width": width, "height": height, "bit_depth": bit_depth,
@@ -105,15 +108,12 @@ def decode_region(file_bytes: bytes, rx: int, ry: int, rw: int, rh: int) -> tupl
             # Check intersection
             if not (tx + tw <= rx or tx >= rx + rw or ty + th <= ry or ty >= ry + rh):
                 # Decode tile
-                tile_bytes = compressed_tiles[tile_idx]
-                tile_method = method
-                if method == METHOD_MIX:
-                    if not tile_bytes:
-                        raise CorruptedFileError("empty MIX tile (missing method byte)")
-                    tile_method, tile_bytes = tile_bytes[0], tile_bytes[1:]
-                    if tile_method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
-                        raise CorruptedFileError(f"invalid per-tile method {tile_method}")
-                tile_pixels = PyraCodec.decode_tile(tile_bytes, tw, th, color_space, pred_type, bit_depth, tile_method)
+                tile_method, tile_bytes, filter_bits = PyraCodec._tile_body(
+                    meta, compressed_tiles[tile_idx], th)
+                tile_pixels = PyraCodec.decode_tile(
+                    tile_bytes, tw, th, color_space, pred_type, bit_depth,
+                    tile_method, meta.get("transform", TRANSFORM_YCOCG),
+                    meta.get("filter_mode", FILTER_GLOBAL), filter_bits)
                 
                 # Copy intersecting pixels into region buffer
                 for y in range(th):
@@ -149,15 +149,12 @@ def iter_tiles(file_bytes: bytes) -> Generator[tuple[dict, list[int]], None, Non
         th = min(tile_size, height - ty)
         for tx in range(0, width, tile_size):
             tw = min(tile_size, width - tx)
-            tile_bytes = compressed_tiles[tile_idx]
-            tile_method = method
-            if method == METHOD_MIX:
-                if not tile_bytes:
-                    raise CorruptedFileError("empty MIX tile (missing method byte)")
-                tile_method, tile_bytes = tile_bytes[0], tile_bytes[1:]
-                if tile_method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
-                    raise CorruptedFileError(f"invalid per-tile method {tile_method}")
-            tile_pixels = PyraCodec.decode_tile(tile_bytes, tw, th, color_space, pred_type, bit_depth, tile_method)
+            tile_method, tile_bytes, filter_bits = PyraCodec._tile_body(
+                meta, compressed_tiles[tile_idx], th)
+            tile_pixels = PyraCodec.decode_tile(
+                tile_bytes, tw, th, color_space, pred_type, bit_depth,
+                tile_method, meta.get("transform", TRANSFORM_YCOCG),
+                meta.get("filter_mode", FILTER_GLOBAL), filter_bits)
             tile_meta = {"x": tx, "y": ty, "width": tw, "height": th}
             yield tile_meta, tile_pixels
             tile_idx += 1

@@ -68,3 +68,27 @@ def transform_pixels_inverse(pixels: list[int], color_space: int) -> list[int]:
             out[i+3] = pixels[i+3]
             
     return out
+
+
+# ---------------------------------------------------------------------------
+# Explicit-transform variants (v2 format).
+#
+# TRANSFORM_YCOCG decorrelates the colour channels, which needs a wider
+# residual alphabet (2^(bit_depth+3)). TRANSFORM_NONE predicts the channels
+# as they are: the alphabet shrinks to 2^bit_depth, which usually codes
+# better because the entropy coder sees a much denser symbol distribution.
+# The encoder picks whichever wins by measuring both.
+# ---------------------------------------------------------------------------
+
+def transform_pixels_forward_ex(pixels: list[int], color_space: int, transform: int) -> list[int]:
+    """Forward transform with an explicit transform selector."""
+    if transform == TRANSFORM_NONE:
+        return list(pixels)
+    return transform_pixels_forward(pixels, color_space)
+
+
+def transform_pixels_inverse_ex(pixels: list[int], color_space: int, transform: int) -> list[int]:
+    """Inverse transform with an explicit transform selector."""
+    if transform == TRANSFORM_NONE:
+        return list(pixels)
+    return transform_pixels_inverse(pixels, color_space)

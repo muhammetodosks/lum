@@ -9,6 +9,8 @@ from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
                         PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE,
                         PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN,
                         METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX,
+                        TRANSFORM_YCOCG, TRANSFORM_NONE,
+                        FILTER_GLOBAL, FILTER_ADAPTIVE,
                         PyraError, CorruptedFileError)
 from .pngbench import encode_png
 
@@ -19,10 +21,14 @@ _PRED_NAMES = {
     PRED_GRADIENT: "gradient", PRED_MEDIAN: "median",
 }
 _CS_NAMES = {CS_GRAY: "gray", CS_RGB: "rgb", CS_RGBA: "rgba"}
+_TRANSFORM_NAMES = {TRANSFORM_YCOCG: "ycocg", TRANSFORM_NONE: "none"}
+_FILTER_NAMES = {FILTER_GLOBAL: "global", FILTER_ADAPTIVE: "adaptive"}
 
 _PRED_BY_NAME = {v: k for k, v in _PRED_NAMES.items()}
 _METHOD_BY_NAME = {v: k for k, v in _METHOD_NAMES.items()}
 _CS_BY_NAME = {v: k for k, v in _CS_NAMES.items()}
+_TRANSFORM_BY_NAME = {v: k for k, v in _TRANSFORM_NAMES.items()}
+_FILTER_BY_NAME = {v: k for k, v in _FILTER_NAMES.items()}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -33,7 +39,9 @@ def _build_parser() -> argparse.ArgumentParser:
     e.add_argument("input")
     e.add_argument("output")
     e.add_argument("--method", choices=["auto", "raw", "rle", "lz", "mix"], default="auto")
-    e.add_argument("--predictor", choices=list(_PRED_BY_NAME), default="paeth")
+    e.add_argument("--predictor", choices=["auto"] + list(_PRED_BY_NAME), default="auto")
+    e.add_argument("--transform", choices=["auto"] + list(_TRANSFORM_BY_NAME), default="auto")
+    e.add_argument("--filter", choices=["auto"] + list(_FILTER_BY_NAME), default="auto")
     e.add_argument("--tile", type=int, default=256)
     e.add_argument("--colorspace", choices=["auto", "gray", "rgb", "rgba"], default="auto")
 
@@ -50,7 +58,9 @@ def _build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("benchmark", help="encode/decode timings and PNG size comparison")
     b.add_argument("input")
     b.add_argument("--method", choices=["auto", "raw", "rle", "lz", "mix"], default="auto")
-    b.add_argument("--predictor", choices=list(_PRED_BY_NAME), default="paeth")
+    b.add_argument("--predictor", choices=["auto"] + list(_PRED_BY_NAME), default="auto")
+    b.add_argument("--transform", choices=["auto"] + list(_TRANSFORM_BY_NAME), default="auto")
+    b.add_argument("--filter", choices=["auto"] + list(_FILTER_BY_NAME), default="auto")
     b.add_argument("--tile", type=int, default=256)
     return p
 
@@ -67,6 +77,8 @@ def _inspect(input_path: str) -> None:
     method_name = _METHOD_NAMES.get(meta["method"], str(meta["method"]))
     print(f"  color_space: {cs_name}")
     print(f"  predictor: {pred_name}")
+    print(f"  transform: {_TRANSFORM_NAMES.get(meta.get('transform'), meta.get('transform'))}")
+    print(f"  filter: {_FILTER_NAMES.get(meta.get('filter_mode'), meta.get('filter_mode'))}")
     print(f"  method: {method_name}")
     print(f"  tile_size: {meta['tile_size']}")
     print(f"  num_tiles: {len(tiles)}")
@@ -88,13 +100,16 @@ def _benchmark(args) -> int:
     t_png = time.perf_counter() - t0
 
     method = _METHOD_BY_NAME.get(args.method, -1)  # "auto" -> -1
-    pred = _PRED_BY_NAME[args.predictor]
+    pred = _PRED_BY_NAME.get(args.predictor, -1)  # "auto" -> -1
+    transform = _TRANSFORM_BY_NAME.get(args.transform, -1)
+    filter_mode = _FILTER_BY_NAME.get(args.filter, -1)
 
     with tempfile.NamedTemporaryFile(suffix=".pyra") as tmp_pyra, \
          tempfile.NamedTemporaryFile(suffix=".ppm" if magic == b"P6" else ".pgm") as tmp_out:
         t0 = time.perf_counter()
         encode_file(args.input, tmp_pyra.name, color_space=color_space,
-                    pred_type=pred, tile_size=args.tile, method=method)
+                    pred_type=pred, tile_size=args.tile, method=method,
+                    transform=transform, filter_mode=filter_mode)
         t_enc = time.perf_counter() - t0
 
         with open(tmp_pyra.name, "rb") as f:
@@ -137,16 +152,21 @@ def main(argv=None) -> int:
     try:
         if args.cmd == "encode":
             method = _METHOD_BY_NAME.get(args.method, -1)  # "auto" -> -1
-            pred = _PRED_BY_NAME[args.predictor]
+            pred = _PRED_BY_NAME.get(args.predictor, -1)  # "auto" -> -1
+            transform = _TRANSFORM_BY_NAME.get(args.transform, -1)
+            filter_mode = _FILTER_BY_NAME.get(args.filter, -1)
             cs = _CS_BY_NAME.get(args.colorspace, -1)
             print(f"Encoding {args.input} -> {args.output}...")
             encode_file(args.input, args.output, color_space=cs,
-                        pred_type=pred, tile_size=args.tile, method=method)
+                        pred_type=pred, tile_size=args.tile, method=method,
+                        transform=transform, filter_mode=filter_mode)
             with open(args.output, "rb") as f:
                 out_bytes = f.read()
             stored, _ = PyraContainer.unpack_file(out_bytes)
             print(f"  size: {len(out_bytes)} bytes, "
                   f"method: {_METHOD_NAMES.get(stored['method'], stored['method'])}, "
+                  f"transform: {_TRANSFORM_NAMES.get(stored.get('transform'), stored.get('transform'))}, "
+                  f"filter: {_FILTER_NAMES.get(stored.get('filter_mode'), stored.get('filter_mode'))}, "
                   f"tiles: {stored['num_tiles']}")
             print("Done.")
             return 0

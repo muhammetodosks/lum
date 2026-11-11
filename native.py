@@ -155,11 +155,11 @@ def _load():
             lib.pyra_pipe_forward.restype = _isize
             lib.pyra_pipe_forward.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
-                _i32, _sz, ctypes.POINTER(_i32)]
+                _i32, _sz, ctypes.POINTER(_i32), _i32]
             lib.pyra_pipe_reconstruct.restype = _isize
             lib.pyra_pipe_reconstruct.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
-                _i32, _sz, ctypes.POINTER(_i32)]
+                _i32, _sz, ctypes.POINTER(_i32), _i32]
             lib.pyra_range_encode.restype = _isize
             lib.pyra_range_encode.argtypes = [
                 ctypes.POINTER(_u32), _sz, _sz,
@@ -184,7 +184,7 @@ def _load():
             lib.pyra_pipe_reconstruct_into.restype = _isize
             lib.pyra_pipe_reconstruct_into.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
-                _i32, _sz, ctypes.POINTER(_i32), _sz]
+                _i32, _sz, ctypes.POINTER(_i32), _sz, _i32]
             lib.pyra_encode_raw_method.restype = _isize
             lib.pyra_encode_raw_method.argtypes = [
                 ctypes.POINTER(_i32), _sz, _u64,
@@ -197,6 +197,19 @@ def _load():
             lib.pyra_encode_lz_method.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz,
                 ctypes.POINTER(ctypes.c_ubyte), _sz]
+            lib.pyra_plan.restype = _isize
+            lib.pyra_plan.argtypes = [
+                ctypes.POINTER(_i32), _sz, _sz, _sz, _sz, ctypes.c_uint32,
+                _i32, _sz, _i32, _i32, _i32, ctypes.POINTER(_i32)]
+            lib.pyra_pipe_forward_adaptive_into.restype = _isize
+            lib.pyra_pipe_forward_adaptive_into.argtypes = [
+                ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
+                _sz, _i32, ctypes.POINTER(_i32), ctypes.POINTER(ctypes.c_ubyte)]
+            lib.pyra_pipe_reconstruct_adaptive_into.restype = _isize
+            lib.pyra_pipe_reconstruct_adaptive_into.argtypes = [
+                ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
+                _sz, _i32, ctypes.POINTER(ctypes.c_ubyte), _sz,
+                ctypes.POINTER(_i32), _sz]
             _lib = lib
         except OSError:
             _lib = None
@@ -395,7 +408,7 @@ def transform_inverse(pixels: list[int], color_space: int) -> list[int] | None:
 
 def pipe_residuals(data: list[int], stride: int, offset: int, mod: int,
                    pred_type: int, channels: int,
-                   color_space: int) -> list[int] | None:
+                   color_space: int, transform: int = 0) -> list[int] | None:
     lib = _load()
     if lib is None or not enabled():
         return None
@@ -408,7 +421,7 @@ def pipe_residuals(data: list[int], stride: int, offset: int, mod: int,
         return None
     out = (ctypes.c_int32 * n)()
     rc = lib.pyra_pipe_forward(buf, n, stride, color_space, offset, mod,
-                               pred_type, channels, out)
+                               pred_type, channels, out, transform)
     if rc < 0:
         if rc == _E_PIPE_SHAPE:
             return None
@@ -418,7 +431,7 @@ def pipe_residuals(data: list[int], stride: int, offset: int, mod: int,
 
 def pipe_reconstruct(residuals: list[int], stride: int, offset: int, mod: int,
                      pred_type: int, channels: int,
-                     color_space: int) -> list[int] | None:
+                     color_space: int, transform: int = 0) -> list[int] | None:
     lib = _load()
     if lib is None or not enabled():
         return None
@@ -431,7 +444,7 @@ def pipe_reconstruct(residuals: list[int], stride: int, offset: int, mod: int,
         return None
     out = (ctypes.c_int32 * n)()
     rc = lib.pyra_pipe_reconstruct(buf, n, stride, color_space, offset, mod,
-                                   pred_type, channels, out)
+                                   pred_type, channels, out, transform)
     if rc < 0:
         if rc == _E_PIPE_SHAPE:
             return None
@@ -556,7 +569,8 @@ def extract_tile(src_buf, src_stride: int, x: int, y: int, tw: int, th: int,
 
 def pipe_reconstruct_into(res_buf, stride: int, offset: int, mod: int,
                           pred_type: int, channels: int, color_space: int,
-                          dst_buf, dst_offset: int, dst_stride: int) -> bool:
+                          dst_buf, dst_offset: int, dst_stride: int,
+                          transform: int = 0) -> bool:
     """Reconstruct a tile straight into the canvas buffer at dst_offset."""
     lib = _load()
     if lib is None or not enabled():
@@ -572,7 +586,7 @@ def pipe_reconstruct_into(res_buf, stride: int, offset: int, mod: int,
                           ctypes.POINTER(ctypes.c_int32))
     rc = lib.pyra_pipe_reconstruct_into(
         res_view, n, stride, color_space, offset, mod, pred_type, channels,
-        dst_ptr, dst_stride)
+        dst_ptr, dst_stride, transform)
     return rc >= 0
 
 
@@ -692,7 +706,7 @@ def _enc_cap(count: int, n_symbols: int) -> int:
 
 def pipe_forward_into(src_buf, stride: int, offset: int, mod: int,
                       pred_type: int, channels: int, color_space: int,
-                      out_buf) -> bool:
+                      out_buf, transform: int = 0) -> bool:
     """Color transform + canonicalization + prediction, buffer in / out."""
     lib = _load()
     if lib is None or not enabled():
@@ -705,7 +719,53 @@ def pipe_forward_into(src_buf, stride: int, offset: int, mod: int,
     if n != len(out_buf) or n % stride:
         return False
     rc = lib.pyra_pipe_forward(src_view, n, stride, color_space, offset, mod,
-                               pred_type, channels, out_view)
+                               pred_type, channels, out_view, transform)
+    return rc >= 0
+
+
+def pipe_forward_adaptive_into(src_buf, stride: int, offset: int, mod: int,
+                                channels: int, color_space: int, res_buf,
+                                bits_buf, transform: int = 0) -> bool:
+    """Adaptive front half: transform + per-row predictor selection."""
+    lib = _load()
+    if lib is None or not enabled():
+        return False
+    src_view = _view(src_buf)
+    out_view = _view(res_buf)
+    if src_view is None or out_view is None:
+        return False
+    n = len(src_buf)
+    if n != len(res_buf) or n % stride:
+        return False
+    bits = (ctypes.c_ubyte * max(len(bits_buf), 1)).from_buffer(bits_buf)
+    rc = lib.pyra_pipe_forward_adaptive_into(
+        src_view, n, stride, color_space, offset, mod, channels, transform,
+        out_view, bits)
+    return rc >= 0
+
+
+def pipe_reconstruct_adaptive_into(res_buf, stride: int, offset: int,
+                                   mod: int, channels: int, color_space: int,
+                                   filter_bits: bytes, dst_buf, dst_offset: int,
+                                   dst_stride: int, transform: int = 0) -> bool:
+    """Adaptive back half: rebuild rows into the canvas."""
+    lib = _load()
+    if lib is None or not enabled():
+        return False
+    res_view = _view(res_buf)
+    dst_view = _view(dst_buf)
+    if res_view is None or dst_view is None:
+        return False
+    n = len(res_buf)
+    if n % stride:
+        return False
+    bits = (ctypes.c_ubyte * max(len(filter_bits), 1)).from_buffer_copy(
+        filter_bits or b"\x00")
+    dst_ptr = ctypes.cast(ctypes.addressof(dst_view) + dst_offset * 4,
+                          ctypes.POINTER(ctypes.c_int32))
+    rc = lib.pyra_pipe_reconstruct_adaptive_into(
+        res_view, n, stride, color_space, offset, mod, channels, transform,
+        bits, len(filter_bits), dst_ptr, dst_stride)
     return rc >= 0
 
 
@@ -737,10 +797,102 @@ def rle_encode_bytes(data: bytes) -> bytes | None:
     return bytes(memoryview(out)[:rc])
 
 
+def plan(pixels: list[int], width: int, height: int, channels: int,
+         bit_depth: int, color_space: int, sample_rows: int,
+         fixed_transform: int = -1, fixed_filter: int = -1,
+         fixed_pred: int = -1) -> tuple[int, int, int] | None:
+    """Pick (transform, filter_mode, pred_type) for an image.
+
+    The native planner measures every candidate with the real range coder on
+    a spread sample of rows, exactly like the pure-Python reference planner,
+    so both backends produce the same plan (and therefore the same bytes).
+    Returns None when the backend is unavailable."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    count = width * height * channels
+    if count <= 0 or len(pixels) < count:
+        return None
+    try:
+        px_buf = _array("i", pixels[:count])
+        out_buf = _array("i", bytes(12))
+    except (OverflowError, TypeError, MemoryError):
+        return None
+    px_ptr = ctypes.cast(px_buf.buffer_info()[0],
+                         ctypes.POINTER(ctypes.c_int32))
+    out_ptr = ctypes.cast(out_buf.buffer_info()[0],
+                          ctypes.POINTER(ctypes.c_int32))
+    try:
+        rc = lib.pyra_plan(px_ptr, count, width, height, channels,
+                           bit_depth, color_space, sample_rows,
+                           fixed_transform, fixed_filter, fixed_pred,
+                           out_ptr)
+    except (ctypes.ArgumentError, ValueError, OverflowError):
+        return None
+    if rc != 3:
+        return None
+    return (out_buf[0], out_buf[1], out_buf[2])
+
+
+def tile_candidates_adaptive(canvas, src_stride: int, x: int, y: int, tw: int,
+                             th: int, channels: int, offset: int, mod: int,
+                             color_space: int,
+                             methods=(METHOD_RAW, METHOD_RLE, METHOD_LZ),
+                             transform: int = 0):
+    """Method candidates for one tile in adaptive row-filter mode.
+
+    Every candidate carries the leading per-row predictor table, exactly like
+    the pure-Python reference does, so the method selection compares the same
+    sizes. Returns (candidates, filter_bits) or None."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    count = tw * th * channels
+    nbits = (th * 3 + 7) // 8
+    try:
+        tile_buf = _array("i", bytes(4 * count))
+        res_buf = _array("i", bytes(4 * count))
+        bits_buf = _array("B", bytes(nbits + 1))
+    except (OverflowError, TypeError, MemoryError):
+        return None
+    if not extract_tile(canvas, src_stride, x, y, tw, th, channels, tile_buf):
+        return None
+    if not pipe_forward_adaptive_into(tile_buf, tw * channels, offset, mod,
+                                      channels, color_space, res_buf, bits_buf,
+                                      transform):
+        return None
+    prefix = bytes(memoryview(bits_buf)[:nbits])
+    out = {}
+    if METHOD_RAW in methods:
+        raw = encode_raw_method(res_buf, mod)
+        if raw is None:
+            return None
+        out[METHOD_RAW] = prefix + raw
+    if METHOD_RLE in methods or METHOD_LZ in methods:
+        packed = pack_residuals_buf(res_buf, mod)
+        if packed is None:
+            return None
+        rle = rle_encode_bytes(packed)
+        if rle is None:
+            return None
+        if METHOD_RLE in methods:
+            rle_out = encode_rle_method(rle)
+            if rle_out is None:
+                return None
+            out[METHOD_RLE] = prefix + rle_out
+        if METHOD_LZ in methods:
+            lz_out = encode_lz_method(rle)
+            if lz_out is None:
+                return None
+            out[METHOD_LZ] = prefix + lz_out
+    return out, prefix
+
+
 def tile_candidates(canvas, src_stride: int, x: int, y: int, tw: int,
                      th: int, channels: int, offset: int, mod: int,
                      pred_type: int, color_space: int,
-                     methods=(METHOD_RAW, METHOD_RLE, METHOD_LZ)) -> dict | None:
+                     methods=(METHOD_RAW, METHOD_RLE, METHOD_LZ),
+                     transform: int = 0) -> dict | None:
     """Method candidates for one tile, computed in native code.
 
     Only the requested methods are encoded (a forced method must not pay
@@ -759,7 +911,7 @@ def tile_candidates(canvas, src_stride: int, x: int, y: int, tw: int,
     if not extract_tile(canvas, src_stride, x, y, tw, th, channels, tile_buf):
         return None
     if not pipe_forward_into(tile_buf, tw * channels, offset, mod, pred_type,
-                             channels, color_space, res_buf):
+                             channels, color_space, res_buf, transform):
         return None
     out = {}
     if METHOD_RAW in methods:

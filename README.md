@@ -17,13 +17,16 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | Feature | Status | Proof |
 |---------|--------|-------|
 | Magic `PYRA\r\n\x1A\n` | ✅ | Byte-exact, 8B, text-translation-safe control chars |
-| Lossless pipeline | ✅ | `test_lossless.py` 158 checks |
+| Lossless pipeline | ✅ | `test_lossless.py` 245 checks |
 | Deterministic encoder | ✅ | Same input → identical bytes |
 | Unsafe-input fuzz | ✅ | 200 RLE / 100 LZ / 80 pipeline / 150 corruption trials, 0 leaks |
 | CRC32 integrity | ✅ | verify command + decoder |
 | decode_region (ROI) | ✅ | Only tiles touching the region are decoded |
 | Multi-predictor engine | ✅ | 7 reversible predictors |
 | Per-file best method select | ✅ | Encodes all 3 methods per tile, keeps cheapest globally |
+| Auto colour transform (v2) | ✅ | YCoCg vs none, measured with the real coder |
+| Auto row filter (v2) | ✅ | One predictor per row, 3 bits/row in the tile body |
+| Backward compatibility | ✅ | v1 containers still decode |
 | SecurityError / CorruptedFileError | ✅ | Explicit typed errors |
 | 16-bit depth | ✅ | Full-pixel domain covered |
 | Animation container | ✅ | Frame count + fps header |
@@ -34,14 +37,19 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 ```
 Pixel
   │
-  ├─▶ 1. Color Transform     YCoCg — reversible integer RGB/RGBA→YCoCg; GRAY passthrough
+  ├─▶ 1. Color Transform     YCoCg (reversible) or none — chosen automatically
   ├─▶ 2. Tile                images split into tile_size × tile_size blocks
   ├─▶ 3. Predictor           residuals: NONE/LEFT/UP/AVERAGE/PAETH/GRADIENT/MEDIAN
+  │                          one predictor for the whole image, or one per row
   ├─▶ 4. Residual            exact integer residuals, modular alphabet (res+pred) % mod
   ├─▶ 5. RLE                 escape-coded run-length over residual bytes
   ├─▶ 6. LZ                  LZ77 with 3-byte hash buckets, self-overlap allowed
   └─▶ 7. Entropy             adaptive range coder (Fenwick-tree adaptive model)
 ```
+
+Stages 1 and 3 are **planned** before the encoding starts: the encoder
+measures the alternatives with the real range coder and keeps the cheapest
+one. See [Automatic planning](#automatic-planning-v2).
 
 ### Canonicalization detail (RGB/RGBA)
 
@@ -55,6 +63,60 @@ offset = mod >> 1            # RGB/RGBA only
 
 Decode side: subtract the offset, then invert the color transform. Bit-exact roundtrip verified for RGB/RGBA/GRAY × 8/16-bit × all 7 predictors.
 
+With `transform = none` the pixels are predicted as they are: the modular
+alphabet shrinks to `1 << bit_depth` (instead of `1 << (bit_depth + 3)` for
+YCoCg) and no offset is needed. A narrower alphabet means a denser symbol
+distribution and better entropy coding — for most photographs the plain
+transform wins, which is why the encoder now measures both.
+
+## Automatic planning (v2)
+
+Before encoding, the codec picks three things:
+
+| Choice | Options | How it is decided |
+|--------|---------|-------------------|
+| `transform` | YCoCg, none | measured with the real range coder on a sample of rows |
+| `filter_mode` | global, adaptive | same measurement |
+| `pred_type` | 7 predictors | same measurement (global mode only) |
+
+The measurement is deliberately **not** an entropy estimate. The ideal code
+length of the residual histogram is biased towards the wider YCoCg alphabet
+and picks the wrong transform (measured: 1–6 % off on real photos, and it
+chose the worse predictor). Instead the planner encodes the sample residuals
+with the actual range coder and compares the resulting byte counts.
+
+The sample is 8 rows spread across the whole image
+(`idx[i] = min(h-1, i*h/8)`) and each sampled row is predicted against its
+**real** previous row, so the "up" predictor sees the context it would see
+during the real encode. The decision is therefore deterministic, and the
+native (Rust) and the pure-Python planner always agree — the container bytes
+are identical in both modes.
+
+**Adaptive row filters.** In adaptive mode every row chooses its own
+predictor from the same seven, scored by the modular L1 distance
+`min(r, mod - r)` (ties go to the earlier candidate). The selection is
+stored per tile as 3 bits per row, in front of the compressed stream:
+
+```
+tile body (adaptive) = [method byte (MIX only)][row filter table][stream]
+```
+
+## Compression ratio (real photos, 640 px, 8-bit RGB)
+
+| Image | raw | PYRA v1 | **PYRA v2** | PNG (zlib) | v2 vs PNG |
+|-------|-----|---------|-------------|------------|----------|
+| Clouds | 691 200 | 226 227 (3.06x) | **210 553 (3.28x)** | 238 846 (2.89x) | −11.8 % |
+| Monument Valley | 687 360 | 178 485 (3.85x) | **166 910 (4.12x)** | 142 754 (4.81x) | +16.9 % |
+| Fuji-san | 689 280 | 219 158 (3.15x) | **204 653 (3.37x)** | 215 432 (3.20x) | −5.0 % |
+| Rainbow | 817 920 | 281 869 (2.90x) | **244 797 (3.34x)** | 240 207 (3.41x) | +1.9 % |
+| Numbat | 691 200 | 109 295 (6.32x) | **96 415 (7.17x)** | 91 272 (7.57x) | +5.6 % |
+| **total** | 3 576 960 | 1 015 034 (3.52x) | **923 328 (3.87x)** | 928 511 (3.85x) | **−0.6 %** |
+
+v2 is **9 % smaller than v1** and, on this set, ends up level with PNG — while
+staying dependency-free and fully deterministic. Every byte is still
+lossless: the decoded pixels are identical to the input (checked on every
+measurement).
+
 ## Compression Methods (one global per file, in the container header)
 
 | ID | Name | Stage combination |
@@ -66,12 +128,12 @@ Decode side: subtract the offset, then invert the color transform. Bit-exact rou
 
 The encoder runs all 3 candidates per tile, sums the sizes, and picks the single method that minimizes the total (tie → lower method ID → deterministic). With `mix`, every tile independently stores whichever method wins for it — mixed-content images (solid areas + noise areas) compress substantially better than any single global method.
 
-## Container Layout
+## Container Layout (v2)
 
 ```
 ┌──────────────────────────────────────────────┐
 │ magic            8B   "PYRA\r\n\x1A\n"       │
-│ version          I    4B   (1)               │
+│ version          I    4B   (2)               │
 │ width            I    4B                     │
 │ height           I    4B                     │
 │ bit_depth        B    1B  (8 or 16)          │
@@ -80,6 +142,8 @@ The encoder runs all 3 candidates per tile, sums the sizes, and picks the single
 │ method           B    1B  (0=RAW 1=RLE 2=LZ 3=MIX) │
 │ tile_size        I    4B                     │
 │ num_tiles        I    4B                     │
+│ transform        B    1B  (0=YCOCG 1=NONE)   │
+│ filter_mode      B    1B  (0=GLOBAL 1=ADAPTIVE) │
 ├──────────────────────────────────────────────┤
 │ index_size       I    4B                     │
 │ tile index       num_tiles × (offset I, len I)  (8B each) │
@@ -90,7 +154,12 @@ The encoder runs all 3 candidates per tile, sums the sizes, and picks the single
 └──────────────────────────────────────────────┘
 ```
 
-Header format string: `">8sIIIBBBBII"` — 32 bytes.
+Header format string: `">8sIIIBBBBIIBB"` — 34 bytes.
+
+**v1 files still load.** Version 1 used the 32-byte header `">8sIIIBBBBII"` with
+no transform/filter bytes; such files are read as `transform = YCOCG`,
+`filter_mode = GLOBAL`, which is exactly how they were encoded. Writing v1 is
+no longer offered, reading it is.
 
 ## Security Limits and Fuzz Properties
 
@@ -121,7 +190,9 @@ python3 -m pyra.cli <command> [args]
 # Encoding with options
 python3 -m pyra.cli encode in.ppm out.pyra \
     --method auto|raw|rle|lz|mix \
-    --predictor none|left|up|average|paeth|gradient|median \
+    --predictor auto|none|left|up|average|paeth|gradient|median \
+    --transform auto|ycocg|none \
+    --filter auto|global|adaptive \
     --tile 256 --colorspace auto|gray|rgb|rgba
 
 python3 -m pyra.cli decode out.pyra restored.ppm
@@ -129,6 +200,9 @@ python3 -m pyra.cli inspect out.pyra
 python3 -m pyra.cli verify out.pyra
 python3 -m pyra.cli benchmark in.ppm     # PYRA vs PNG comparison (same pixels)
 ```
+
+`auto` (the default everywhere) lets the codec measure the alternatives and
+pick the cheapest one; the forced values reproduce the v1 behaviour exactly.
 
 Example run (96×64 8-bit RGB synthetic image):
 
@@ -152,15 +226,17 @@ For photographic-ish images (noise + gradients) PYRA gets closer:
 
 ## Optional Rust Core (native hot paths)
 
-PYRA ships a pure-Python codec that is **complete on its own** — the optional Rust
-backend only accelerates the byte-heavy hot paths without changing a single
-output bit:
+PYRA ships a pure-Python codec that is **complete on its own** — the optional
+Rust and C++ backends only accelerate the byte-heavy hot paths without
+changing a single output bit:
 
 | Component | Files | Notes |
 |-----------|-------|-------|
 | `rust/pyra_core.rs` | 1 | std-only cdylib, no external crates |
-| `scripts/build_native.sh` | 1 | `rustc --edition 2021 -O --crate-type cdylib` |
+| `cpp/pyra_fast.cpp` | 1 | optional C++ helper (adaptive row filters) |
+| `scripts/build_native.sh` | 1 | `rustc --edition 2021 -O --crate-type cdylib` (+ g++ if present) |
 | `native.py` | 1 | stdlib `ctypes` loader, runtime dispatch flags |
+| `fast.py` | 1 | stdlib `ctypes` loader for the optional C++ helper |
 | `compress.py` dispatch | — | `None`-output contract → automatic pure fallback |
 
 Ported stages (bit-exact to the Python reference, proven by the test suite):
@@ -171,13 +247,21 @@ with its halving policy and the exact renormalization order), the
 **fused per-method decoders** `pyra_decode_rle_method` /
 `pyra_decode_lz_method` (one range-decoder session that streams the token
 stream straight into RLE/LZ expansion and residual unpacking), the
-predictor row kernels `apply_predictor_row` / `reconstruct_row` (all 7
-predictor types, Python `%` semantics via `((x % m) + m) % m`), the
-reversible YCoCg transform `transform_forward` / `transform_inverse`, and
-two **fused pipelines** in the same spirit as `PyraCodec._residual_stream`
-and the decode tail: `pipe_forward` (color transform → canonicalization →
-per-row prediction, one buffer conversion per call) and `pipe_reconstruct`
-(row reconstruction → descaling → inverse YCoCg).
+**planner** `pyra_plan` (measures the transform / filter / predictor
+candidates with the real coder on the same spread sample as the Python
+reference), the predictor row kernels `apply_predictor_row` /
+`reconstruct_row` (all 7 predictor types, Python `%` semantics via
+`((x % m) + m) % m`), the reversible YCoCg transform `transform_forward` /
+`transform_inverse`, and two **fused pipelines** in the same spirit as
+`PyraCodec._residual_stream` and the decode tail: `pipe_forward` (color
+transform → canonicalization → per-row prediction, one buffer conversion per
+call) and `pipe_reconstruct` (row reconstruction → descaling → inverse
+YCoCg).
+
+The v2 stages are native too: `pipe_forward_adaptive_into` /
+`pipe_reconstruct_adaptive_into` run the whole per-row predictor selection
+(7 candidates per row, modular L1 score) and the matching reconstruction,
+including the 3-bit-per-row filter table.
 
 On top of that the whole-image codec runs a **zero-copy buffer pipeline**:
 the pixel canvas lives in a single `array('i')` buffer and the native core
@@ -197,7 +281,7 @@ PYRA_NATIVE=0 ...              # same effect
 
 Dispatch flags are read at **call time** (not import time), so the test suite
 re-encodes whole containers in both modes and asserts the container bytes are
-identical — 237 checks pass with the native core, the same core set passes on
+identical — 245 checks pass with the native core, the same core set passes on
 the pure-Python path.
 
 Measured speedups (256k samples, best of 3):
@@ -211,20 +295,24 @@ Measured speedups (256k samples, best of 3):
 | unpack 64k         | 13 ms  | 34 ms  | 2.6x    |
 
 Whole-container effect of the native core (256×256 tiles, best of 3,
-"photo" = gradient + noise; the canvas stays in one buffer end to end):
+v2 format with the automatic planner enabled; the canvas stays in one buffer
+end to end):
 
 | path            | encode | decode |
 |-----------------|--------|--------|
-| 256² GRAY + LZ  | 66.3x  | 65.3x  |
-| 256² RGB  + LZ  | 61.9x  | 67.5x  |
-| 256² RGB  + RLE | 41.6x  | 68.2x  |
-| 256² RGB  + RAW | 40.3x  | 62.6x  |
-| 256² RGBA + LZ  | 63.7x  | 68.2x  |
-| 256² RGBA + RLE | 44.6x  | 67.5x  |
-| 512² RGB  + LZ  | 62.8x  | 68.1x  |
+| 256² GRAY + RAW | 32.0x  | 60.6x  |
+| 256² GRAY + RLE | 42.2x  | 72.9x  |
+| 256² GRAY + LZ  | 58.3x  | 70.6x  |
+| 256² RGB  + RAW | 36.2x  | 54.8x  |
+| 256² RGB  + RLE | 38.8x  | 68.2x  |
+| 256² RGB  + LZ  | 57.5x  | 71.8x  |
+| 256² RGBA + RAW | 35.5x  | 61.5x  |
+| 256² RGBA + RLE | 40.1x  | 73.4x  |
+| 256² RGBA + LZ  | 61.3x  | 74.8x  |
+| 512² RGB  + LZ  | 61.7x  | 71.5x  |
 
 Noise-like input (worst case for the predictor) lands in the same range:
-encode 41–52x, decode 53–67x.
+encode 40–45x, decode 59–71x.
 
 Decode used to be entropy-decode-bound (the range coder stayed in Python);
 it is ported too, so both directions now run an order of magnitude faster
@@ -262,15 +350,18 @@ pyra/
 ├── container.py       magic, header, tile index, CRC32 (PyraContainer)
 ├── compress.py        pack_residuals / RLE / LZ77 (dispatches to the optional Rust core; TOKEN_* symbols)
 ├── native.py          ctypes loader for _libpyra_core.so — None-output fallback contract
+├── fast.py            ctypes loader for _libpyra_fast.so (C++ fast path, same contract)
 ├── rust/pyra_core.rs  std-only Rust cdylib port of the hot paths (bit-exact to Python)
-├── scripts/build_native.sh  rustc build script
+├── cpp/pyra_fast.cpp  C++20 shared library: adaptive row filters (bit-exact to Python)
+├── scripts/build_native.sh  builds the Rust core and, if g++ is present, the C++ core
 ├── entropy.py         adaptive range coder + Fenwick tree
-├── predictors.py      7 reversible predictors
-├── color.py           reversible YCoCg
+├── entropycost.py     exact integer entropy cost (used by the planner's tie-breaks)
+├── predictors.py      7 reversible predictors + per-row adaptive selection
+├── color.py           reversible YCoCg + optional "none" transform
 ├── tile.py            split / assemble
 ├── security.py        limits + typed errors
 ├── pngbench.py        stdlib-only PNG reader/writer (benchmark reference + write/read loop test)
-└── tests/test_lossless.py   189-check verification suite
+└── tests/test_lossless.py   245-check verification suite
 ```
 
 ## Running Tests
