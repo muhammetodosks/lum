@@ -24,6 +24,7 @@ use std::collections::HashMap;
 
 pub const TOKEN_MATCH: u32 = 256;
 pub const TOKEN_EOF: u32 = 257;
+pub const TOKEN_SYMBOLS: u32 = 258;
 const MINMATCH: usize = 4;
 const MAXMATCH: usize = 255; // len byte holds L - MINMATCH in [0,251]
 const MAXDIST: usize = 65535;
@@ -313,9 +314,13 @@ pub unsafe extern "C" fn pyra_lz_encode(
 
 /// Python-exact modular arithmetic: ((x % m) + m) % m on i64 so negative
 /// intermediates map into [0, m) like Python's `%`.
+///
+/// Rust's `%` truncates toward zero exactly like Python, so the two-step
+/// Python form collapses into one division plus a conditional fixup.
 #[inline]
 fn py_mod(x: i64, m: i64) -> i32 {
-    let r = ((x % m) + m) % m;
+    let r = x % m;
+    let r = if r < 0 { r + m } else { r };
     r as i32
 }
 
@@ -609,16 +614,24 @@ pub unsafe extern "C" fn pyra_pipe_forward(
 
     // 3. predictor pass, row by row (left = canonicalized input row,
     //    up/upper-left = previous canonicalized row, none for row 0)
+    let px = stride / channels;
     let mut r = 0usize;
     while r < n {
         let row_end = r + stride;
-        for i in r..row_end {
-            let x = (i - r) / channels;
-            let left = if x > 0 { tmp[i - channels] as i64 } else { 0 };
-            let up = if r > 0 { tmp[i - stride] as i64 } else { 0 };
-            let ul = if r > 0 && x > 0 { tmp[i - stride - channels] as i64 } else { 0 };
-            let pred = pred_value(pred_type, left, up, ul);
-            out[i] = py_mod(tmp[i] as i64 - pred, modv);
+        let mut x = 0usize;
+        while x < px {
+            let base = r + x * channels;
+            let mut c = 0usize;
+            while c < channels {
+                let i = base + c;
+                let left = if x > 0 { tmp[i - channels] as i64 } else { 0 };
+                let up = if r > 0 { tmp[i - stride] as i64 } else { 0 };
+                let ul = if r > 0 && x > 0 { tmp[i - stride - channels] as i64 } else { 0 };
+                let pred = pred_value(pred_type, left, up, ul);
+                out[i] = py_mod(tmp[i] as i64 - pred, modv);
+                c += 1;
+            }
+            x += 1;
         }
         r = row_end;
     }
@@ -642,16 +655,24 @@ pub unsafe extern "C" fn pyra_pipe_reconstruct(
     let out = std::slice::from_raw_parts_mut(out, n);
 
     // 1. predictor reconstruction, row by row
+    let px = stride / channels;
     let mut r = 0usize;
     while r < n {
         let row_end = r + stride;
-        for i in r..row_end {
-            let x = (i - r) / channels;
-            let left = if x > 0 { out[i - channels] as i64 } else { 0 };
-            let up = if r > 0 { out[i - stride] as i64 } else { 0 };
-            let ul = if r > 0 && x > 0 { out[i - stride - channels] as i64 } else { 0 };
-            let pred = pred_value(pred_type, left, up, ul);
-            out[i] = py_mod(res[i] as i64 + pred, modv);
+        let mut x = 0usize;
+        while x < px {
+            let base = r + x * channels;
+            let mut c = 0usize;
+            while c < channels {
+                let i = base + c;
+                let left = if x > 0 { out[i - channels] as i64 } else { 0 };
+                let up = if r > 0 { out[i - stride] as i64 } else { 0 };
+                let ul = if r > 0 && x > 0 { out[i - stride - channels] as i64 } else { 0 };
+                let pred = pred_value(pred_type, left, up, ul);
+                out[i] = py_mod(res[i] as i64 + pred, modv);
+                c += 1;
+            }
+            x += 1;
         }
         r = row_end;
     }
@@ -858,83 +879,13 @@ pub unsafe extern "C" fn pyra_range_encode(
     syms: *const u32, count: usize, n_symbols: usize,
     out: *mut u8, out_cap: usize,
 ) -> isize {
-    if n_symbols == 0 {
-        return E_MODEL_SYMS;
-    }
     // a null pointer with count == 0 is not a valid slice (UB)
     let syms: &[u32] = if count == 0 {
         &[]
     } else {
         std::slice::from_raw_parts(syms, count)
     };
-    let mut model = Fenwick::new(n_symbols);
-    let mut low: i64 = 0;
-    let mut high: i64 = (1i64 << 32) - 1; // inclusive
-    let mut bits: Vec<u8> = Vec::with_capacity(4 * count + 64);
-    let mut pending: i64 = 0;
-
-    for &s in syms.iter() {
-        let symbol = s as usize;
-        if symbol >= n_symbols {
-            return E_ENC_SYM;
-        }
-        let cum = model.cum(symbol);
-        let f = model.freq[symbol];
-        let total = model.total;
-        let span = high - low + 1;
-        let mut r = span / total;
-        if r < 1 {
-            r = 1;
-        }
-        let cum_high = cum + f;
-        let new_low = low + r * cum;
-        let mut new_high = low + r * cum_high - 1;
-        if new_high < new_low {
-            new_high = new_low;
-        }
-        low = new_low;
-        high = new_high;
-        enc_renorm(&mut low, &mut high, &mut bits, &mut pending);
-        model.add(symbol);
-    }
-
-    // WNC flush: pending+1 ones (low in lower half) or zeros
-    pending += 1;
-    if low < QUARTER {
-        bits.push(0);
-        for _ in 0..pending {
-            bits.push(1);
-        }
-    } else {
-        bits.push(1);
-        for _ in 0..pending {
-            bits.push(0);
-        }
-    }
-
-    // MSB-first bit packing, zero-padded last byte
-    let packed_len = (bits.len() + 7) / 8;
-    if packed_len > out_cap {
-        return E_ENC_BUF;
-    }
-    let out = std::slice::from_raw_parts_mut(out, packed_len);
-    let mut byte = 0u32;
-    let mut nb = 0u32;
-    let mut o = 0usize;
-    for &b in bits.iter() {
-        byte = (byte << 1) | b as u32;
-        nb += 1;
-        if nb == 8 {
-            out[o] = byte as u8;
-            o += 1;
-            byte = 0;
-            nb = 0;
-        }
-    }
-    if nb > 0 {
-        out[o] = (byte << (8 - nb)) as u8;
-    }
-    packed_len as isize
+    encode_symbols(syms, n_symbols, out, out_cap)
 }
 
 /// Stateful range decoder over a byte stream (zero padding past the end,
@@ -1201,4 +1152,252 @@ pub unsafe extern "C" fn pyra_decode_lz_method(
         return rc;
     }
     unpack_into(&packed, count, width, modv, out_res, detail)
+}
+
+// ------------------------------------------------------- canvas plumbing
+// Zero-copy plumbing between the Python side and the native core: the
+// caller owns the pixel buffers (array('i')) and the native side reads and
+// writes them in place. This removes the per-tile list<->buffer copies that
+// used to dominate the container codec.
+//
+// Every function here is a pure refactor of the existing tile pipeline:
+// same arithmetic, same order of operations, same bytes.
+
+/// Copy one tile out of a canvas into a contiguous tile buffer.
+///
+/// `src` points at the canvas origin, `src_stride` is the canvas row stride
+/// in samples, the tile origin is (x, y) in pixels and the tile is
+/// `tw` x `th` pixels with `channels` samples each.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_extract_tile(
+    src: *const i32, src_stride: usize,
+    x: usize, y: usize, tw: usize, th: usize, channels: usize,
+    dst: *mut i32,
+) -> isize {
+    let row_len = tw * channels;
+    for r in 0..th {
+        let src_row = src.add((y + r) * src_stride + x * channels);
+        let dst_row = dst.add(r * row_len);
+        std::ptr::copy_nonoverlapping(src_row, dst_row, row_len);
+    }
+    (th * row_len) as isize
+}
+
+/// Reconstruct one tile straight into a canvas buffer.
+///
+/// `res` holds the tile's residual symbols (rows of `stride` samples),
+/// `dst` points at the tile's first pixel inside the canvas and the canvas
+/// row stride is `dst_stride` samples.
+///
+/// The reconstruction keeps the canonical (pre-descale) values in a private
+/// row buffer, so the predictor context never sees the descale/inverse
+/// transform output -- exactly like the reference implementation, which
+/// reconstructs every row first and only then descales and un-transforms.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_pipe_reconstruct_into(
+    res: *const i32, n: usize, stride: usize,
+    color_space: i32, offset: i64, modv: i64,
+    pred_type: i32, channels: usize,
+    dst: *mut i32, dst_stride: usize,
+) -> isize {
+    if channels == 0 || modv <= 0 || n % stride != 0 {
+        return E_PIPE_SHAPE;
+    }
+    let res = std::slice::from_raw_parts(res, n);
+    let rows = n / stride;
+    let px = stride / channels;
+    let is_cs = color_space == CS_RGB_V || color_space == CS_RGBA_V;
+    let ch: usize = if color_space == CS_RGBA_V { 4 } else { 3 };
+
+    let mut cur: Vec<i32> = vec![0; stride];
+    let mut prev: Vec<i32> = vec![0; stride];
+
+    for r in 0..rows {
+        let row = &res[r * stride..r * stride + stride];
+        // 1. predictor reconstruction (canonical domain)
+        let mut x = 0usize;
+        while x < px {
+            let base = x * channels;
+            let mut c = 0usize;
+            while c < channels {
+                let i = base + c;
+                let left = if x > 0 { cur[i - channels] as i64 } else { 0 };
+                let up = if r > 0 { prev[i] as i64 } else { 0 };
+                let ul = if r > 0 && x > 0 { prev[i - channels] as i64 } else { 0 };
+                let pred = pred_value(pred_type, left, up, ul);
+                cur[i] = py_mod(row[i] as i64 + pred, modv);
+                c += 1;
+            }
+            x += 1;
+        }
+
+        // 2. descale + inverse color transform straight into the canvas row
+        let dst_row = std::slice::from_raw_parts_mut(dst.add(r * dst_stride), stride);
+        if is_cs {
+            let mut p = 0usize;
+            while p + ch <= stride {
+                let y = (cur[p] as i64) - offset;
+                let co = (cur[p + 1] as i64) - offset;
+                let cg = (cur[p + 2] as i64) - offset;
+                let t = y - (cg >> 1);
+                let g = cg + t;
+                let b = t - (co >> 1);
+                let rr = co + b;
+                dst_row[p] = rr as i32;
+                dst_row[p + 1] = g as i32;
+                dst_row[p + 2] = b as i32;
+                if ch == 4 {
+                    dst_row[p + 3] = (cur[p + 3] as i64 - offset) as i32;
+                }
+                p += ch;
+            }
+            while p < stride {
+                dst_row[p] = (cur[p] as i64 - offset) as i32;
+                p += 1;
+            }
+        } else {
+            let mut i = 0usize;
+            while i < stride {
+                dst_row[i] = (cur[i] as i64 - offset) as i32;
+                i += 1;
+            }
+        }
+
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    n as isize
+}
+
+/// Encode a symbol sequence with the adaptive range coder into `out`.
+/// Shared by pyra_range_encode and the fused method encoders below.
+unsafe fn encode_symbols(
+    syms: &[u32], n_symbols: usize, out: *mut u8, out_cap: usize,
+) -> isize {
+    if n_symbols == 0 {
+        return E_MODEL_SYMS;
+    }
+    let mut model = Fenwick::new(n_symbols);
+    let mut low: i64 = 0;
+    let mut high: i64 = (1i64 << 32) - 1; // inclusive
+    let mut bits: Vec<u8> = Vec::with_capacity(4 * syms.len() + 64);
+    let mut pending: i64 = 0;
+
+    for &s in syms.iter() {
+        let symbol = s as usize;
+        if symbol >= n_symbols {
+            return E_ENC_SYM;
+        }
+        let cum = model.cum(symbol);
+        let f = model.freq[symbol];
+        let total = model.total;
+        let span = high - low + 1;
+        let mut r = span / total;
+        if r < 1 {
+            r = 1;
+        }
+        let cum_high = cum + f;
+        let new_low = low + r * cum;
+        let mut new_high = low + r * cum_high - 1;
+        if new_high < new_low {
+            new_high = new_low;
+        }
+        low = new_low;
+        high = new_high;
+        enc_renorm(&mut low, &mut high, &mut bits, &mut pending);
+        model.add(symbol);
+    }
+
+    // WNC flush: pending+1 ones (low in lower half) or zeros
+    pending += 1;
+    if low < QUARTER {
+        bits.push(0);
+        for _ in 0..pending {
+            bits.push(1);
+        }
+    } else {
+        bits.push(1);
+        for _ in 0..pending {
+            bits.push(0);
+        }
+    }
+
+    // MSB-first bit packing, zero-padded last byte
+    let packed_len = (bits.len() + 7) / 8;
+    if packed_len > out_cap {
+        return E_ENC_BUF;
+    }
+    let out = std::slice::from_raw_parts_mut(out, packed_len);
+    let mut byte = 0u32;
+    let mut nb = 0u32;
+    let mut o = 0usize;
+    for &b in bits.iter() {
+        byte = (byte << 1) | b as u32;
+        nb += 1;
+        if nb == 8 {
+            out[o] = byte as u8;
+            o += 1;
+            byte = 0;
+            nb = 0;
+        }
+    }
+    if nb > 0 {
+        out[o] = (byte << (8 - nb)) as u8;
+    }
+    packed_len as isize
+}
+
+/// METHOD_RAW encoder: residual symbols straight into the range coder.
+/// `res` holds `count` residual symbols (each < modv).
+#[no_mangle]
+pub unsafe extern "C" fn pyra_encode_raw_method(
+    res: *const i32, count: usize, modv: u64, out: *mut u8, out_cap: usize,
+) -> isize {
+    let res = std::slice::from_raw_parts(res, count);
+    let mut syms: Vec<u32> = Vec::with_capacity(count);
+    for &v in res.iter() {
+        if v as u64 >= modv {
+            return E_ENC_SYM;
+        }
+        syms.push(v as u32);
+    }
+    encode_symbols(&syms, modv as usize, out, out_cap)
+}
+
+/// METHOD_RLE encoder: RLE byte stream as literal tokens + EOF terminator,
+/// range coded in one pass.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_encode_rle_method(
+    rle: *const u8, len: usize, out: *mut u8, out_cap: usize,
+) -> isize {
+    let rle = std::slice::from_raw_parts(rle, len);
+    let mut syms: Vec<u32> = Vec::with_capacity(len + 1);
+    for &b in rle.iter() {
+        syms.push(b as u32);
+    }
+    syms.push(TOKEN_EOF as u32);
+    encode_symbols(&syms, TOKEN_SYMBOLS as usize, out, out_cap)
+}
+
+/// METHOD_LZ encoder: 4-byte big-endian RLE-stream-length header (so the
+/// decoder knows the LZ output target) followed by the LZ77 token stream
+/// (already EOF-terminated), range coded in one pass.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_encode_lz_method(
+    rle: *const u8, len: usize, out: *mut u8, out_cap: usize,
+) -> isize {
+    let rle = std::slice::from_raw_parts(rle, len);
+    let mut tokens: Vec<u32> = vec![0; len + 2];
+    let n = pyra_lz_encode(rle.as_ptr(), len, tokens.as_mut_ptr());
+    if n < 0 {
+        return n;
+    }
+    let n = n as usize;
+    let mut syms: Vec<u32> = Vec::with_capacity(4 + n);
+    let v = len as u32;
+    syms.push((v >> 24) & 0xFF);
+    syms.push((v >> 16) & 0xFF);
+    syms.push((v >> 8) & 0xFF);
+    syms.push(v & 0xFF);
+    syms.extend_from_slice(&tokens[..n]);
+    encode_symbols(&syms, TOKEN_SYMBOLS as usize, out, out_cap)
 }

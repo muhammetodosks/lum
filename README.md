@@ -179,6 +179,16 @@ and the decode tail: `pipe_forward` (color transform → canonicalization →
 per-row prediction, one buffer conversion per call) and `pipe_reconstruct`
 (row reconstruction → descaling → inverse YCoCg).
 
+On top of that the whole-image codec runs a **zero-copy buffer pipeline**:
+the pixel canvas lives in a single `array('i')` buffer and the native core
+extracts every tile (`extract_tile`), predicts it in place
+(`pipe_forward_into`), encodes the requested method candidate straight from
+that buffer (`pyra_encode_raw_method` / `pyra_encode_rle_method` /
+`pyra_encode_lz_method`) and, on the decode side, expands the residuals into
+a buffer (`pyra_decode_rle_method` / `pyra_decode_lz_method`) and
+reconstructs the tile straight into the output canvas (`pipe_reconstruct_into`).
+No tile ever round-trips through a Python list any more.
+
 ```bash
 scripts/build_native.sh        # -> _libpyra_core.so (loaded automatically)
 PYRA_DISABLE_NATIVE=1 python3 -m pyra.tests.test_lossless   # force fallback
@@ -187,7 +197,7 @@ PYRA_NATIVE=0 ...              # same effect
 
 Dispatch flags are read at **call time** (not import time), so the test suite
 re-encodes whole containers in both modes and asserts the container bytes are
-identical — 231 checks pass with the native core, the same core set passes on
+identical — 237 checks pass with the native core, the same core set passes on
 the pure-Python path.
 
 Measured speedups (256k samples, best of 3):
@@ -200,19 +210,21 @@ Measured speedups (256k samples, best of 3):
 | pack 64k           | 1.6 ms | 8.4 ms | 5.3x    |
 | unpack 64k         | 13 ms  | 34 ms  | 2.6x    |
 
-Whole-container effect of the fused pipelines and the native range coder
-(256×256 tiles, best of 3, "photo" = gradient + noise):
+Whole-container effect of the native core (256×256 tiles, best of 3,
+"photo" = gradient + noise; the canvas stays in one buffer end to end):
 
 | path            | encode | decode |
 |-----------------|--------|--------|
-| 256² GRAY + LZ  | 31.8x  | 25.9x  |
-| 256² RGB  + LZ  | 28.8x  | 26.9x  |
-| 256² GRAY + RLE | 22.6x  | 25.8x  |
-| 512² RGB  + LZ  | 30.1x  | 26.2x  |
+| 256² GRAY + LZ  | 52.6x  | 63.4x  |
+| 256² RGB  + LZ  | 53.4x  | 67.1x  |
+| 256² RGB  + RLE | 39.5x  | 68.2x  |
+| 256² RGB  + RAW | 37.1x  | 55.0x  |
+| 512² RGB  + LZ  | 52.2x  | 66.7x  |
 
 Decode used to be entropy-decode-bound (the range coder stayed in Python);
-it is now ported too, so both directions run an order of magnitude faster
-on the same bytes.
+it is ported too, so both directions now run an order of magnitude faster
+on the same bytes. What is left on the Python side is tile bookkeeping and
+the final `array` → list conversion of the decoded canvas.
 
 The native library is never required: if `rustc` or the `.so` is missing,
 `native.py` returns `None` and the pure path takes over transparently.

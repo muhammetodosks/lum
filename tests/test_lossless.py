@@ -942,6 +942,169 @@ def test_range_coder():
           guard.startswith("cfe:implausible RLE stream length"))
 
 
+def test_buffer_pipeline():
+    """Zero-copy native buffer pipeline: canvas in/out, no per-tile lists."""
+    from array import array as _array
+    from pyra import native as _native
+    from pyra.color import transform_pixels_forward, transform_pixels_inverse
+    from pyra.compress import pack_residuals, rle_encode, lz_encode
+    from pyra.predictors import apply_predictor_row, reconstruct_row
+
+    if not _native.available():
+        check("buffer pipeline backend absent -> python-only mode", True)
+        return
+
+    def pure(fn, *args, **kwargs):
+        old = os.environ.get("PYRA_DISABLE_NATIVE")
+        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if old is None:
+                os.environ.pop("PYRA_DISABLE_NATIVE", None)
+            else:
+                os.environ["PYRA_DISABLE_NATIVE"] = old
+
+    def ref_residuals(px, w, h, ch, cs, pred, bd):
+        mod = PyraCodec._residual_mod(cs, bd)
+        offset = PyraCodec._canonical_offset(cs, bd)
+        transformed = transform_pixels_forward(px, cs)
+        if offset:
+            transformed = [v + offset for v in transformed]
+        residuals = []
+        prev_row = None
+        for y in range(h):
+            row = transformed[y * w * ch:(y + 1) * w * ch]
+            residuals.extend(apply_predictor_row(row, prev_row, pred, ch, mod))
+            prev_row = row
+        return residuals
+
+    def ref_reconstruct(residuals, w, h, ch, cs, pred, bd):
+        mod = PyraCodec._residual_mod(cs, bd)
+        offset = PyraCodec._canonical_offset(cs, bd)
+        transformed = []
+        prev_row = None
+        for y in range(h):
+            res_row = residuals[y * w * ch:(y + 1) * w * ch]
+            row = reconstruct_row(res_row, prev_row, pred, ch, mod)
+            transformed.extend(row)
+            prev_row = row
+        if offset:
+            transformed = [v - offset for v in transformed]
+        return transform_pixels_inverse(transformed, cs)
+
+    # (1) container bytes + decoded pixels: native buffer path vs pure
+    fails = []
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
+        for bd in (8, 16):
+            for kind in ("solid", "gradient", "noise"):
+                for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX, -1):
+                    for (w, h, ts) in ((13, 9, 8), (64, 48, 16), (70, 50, 256)):
+                        px = make_pixels(kind, w, h, ch, bd)
+                        nat = PyraCodec.encode(px, w, h, bd, cs, PRED_PAETH, ts, method)
+                        ref = pure(PyraCodec.encode, px, w, h, bd, cs, PRED_PAETH, ts, method)
+                        if nat != ref:
+                            fails.append(f"bytes cs{cs} bd{bd} {kind} m{method} {w}x{h}")
+                            continue
+                        _, dec = PyraCodec.decode(nat)
+                        if dec != px:
+                            fails.append(f"pixels cs{cs} bd{bd} {kind} m{method} {w}x{h}")
+    check(f"native buffer encode/decode == pure ({len(fails)} mismatches)",
+          not fails)
+    if fails:
+        for f in fails[:5]:
+            print(f"       - {f}")
+
+    # (2) multi-tile canvas offsets (tile_size < image)
+    px = make_pixels("photo", 100, 70, 3, 8)
+    blob = PyraCodec.encode(px, 100, 70, 8, CS_RGB, PRED_PAETH, 32, -1)
+    _, dec = PyraCodec.decode(blob)
+    check("native multi-tile canvas offsets", dec == px)
+
+    # (3) extract_tile copies the right rectangle out of the canvas
+    px = make_pixels("gradient", 40, 30, 3, 8)
+    canvas = _array("i", px)
+    tile_buf = _array("i", bytes(4 * 11 * 7 * 3))
+    ok = _native.extract_tile(canvas, 40 * 3, 13, 5, 11, 7, 3, tile_buf)
+    want = []
+    for y in range(5, 12):
+        for x in range(13, 24):
+            want.extend(px[(y * 40 + x) * 3:(y * 40 + x) * 3 + 3])
+    check("native extract_tile rectangle", ok and tile_buf.tolist() == want)
+
+    # (4) pipe_reconstruct_into writes into the canvas at an offset
+    w, h, ch, cs, pred, bd = 9, 6, 3, CS_RGB, PRED_PAETH, 8
+    px = make_pixels("photo", w, h, ch, bd)
+    residuals = ref_residuals(px, w, h, ch, cs, pred, bd)
+    mod = PyraCodec._residual_mod(cs, bd)
+    offset = PyraCodec._canonical_offset(cs, bd)
+    res_buf = _array("i", residuals)
+    canvas = _array("i", bytes(4 * (w + 4) * (h + 2) * ch))
+    ok = _native.pipe_reconstruct_into(res_buf, w * ch, offset, mod, pred, ch,
+                                       cs, canvas, dst_offset=7 * ch,
+                                       dst_stride=(w + 4) * ch)
+    want_px = ref_reconstruct(residuals, w, h, ch, cs, pred, bd)
+    got = []
+    for y in range(h):
+        base = y * (w + 4) * ch + 7 * ch
+        got.extend(canvas[base:base + w * ch])
+    check("native pipe_reconstruct_into canvas write", ok and got == want_px)
+
+    # (5) method encoders: raw / rle / lz byte streams vs the pure reference
+    fails = []
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
+        for bd in (8, 16):
+            w, h = 17, 11
+            px = make_pixels("noise", w, h, ch, bd)
+            residuals = ref_residuals(px, w, h, ch, cs, pred, bd)
+            mod = PyraCodec._residual_mod(cs, bd)
+            res_buf = _array("i", residuals)
+            nat_raw = _native.encode_raw_method(res_buf, mod)
+            ref_raw = pure(PyraCodec._encode_raw, residuals, mod)
+            if nat_raw != ref_raw:
+                fails.append(f"raw cs{cs} bd{bd}")
+            packed = pack_residuals(residuals, mod)
+            rle = rle_encode(packed)
+            nat_rle = _native.encode_rle_method(rle)
+            ref_rle = pure(PyraCodec._encode_rle, rle)
+            if nat_rle != ref_rle:
+                fails.append(f"rle cs{cs} bd{bd}")
+            nat_lz = _native.encode_lz_method(rle)
+            ref_lz = pure(PyraCodec._encode_lz, rle)
+            if nat_lz != ref_lz:
+                fails.append(f"lz cs{cs} bd{bd}")
+    check(f"native method encoders == pure ({len(fails)} mismatches)", not fails)
+    if fails:
+        for f in fails[:5]:
+            print(f"       - {f}")
+
+    # (6) fused decode into a buffer: rle / lz residuals vs the pure result
+    fails = []
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
+        for bd in (8, 16):
+            w, h = 19, 13
+            px = make_pixels("photo", w, h, ch, bd)
+            residuals = ref_residuals(px, w, h, ch, cs, pred, bd)
+            mod = PyraCodec._residual_mod(cs, bd)
+            packed = pack_residuals(residuals, mod)
+            rle = rle_encode(packed)
+            for method, stream in ((METHOD_RLE, pure(PyraCodec._encode_rle, rle)),
+                                   (METHOD_LZ, pure(PyraCodec._encode_lz, rle))):
+                out = _array("i", bytes(4 * w * h * ch))
+                if method == METHOD_RLE:
+                    ok = _native.decode_rle_method_into(stream, w * h * ch, mod, out)
+                else:
+                    ok = _native.decode_lz_method_into(stream, w * h * ch, mod, out)
+                ref = pure(PyraCodec._decode_residuals, stream, method, w * h * ch, mod)
+                if not ok or out.tolist() != ref:
+                    fails.append(f"{method} cs{cs} bd{bd}")
+    check(f"native fused decode into buffer == pure ({len(fails)} mismatches)",
+          not fails)
+    if fails:
+        for f in fails[:5]:
+            print(f"       - {f}")
+
+
 def main():
     print("=== PYRA lossless test suite ===")
     test_roundtrips()
@@ -959,6 +1122,7 @@ def main():
     test_mixed_methods()
     test_native_backend()
     test_range_coder()
+    test_buffer_pipeline()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

@@ -7,6 +7,7 @@ from .container import PyraContainer
 from .compress import (pack_residuals, unpack_residuals, rle_encode, rle_decode,
                        lz_encode, lz_decode, TOKEN_EOF, TOKEN_MATCH, TOKEN_SYMBOLS)
 from . import native as _native
+from array import array as _array
 
 # Residual-space modular alphabet. For RGB/RGBA the reversible YCoCg
 # transform produces exact-integer values that fall outside [0, 2^bitdepth);
@@ -237,10 +238,75 @@ class PyraCodec:
         return pixels
 
     @classmethod
+    def _encode_native(cls, pixels, width: int, height: int, bit_depth: int,
+                       color_space: int, pred_type: int, tile_size: int,
+                       method: int) -> bytes | None:
+        """Zero-copy native encode of the whole image.
+
+        The pixel data lives in one array('i') canvas; the native core
+        extracts every tile, predicts it and encodes all three method
+        candidates in place. Returns None when the native backend is
+        unavailable or refuses the input, in which case the caller runs the
+        pure-Python reference path."""
+        if method not in (METHOD_MIX, METHOD_RAW, METHOD_RLE, METHOD_LZ, -1):
+            return None
+        channels = cls._channels_for_colorspace(color_space)
+        mod = cls._residual_mod(color_space, bit_depth)
+        offset = cls._canonical_offset(color_space, bit_depth)
+        try:
+            canvas = _array("i", pixels)
+        except (OverflowError, TypeError, ValueError):
+            return None
+        src_stride = width * channels
+        if method == METHOD_MIX or method == -1:
+            wanted = (METHOD_RAW, METHOD_RLE, METHOD_LZ)
+        else:
+            wanted = (method,)
+        candidates = []
+        for ty in range(0, height, tile_size):
+            th = min(tile_size, height - ty)
+            for tx in range(0, width, tile_size):
+                tw = min(tile_size, width - tx)
+                cand = _native.tile_candidates(
+                    canvas, src_stride, tx, ty, tw, th, channels, offset, mod,
+                    pred_type, color_space, wanted)
+                if cand is None:
+                    return None
+                candidates.append(cand)
+        compressed_tiles, method = cls._select_candidates(candidates, method)
+        return PyraContainer.pack_file(width, height, bit_depth, color_space,
+                                       pred_type, method, tile_size,
+                                       compressed_tiles)
+
+    @staticmethod
+    def _select_candidates(candidates: list[dict], method: int) -> tuple:
+        """Pick the per-tile method streams exactly like the reference."""
+        compressed_tiles = []
+        if method == METHOD_MIX:
+            for cand in candidates:
+                m = min((len(d), mid) for mid, d in cand.items())[1]
+                compressed_tiles.append(bytes([m]) + cand[m])
+        elif method in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+            compressed_tiles = [cand[method] for cand in candidates]
+        else:  # method == -1: one method for the whole image
+            totals = [0] * METHOD_COUNT
+            for cand in candidates:
+                for m, data in cand.items():
+                    totals[m] += len(data)
+            method = min(range(METHOD_COUNT), key=lambda m: (totals[m], m))
+            compressed_tiles = [cand[method] for cand in candidates]
+        return compressed_tiles, method
+
+    @classmethod
     def encode(cls, pixels: list[int], width: int, height: int, bit_depth: int = 8, color_space: int = CS_RGB, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1) -> bytes:
         channels = cls._channels_for_colorspace(color_space)
         if len(pixels) != width * height * channels:
             raise ValueError(f"Pixel count ({len(pixels)}) != {width}x{height}x{channels}")
+
+        native = cls._encode_native(pixels, width, height, bit_depth,
+                                    color_space, pred_type, tile_size, method)
+        if native is not None:
+            return native
 
         tiles = split_into_tiles(pixels, width, height, channels, tile_size)
         if method == METHOD_MIX:
@@ -272,6 +338,67 @@ class PyraCodec:
         return PyraContainer.pack_file(width, height, bit_depth, color_space, pred_type, method, tile_size, compressed_tiles)
 
     @classmethod
+    def _decode_native(cls, meta: dict, compressed_tiles: list[bytes]) -> list[int] | None:
+        """Zero-copy native decode of the whole image.
+
+        Every tile is decoded into a residual buffer and reconstructed
+        straight into the pixel canvas, so no per-tile Python lists are
+        created. Returns None when the native backend is unavailable or
+        refuses the stream, in which case the caller runs the pure-Python
+        reference path (which raises the exact reference exception)."""
+        width = meta["width"]
+        height = meta["height"]
+        bit_depth = meta["bit_depth"]
+        color_space = meta["color_space"]
+        pred_type = meta["pred_type"]
+        method = meta["method"]
+        tile_size = meta["tile_size"]
+
+        channels = cls._channels_for_colorspace(color_space)
+        mod = cls._residual_mod(color_space, bit_depth)
+        offset = cls._canonical_offset(color_space, bit_depth)
+        dst_stride = width * channels
+        try:
+            canvas = _array("i", bytes(4 * width * height * channels))
+        except (OverflowError, TypeError, ValueError, MemoryError):
+            return None
+
+        tile_idx = 0
+        for ty in range(0, height, tile_size):
+            th = min(tile_size, height - ty)
+            for tx in range(0, width, tile_size):
+                tw = min(tile_size, width - tx)
+                tile_bytes = compressed_tiles[tile_idx]
+                tile_method = method
+                if method == METHOD_MIX:
+                    if not tile_bytes:
+                        raise CorruptedFileError("empty MIX tile (missing method byte)")
+                    tile_method, tile_body = tile_bytes[0], tile_bytes[1:]
+                    if tile_method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+                        raise CorruptedFileError(f"invalid per-tile method {tile_method}")
+                    tile_bytes = tile_body
+                count = tw * th * channels
+                try:
+                    res_buf = _array("i", bytes(4 * count))
+                except (OverflowError, TypeError, ValueError, MemoryError):
+                    return None
+                if tile_method == METHOD_RAW:
+                    ok = _native.range_decode_into(tile_bytes, mod, count, res_buf)
+                elif tile_method == METHOD_RLE:
+                    ok = _native.decode_rle_method_into(tile_bytes, count, mod, res_buf)
+                else:
+                    ok = _native.decode_lz_method_into(tile_bytes, count, mod, res_buf)
+                if not ok:
+                    return None
+                dst_offset = (ty * width + tx) * channels
+                if not _native.pipe_reconstruct_into(
+                        res_buf, tw * channels, offset, mod, pred_type, channels,
+                        color_space, canvas, dst_offset, dst_stride):
+                    return None
+                tile_idx += 1
+        return canvas.tolist()
+
+    @classmethod
     def decode(cls, file_bytes: bytes) -> tuple[dict, list[int]]:
         meta, compressed_tiles = PyraContainer.unpack_file(file_bytes)
         width = meta["width"]
@@ -281,6 +408,10 @@ class PyraCodec:
         pred_type = meta["pred_type"]
         method = meta["method"]
         tile_size = meta["tile_size"]
+
+        native = cls._decode_native(meta, compressed_tiles)
+        if native is not None:
+            return meta, native
 
         channels = cls._channels_for_colorspace(color_space)
         tiles = []

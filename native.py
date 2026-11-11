@@ -17,7 +17,8 @@ import ctypes
 import os
 from array import array as _array
 
-from .constants import CorruptedFileError, PyraError
+from .constants import (CorruptedFileError, PyraError, METHOD_RAW, METHOD_RLE,
+                       METHOD_LZ)
 
 # LZ/RLE token alphabet size (0..255 literal, 256 MATCH, 257 EOF).
 # Duplicated here to avoid a circular import with compress.py.
@@ -36,6 +37,27 @@ def _i32_ptr(values) -> tuple:
     a = _array("i", values)
     ptr = ctypes.cast(a.buffer_info()[0], ctypes.POINTER(ctypes.c_int32))
     return a, ptr
+
+
+def _view(buf) -> ctypes.Array:
+    """ctypes view over an array('i') buffer, sharing its memory.
+
+    No copy is made: the native core writes straight into the caller's
+    buffer, which removes the per-tile list<->array conversions that used
+    to dominate the container codec. The returned view keeps the buffer
+    alive (and locked against resizing) for as long as it exists."""
+    n = len(buf)
+    if n == 0 or buf.itemsize != 4:
+        return None
+    return (ctypes.c_int32 * n).from_buffer(buf)
+
+
+def _u32_view(buf) -> ctypes.Array:
+    """Unsigned view over an array('i') buffer (residuals are < 2^31)."""
+    n = len(buf)
+    if n == 0 or buf.itemsize != 4:
+        return None
+    return (ctypes.c_uint32 * n).from_buffer(buf)
 
 # --- Rust error codes (must match rust/pyra_core.rs) ---
 _E_RLE_TRUNC = -1
@@ -155,6 +177,26 @@ def _load():
                 ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz, _sz, _sz, _u64,
                 _sz, ctypes.POINTER(_u32), ctypes.POINTER(_u32),
                 ctypes.POINTER(_i32)]
+            lib.pyra_extract_tile.restype = _isize
+            lib.pyra_extract_tile.argtypes = [
+                ctypes.POINTER(_i32), _sz, _sz, _sz, _sz, _sz, _sz,
+                ctypes.POINTER(_i32)]
+            lib.pyra_pipe_reconstruct_into.restype = _isize
+            lib.pyra_pipe_reconstruct_into.argtypes = [
+                ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
+                _i32, _sz, ctypes.POINTER(_i32), _sz]
+            lib.pyra_encode_raw_method.restype = _isize
+            lib.pyra_encode_raw_method.argtypes = [
+                ctypes.POINTER(_i32), _sz, _u64,
+                ctypes.POINTER(ctypes.c_ubyte), _sz]
+            lib.pyra_encode_rle_method.restype = _isize
+            lib.pyra_encode_rle_method.argtypes = [
+                ctypes.POINTER(ctypes.c_ubyte), _sz,
+                ctypes.POINTER(ctypes.c_ubyte), _sz]
+            lib.pyra_encode_lz_method.restype = _isize
+            lib.pyra_encode_lz_method.argtypes = [
+                ctypes.POINTER(ctypes.c_ubyte), _sz,
+                ctypes.POINTER(ctypes.c_ubyte), _sz]
             _lib = lib
         except OSError:
             _lib = None
@@ -485,3 +527,261 @@ def decode_lz_method(data: bytes, count: int, mod: int) -> list[int] | None:
     if rc < 0:
         return None
     return list(out)
+
+
+# ------------------------------------------------- zero-copy buffer API
+# The container codec keeps its pixel/residual data in array('i') buffers
+# and lets the native core read and write them in place. The wrappers below
+# mirror the per-tile pipeline exactly, so the produced bytes and pixels are
+# identical to the list-based path; they only avoid the intermediate Python
+# lists (converting 200k residuals to a list cost ~30 ms per tile).
+#
+# Every wrapper returns None (or False) when the backend is unavailable or
+# refuses the input, and the caller then runs the pure-Python reference.
+
+def extract_tile(src_buf, src_stride: int, x: int, y: int, tw: int, th: int,
+                 channels: int, dst_buf) -> bool:
+    """Copy the tile at (x, y) out of the canvas buffer into dst_buf."""
+    lib = _load()
+    if lib is None or not enabled():
+        return False
+    src_view = _view(src_buf)
+    dst_view = _view(dst_buf)
+    if src_view is None or dst_view is None:
+        return False
+    rc = lib.pyra_extract_tile(src_view, src_stride, x, y, tw, th, channels,
+                                dst_view)
+    return rc >= 0
+
+
+def pipe_reconstruct_into(res_buf, stride: int, offset: int, mod: int,
+                          pred_type: int, channels: int, color_space: int,
+                          dst_buf, dst_offset: int, dst_stride: int) -> bool:
+    """Reconstruct a tile straight into the canvas buffer at dst_offset."""
+    lib = _load()
+    if lib is None or not enabled():
+        return False
+    res_view = _view(res_buf)
+    dst_view = _view(dst_buf)
+    if res_view is None or dst_view is None:
+        return False
+    n = len(res_buf)
+    if n % stride:
+        return False
+    dst_ptr = ctypes.cast(ctypes.addressof(dst_view) + dst_offset * 4,
+                          ctypes.POINTER(ctypes.c_int32))
+    rc = lib.pyra_pipe_reconstruct_into(
+        res_view, n, stride, color_space, offset, mod, pred_type, channels,
+        dst_ptr, dst_stride)
+    return rc >= 0
+
+
+def decode_rle_method_into(data: bytes, count: int, mod: int,
+                           out_buf) -> bool:
+    """METHOD_RLE residuals written directly into out_buf."""
+    lib = _load()
+    if lib is None or not enabled():
+        return False
+    width = (mod.bit_length() + 7) // 8
+    packed_len = count * width
+    buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
+    out = _u32_view(out_buf)
+    if out is None:
+        return False
+    detail = ctypes.c_int32(0)
+    rc = lib.pyra_decode_rle_method(buf, len(data), _TOKEN_SYMBOLS,
+                                    packed_len, width, ctypes.c_uint64(mod),
+                                    count, out, ctypes.byref(detail))
+    return rc >= 0
+
+
+def decode_lz_method_into(data: bytes, count: int, mod: int,
+                           out_buf) -> bool:
+    """METHOD_LZ residuals written directly into out_buf."""
+    lib = _load()
+    if lib is None or not enabled():
+        return False
+    width = (mod.bit_length() + 7) // 8
+    packed_len = count * width
+    max_rle_len = 2 * packed_len + 64
+    buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
+    out = _u32_view(out_buf)
+    if out is None:
+        return False
+    rle_len = ctypes.c_uint32(0)
+    detail = ctypes.c_int32(0)
+    rc = lib.pyra_decode_lz_method(buf, len(data), _TOKEN_SYMBOLS,
+                                   max_rle_len, packed_len, width,
+                                   ctypes.c_uint64(mod), count, out,
+                                   ctypes.byref(rle_len), ctypes.byref(detail))
+    return rc >= 0
+
+
+def pack_residuals_buf(res_buf, mod: int) -> bytes | None:
+    """Pack residual symbols held in an array('i') buffer."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    count = len(res_buf)
+    width = (mod.bit_length() + 7) // 8
+    syms = _u32_view(res_buf)
+    if syms is None:
+        return b""
+    out = (ctypes.c_ubyte * max(count * width, 1))()
+    rc = lib.pyra_pack_residuals(syms, count, width, ctypes.c_uint64(mod), out)
+    if rc < 0:
+        return None
+    return bytes(memoryview(out)[:count * width])
+
+
+def encode_raw_method(res_buf, mod: int) -> bytes | None:
+    """METHOD_RAW: residual symbols from a buffer, range coded natively."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    count = len(res_buf)
+    syms = _view(res_buf)
+    if syms is None:
+        return b""
+    cap = _enc_cap(count, mod)
+    out = (ctypes.c_ubyte * cap)()
+    rc = lib.pyra_encode_raw_method(syms, count, ctypes.c_uint64(mod), out, cap)
+    if rc < 0:
+        return None
+    return bytes(memoryview(out)[:rc])
+
+
+def encode_rle_method(rle_bytes: bytes) -> bytes | None:
+    """METHOD_RLE: RLE byte stream as literal tokens + EOF, range coded."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(rle_bytes)
+    src = (ctypes.c_ubyte * max(n, 1)).from_buffer_copy(rle_bytes or b"\x00")
+    cap = _enc_cap(n + 1, _TOKEN_SYMBOLS)
+    out = (ctypes.c_ubyte * cap)()
+    rc = lib.pyra_encode_rle_method(src, n, out, cap)
+    if rc < 0:
+        return None
+    return bytes(memoryview(out)[:rc])
+
+
+def encode_lz_method(rle_bytes: bytes) -> bytes | None:
+    """METHOD_LZ: length header + LZ77 tokens, range coded in one pass."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(rle_bytes)
+    src = (ctypes.c_ubyte * max(n, 1)).from_buffer_copy(rle_bytes or b"\x00")
+    # worst case: every byte is a literal (n tokens) plus 4 header bytes
+    cap = _enc_cap(n + 5, _TOKEN_SYMBOLS)
+    out = (ctypes.c_ubyte * cap)()
+    rc = lib.pyra_encode_lz_method(src, n, out, cap)
+    if rc < 0:
+        return None
+    return bytes(memoryview(out)[:rc])
+
+
+def _enc_cap(count: int, n_symbols: int) -> int:
+    """Worst-case encoded size: ceil(log2(model_total)) + 1 bits/symbol.
+
+    The adaptive model total is capped at max(2^15, 2 * n_symbols)."""
+    bits_per = max(15, n_symbols.bit_length() + 1) + 1
+    return (count * bits_per) // 8 + 64
+
+
+def pipe_forward_into(src_buf, stride: int, offset: int, mod: int,
+                      pred_type: int, channels: int, color_space: int,
+                      out_buf) -> bool:
+    """Color transform + canonicalization + prediction, buffer in / out."""
+    lib = _load()
+    if lib is None or not enabled():
+        return False
+    src_view = _view(src_buf)
+    out_view = _view(out_buf)
+    if src_view is None or out_view is None:
+        return False
+    n = len(src_buf)
+    if n != len(out_buf) or n % stride:
+        return False
+    rc = lib.pyra_pipe_forward(src_view, n, stride, color_space, offset, mod,
+                               pred_type, channels, out_view)
+    return rc >= 0
+
+
+def range_decode_into(data: bytes, n_symbols: int, count: int,
+                      out_buf) -> bool:
+    """Decode exactly `count` symbols into out_buf (METHOD_RAW)."""
+    lib = _load()
+    if lib is None or not enabled():
+        return False
+    buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
+    out = _u32_view(out_buf)
+    if out is None:
+        return False
+    rc = lib.pyra_range_decode(buf, len(data), n_symbols, count, out)
+    return rc >= 0
+
+
+def rle_encode_bytes(data: bytes) -> bytes | None:
+    """Byte-level RLE encoding (native), used by the buffer pipeline."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    n = len(data)
+    src = (ctypes.c_ubyte * max(n, 1)).from_buffer_copy(data or b"\x00")
+    out = (ctypes.c_ubyte * (2 * n + 16))()
+    rc = lib.pyra_rle_encode(src, n, out)
+    if rc < 0:
+        return None
+    return bytes(memoryview(out)[:rc])
+
+
+def tile_candidates(canvas, src_stride: int, x: int, y: int, tw: int,
+                     th: int, channels: int, offset: int, mod: int,
+                     pred_type: int, color_space: int,
+                     methods=(METHOD_RAW, METHOD_RLE, METHOD_LZ)) -> dict | None:
+    """Method candidates for one tile, computed in native code.
+
+    Only the requested methods are encoded (a forced method must not pay
+    for the other two). Returns None when the backend is unavailable or
+    refuses the input; the caller then falls back to the pure-Python
+    reference path."""
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    count = tw * th * channels
+    try:
+        tile_buf = _array("i", bytes(4 * count))
+        res_buf = _array("i", bytes(4 * count))
+    except (OverflowError, TypeError, MemoryError):
+        return None
+    if not extract_tile(canvas, src_stride, x, y, tw, th, channels, tile_buf):
+        return None
+    if not pipe_forward_into(tile_buf, tw * channels, offset, mod, pred_type,
+                             channels, color_space, res_buf):
+        return None
+    out = {}
+    if METHOD_RAW in methods:
+        raw = encode_raw_method(res_buf, mod)
+        if raw is None:
+            return None
+        out[METHOD_RAW] = raw
+    if METHOD_RLE in methods or METHOD_LZ in methods:
+        packed = pack_residuals_buf(res_buf, mod)
+        if packed is None:
+            return None
+        rle = rle_encode_bytes(packed)
+        if rle is None:
+            return None
+        if METHOD_RLE in methods:
+            rle_out = encode_rle_method(rle)
+            if rle_out is None:
+                return None
+            out[METHOD_RLE] = rle_out
+        if METHOD_LZ in methods:
+            lz_out = encode_lz_method(rle)
+            if lz_out is None:
+                return None
+            out[METHOD_LZ] = lz_out
+    return out
