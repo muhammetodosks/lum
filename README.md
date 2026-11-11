@@ -215,12 +215,16 @@ Whole-container effect of the native core (256×256 tiles, best of 3,
 
 | path            | encode | decode |
 |-----------------|--------|--------|
-| 256² GRAY + LZ  | 58.9x  | 66.2x  |
-| 256² RGB  + LZ  | 54.6x  | 69.3x  |
-| 256² RGB  + RLE | 42.8x  | 68.4x  |
-| 256² RGB  + RAW | 39.6x  | 67.2x  |
-| 256² RGBA + LZ  | 60.0x  | 69.5x  |
-| 512² RGB  + LZ  | 57.9x  | 67.3x  |
+| 256² GRAY + LZ  | 66.3x  | 65.3x  |
+| 256² RGB  + LZ  | 61.9x  | 67.5x  |
+| 256² RGB  + RLE | 41.6x  | 68.2x  |
+| 256² RGB  + RAW | 40.3x  | 62.6x  |
+| 256² RGBA + LZ  | 63.7x  | 68.2x  |
+| 256² RGBA + RLE | 44.6x  | 67.5x  |
+| 512² RGB  + LZ  | 62.8x  | 68.1x  |
+
+Noise-like input (worst case for the predictor) lands in the same range:
+encode 41–52x, decode 53–67x.
 
 Decode used to be entropy-decode-bound (the range coder stayed in Python);
 it is ported too, so both directions now run an order of magnitude faster
@@ -229,8 +233,19 @@ the final `array` → list conversion of the decoded canvas.
 
 Inside the coder the hot loop was tuned without changing a single output
 bit: the renormalization step picks the E1/E2/E3 branch with masks instead
-of a branch, and the LZ match table is keyed by a multiply-shift hash
-instead of the standard library's SipHash.
+of a branch, the LZ match table is keyed by a multiply-shift hash instead of
+the standard library's SipHash, and LZ matches are compared eight bytes at a
+time.
+
+Profiling the remaining hot spots (rdtsc counters inside the decoder) puts
+the cost at the CDF search and the renormalization, roughly 5.6
+renormalization iterations per symbol with an even E1/E2 split. Two further
+ideas were implemented, measured and **rejected** because they lost
+performance without gaining correctness: batching consecutive E1 shifts
+(+17% slower) and a 64-bit windowed bit reader (+3% slower on the RLE
+decode). The remaining idea — a two-level CDF model instead of the Fenwick
+tree — was left alone; it trades decoder speed for encoder update cost and
+does not pay off for the large alphabets that the RAW method uses.
 
 The native library is never required: if `rustc` or the `.so` is missing,
 `native.py` returns `None` and the pure path takes over transparently.
