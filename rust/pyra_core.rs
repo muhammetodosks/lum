@@ -20,7 +20,9 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+
+mod pyra_image;
 
 pub const TOKEN_MATCH: u32 = 256;
 pub const TOKEN_EOF: u32 = 257;
@@ -331,7 +333,10 @@ pub unsafe extern "C" fn pyra_lz_encode(
         return 1;
     }
 
-    let mut table: HashMap<u32, Vec<u32>, FastBuild> =
+    // Ring buffers: `Vec::remove(0)` memmoves the whole bucket on every
+    // insert, `VecDeque::pop_front` is O(1) and keeps the newest-first
+    // iteration order the reference relies on.
+    let mut table: HashMap<u32, VecDeque<u32>, FastBuild> =
         HashMap::with_capacity_and_hasher(len / 8 + 1, FastBuild);
 
     macro_rules! add_key {
@@ -341,10 +346,10 @@ pub unsafe extern "C" fn pyra_lz_encode(
                 let key = (data[pos] as u32)
                     | ((data[pos + 1] as u32) << 8)
                     | ((data[pos + 2] as u32) << 16);
-                let bucket = table.entry(key).or_insert_with(Vec::new);
-                bucket.push(pos as u32);
+                let bucket = table.entry(key).or_insert_with(VecDeque::new);
+                bucket.push_back(pos as u32);
                 if bucket.len() > BUCKET_MAX {
-                    bucket.remove(0);
+                    bucket.pop_front();
                 }
             }
         }};
@@ -1370,6 +1375,34 @@ unsafe fn read_filter_bits(data: &[u8], rows: usize) -> Vec<i32> {
 /// Adaptive front half: colour transform -> canonicalization -> per-row
 /// predictor selection (seven candidates scored by the modular L1 distance).
 /// Writes the residuals and the packed 3-bit-per-row predictor table.
+/// Modular distance of a residual from zero: `min(r, m - r)` where
+/// `r = ((d % m) + m) % m`.
+///
+/// The common case (`-m < d < m`) avoids the division entirely.
+#[inline]
+fn residual_score(d: i64, modv: i64) -> i64 {
+    let r = if d >= 0 {
+        if d < modv {
+            d
+        } else {
+            d % modv
+        }
+    } else if d > -modv {
+        d + modv
+    } else {
+        let mut x = d % modv;
+        if x < 0 {
+            x += modv;
+        }
+        x
+    };
+    if r <= modv - r {
+        r
+    } else {
+        modv - r
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pyra_pipe_forward_adaptive_into(
     vals: *const i32, n: usize, stride: usize,
@@ -1432,29 +1465,40 @@ pub unsafe extern "C" fn pyra_pipe_forward_adaptive_into(
         let has_prev = r > 0;
         let prev: &[i32] = if has_prev { &tmp[(r - 1) * stride..r * stride] } else { &[] };
 
+        // Single pass: score all seven candidates at once. The reference
+        // implementation evaluates one candidate per pass, which re-reads
+        // the neighbour context seven times and pays seven divisions per
+        // sample; here the context is loaded once and the division is only
+        // needed in the rare out-of-range case.
+        let mut scores = [0i64; 7];
+        let mut x = 0usize;
+        while x < px {
+            let base = x * channels;
+            let mut c = 0usize;
+            while c < channels {
+                let i = base + c;
+                let left = if x > 0 { row[i - channels] as i64 } else { 0 };
+                let up = if has_prev { prev[i] as i64 } else { 0 };
+                let ul = if has_prev && x > 0 { prev[i - channels] as i64 } else { 0 };
+                let v = row[i] as i64;
+                scores[0] += residual_score(v, modv);
+                scores[1] += residual_score(v - left, modv);
+                scores[2] += residual_score(v - up, modv);
+                scores[3] += residual_score(v - ((left + up) >> 1), modv);
+                scores[4] += residual_score(v - paeth(left, up, ul), modv);
+                scores[5] += residual_score(v - (left + up - ul), modv);
+                scores[6] += residual_score(v - median(left, up, ul), modv);
+                c += 1;
+            }
+            x += 1;
+        }
+
         let mut best_score: i64 = -1;
         let mut best_pt: i32 = 0;
         for pt in 0..7 {
-            let mut score: i64 = 0;
-            let mut x = 0usize;
-            while x < px {
-                let base = x * channels;
-                let mut c = 0usize;
-                while c < channels {
-                    let i = base + c;
-                    let left = if x > 0 { row[i - channels] as i64 } else { 0 };
-                    let up = if has_prev { prev[i] as i64 } else { 0 };
-                    let ul = if has_prev && x > 0 { prev[i - channels] as i64 } else { 0 };
-                    let pred = pred_value(pt, left, up, ul);
-                    let rr = py_mod(row[i] as i64 - pred, modv) as i64;
-                    score += if rr <= modv - rr { rr } else { modv - rr };
-                    c += 1;
-                }
-                x += 1;
-            }
-            if best_score < 0 || score < best_score {
-                best_score = score;
-                best_pt = pt;
+            if best_score < 0 || scores[pt] < best_score {
+                best_score = scores[pt];
+                best_pt = pt as i32;
             }
         }
 
@@ -1794,6 +1838,69 @@ unsafe fn plan_cost(syms: &[u32], n_symbols: usize) -> i64 {
     r as i64
 }
 
+/// Cost of one planner candidate: transform the sampled rows, predict them
+/// with the candidate predictor and measure the real range-coded length.
+unsafe fn plan_candidate_cost(
+    px: &[i32], width: usize, height: usize, channels: usize, bit_depth: u32,
+    color_space: i32, rows: usize, transform: i32, filter: i32, pred: i32,
+) -> i64 {
+    let row_len = width * channels;
+    let wide = (color_space == CS_RGB_V || color_space == CS_RGBA_V)
+        && transform == TRANSFORM_YCOCG_V;
+    let modv: i64 = if wide { 1i64 << (bit_depth + 3) } else { 1i64 << bit_depth };
+    let offset: i64 = if wide { modv >> 1 } else { 0 };
+    let n_symbols = modv as usize;
+
+    // transformed sample rows + their real up-context row
+    let mut trows: Vec<Vec<i32>> = Vec::with_capacity(rows);
+    let mut prevs: Vec<Vec<i32>> = Vec::with_capacity(rows);
+    for i in 0..rows {
+        let mut y = (i * height) / rows;
+        if y >= height {
+            y = height - 1;
+        }
+        let mut tr: Vec<i32> = px[y * row_len..(y + 1) * row_len].to_vec();
+        transform_row_inplace(&mut tr, color_space, transform);
+        if offset != 0 {
+            for v in tr.iter_mut() {
+                *v += offset as i32;
+            }
+        }
+        trows.push(tr);
+        if y > 0 {
+            let mut pr: Vec<i32> = px[(y - 1) * row_len..y * row_len].to_vec();
+            transform_row_inplace(&mut pr, color_space, transform);
+            if offset != 0 {
+                for v in pr.iter_mut() {
+                    *v += offset as i32;
+                }
+            }
+            prevs.push(pr);
+        } else {
+            prevs.push(Vec::new());
+        }
+    }
+
+    let mut syms: Vec<u32> = Vec::with_capacity(rows * row_len);
+    let mut scratch: Vec<u32> = Vec::with_capacity(row_len);
+    let mut scratch2: Vec<u32> = Vec::with_capacity(row_len);
+
+    if filter == FILTER_ADAPTIVE_V {
+        for (k, tr) in trows.iter().enumerate() {
+            let pv = if prevs[k].is_empty() { None } else { Some(prevs[k].as_slice()) };
+            adaptive_row(tr, pv, channels, modv, &mut scratch, &mut scratch2);
+            syms.extend_from_slice(&scratch);
+        }
+    } else {
+        for (k, tr) in trows.iter().enumerate() {
+            let pv = if prevs[k].is_empty() { None } else { Some(prevs[k].as_slice()) };
+            predict_row_apply(tr, pv, pred, channels, modv, &mut scratch);
+            syms.extend_from_slice(&scratch);
+        }
+    }
+    plan_cost(&syms, n_symbols)
+}
+
 /// Choose (transform, filter_mode, pred_type) for an image.
 ///
 /// The decision is taken on a spread sample of rows; every sampled row is
@@ -1801,6 +1908,10 @@ unsafe fn plan_cost(syms: &[u32], n_symbols: usize) -> i64 {
 /// what the encoder will actually produce. The pure-Python reference
 /// planner uses the same rows and the same coder, so both backends always
 /// agree on the plan.
+///
+/// The candidates are independent, so they are measured in parallel; the
+/// selection afterwards walks them in the reference order with a strict
+/// `<`, which keeps the tie-breaking identical.
 #[no_mangle]
 pub unsafe extern "C" fn pyra_plan(
     pixels: *const i32, count: usize, width: usize, height: usize,
@@ -1815,7 +1926,6 @@ pub unsafe extern "C" fn pyra_plan(
         return E_PIPE_SHAPE;
     }
     let px = std::slice::from_raw_parts(pixels, count);
-    let row_len = width * channels;
 
     let transforms: &[i32] = if fixed_transform >= 0 {
         if fixed_transform == TRANSFORM_YCOCG_V {
@@ -1831,51 +1941,10 @@ pub unsafe extern "C" fn pyra_plan(
 
     let rows = if height < sample_rows { height } else { sample_rows };
 
-    let mut best_cost: i64 = i64::MAX;
-    let mut best_plan: (i32, i32, i32) = (0, 0, 0);
-    let mut have = false;
-
+    // candidates in reference order: per transform, the global predictors
+    // first, then the adaptive row filter
+    let mut cands: Vec<(i32, i32, i32)> = Vec::new();
     for &transform in transforms.iter() {
-        let wide = (color_space == CS_RGB_V || color_space == CS_RGBA_V)
-            && transform == TRANSFORM_YCOCG_V;
-        let modv: i64 = if wide { 1i64 << (bit_depth + 3) } else { 1i64 << bit_depth };
-        let offset: i64 = if wide { modv >> 1 } else { 0 };
-        let n_symbols = modv as usize;
-
-        // transformed sample rows + their real up-context row
-        let mut trows: Vec<Vec<i32>> = Vec::with_capacity(rows);
-        let mut prevs: Vec<Vec<i32>> = Vec::with_capacity(rows);
-        for i in 0..rows {
-            let mut y = (i * height) / rows;
-            if y >= height {
-                y = height - 1;
-            }
-            let mut tr: Vec<i32> = px[y * row_len..(y + 1) * row_len].to_vec();
-            transform_row_inplace(&mut tr, color_space, transform);
-            if offset != 0 {
-                for v in tr.iter_mut() {
-                    *v += offset as i32;
-                }
-            }
-            trows.push(tr);
-            if y > 0 {
-                let mut pr: Vec<i32> = px[(y - 1) * row_len..y * row_len].to_vec();
-                transform_row_inplace(&mut pr, color_space, transform);
-                if offset != 0 {
-                    for v in pr.iter_mut() {
-                        *v += offset as i32;
-                    }
-                }
-                prevs.push(pr);
-            } else {
-                prevs.push(Vec::new());
-            }
-        }
-
-        let mut syms: Vec<u32> = Vec::with_capacity(rows * row_len);
-        let mut scratch: Vec<u32> = Vec::with_capacity(row_len);
-        let mut scratch2: Vec<u32> = Vec::with_capacity(row_len);
-
         if fixed_filter != FILTER_ADAPTIVE_V {
             let preds: &[i32] = if fixed_pred >= 0 {
                 &[fixed_pred][..]
@@ -1883,34 +1952,47 @@ pub unsafe extern "C" fn pyra_plan(
                 &PRED_CANDIDATES_V[..]
             };
             for &pt in preds.iter() {
-                syms.clear();
-                for (k, tr) in trows.iter().enumerate() {
-                    let pv = if prevs[k].is_empty() { None } else { Some(prevs[k].as_slice()) };
-                    predict_row_apply(tr, pv, pt, channels, modv, &mut scratch);
-                    syms.extend_from_slice(&scratch);
-                }
-                let cost = plan_cost(&syms, n_symbols);
-                if !have || cost < best_cost {
-                    have = true;
-                    best_cost = cost;
-                    best_plan = (transform, FILTER_GLOBAL_V, pt);
-                }
+                cands.push((transform, FILTER_GLOBAL_V, pt));
             }
         }
-
         if fixed_filter != FILTER_GLOBAL_V {
-            syms.clear();
-            for (k, tr) in trows.iter().enumerate() {
-                let pv = if prevs[k].is_empty() { None } else { Some(prevs[k].as_slice()) };
-                adaptive_row(tr, pv, channels, modv, &mut scratch, &mut scratch2);
-                syms.extend_from_slice(&scratch);
+            cands.push((transform, FILTER_ADAPTIVE_V, 0));
+        }
+    }
+    if cands.is_empty() {
+        return E_PIPE_SHAPE;
+    }
+
+    let costs: Vec<i64> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(cands.len());
+        for cand in cands.iter() {
+            let px_ref = &px;
+            handles.push(scope.spawn(move || {
+                plan_candidate_cost(
+                    px_ref, width, height, channels, bit_depth, color_space,
+                    rows, cand.0, cand.1, cand.2,
+                )
+            }));
+        }
+        let mut out = Vec::with_capacity(cands.len());
+        for h in handles {
+            match h.join() {
+                Ok(c) => out.push(c),
+                Err(_) => out.push(i64::MAX),
             }
-            let cost = plan_cost(&syms, n_symbols);
-            if !have || cost < best_cost {
-                have = true;
-                best_cost = cost;
-                best_plan = (transform, FILTER_ADAPTIVE_V, 0);
-            }
+        }
+        out
+    });
+
+    let mut best_cost: i64 = i64::MAX;
+    let mut best_plan: (i32, i32, i32) = (0, 0, 0);
+    let mut have = false;
+    for (i, cand) in cands.iter().enumerate() {
+        let cost = costs[i];
+        if !have || cost < best_cost {
+            have = true;
+            best_cost = cost;
+            best_plan = *cand;
         }
     }
 

@@ -538,6 +538,18 @@ class PyraCodec:
         if len(pixels) != width * height * channels:
             raise ValueError(f"Pixel count ({len(pixels)}) != {width}x{height}x{channels}")
 
+        # Native whole-image path: tiles, method candidates and the container
+        # are built in one call, with the tiles spread over the available
+        # cores. It returns None when the backend is unavailable, in which
+        # case the pure-Python reference below runs and produces the very
+        # same bytes.
+        native_blob = _native.encode_image(
+            pixels, width, height, channels, bit_depth, color_space,
+            pred_type, method, tile_size, transform, filter_mode,
+            _PLAN_SAMPLE_ROWS)
+        if native_blob is not None:
+            return native_blob
+
         if pred_type < 0 or transform < 0 or filter_mode < 0:
             p_transform, p_filter, p_pred = cls._plan_encoding(
                 pixels, width, height, bit_depth, color_space,
@@ -702,6 +714,14 @@ class PyraCodec:
 
     @classmethod
     def decode(cls, file_bytes: bytes) -> tuple[dict, list[int]]:
+        # Native whole-image path: container parsing, tile decoding and the
+        # canvas assembly happen in one call (tiles in parallel). None means
+        # "unavailable or malformed" -> the reference path below raises the
+        # proper exception.
+        native = _native.decode_image(file_bytes)
+        if native is not None:
+            return native
+
         meta, compressed_tiles = PyraContainer.unpack_file(file_bytes)
         width = meta["width"]
         height = meta["height"]

@@ -210,6 +210,21 @@ def _load():
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
                 _sz, _i32, ctypes.POINTER(ctypes.c_ubyte), _sz,
                 ctypes.POINTER(_i32), _sz]
+            lib.pyra_encode_image.restype = _isize
+            lib.pyra_encode_image.argtypes = [
+                ctypes.POINTER(_i32), _sz, _sz, _sz, _sz, ctypes.c_uint32,
+                _i32, _i32, _i32, _sz, _i32, _i32, _sz,
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+                ctypes.POINTER(_sz)]
+            lib.pyra_decode_image.restype = _isize
+            lib.pyra_decode_image.argtypes = [
+                ctypes.POINTER(ctypes.c_ubyte), _sz,
+                ctypes.POINTER(ctypes.POINTER(_i32)), ctypes.POINTER(_sz),
+                ctypes.POINTER(_i32)]
+            lib.pyra_free_buf.restype = None
+            lib.pyra_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
+            lib.pyra_free_buf_i32.restype = None
+            lib.pyra_free_buf_i32.argtypes = [ctypes.POINTER(_i32), _sz]
             _lib = lib
         except OSError:
             _lib = None
@@ -937,3 +952,81 @@ def tile_candidates(canvas, src_stride: int, x: int, y: int, tw: int,
                 return None
             out[METHOD_LZ] = lz_out
     return out
+
+
+# ------------------------------------------------------- whole-image codec
+
+def encode_image(pixels, width: int, height: int, channels: int,
+                 bit_depth: int, color_space: int, pred_type: int = -1,
+                 method: int = -1, tile_size: int = 256, transform: int = -1,
+                 filter_mode: int = -1, sample_rows: int = 8) -> bytes | None:
+    """Encode a whole image in one native call.
+
+    Returns the container bytes, or None when the native backend is
+    unavailable or refuses the input (the caller then runs the pure-Python
+    reference path, which produces the same bytes).
+    """
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    try:
+        buf = _array("i", pixels)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    n = len(buf)
+    if n != width * height * channels:
+        return None
+    src = ctypes.cast(buf.buffer_info()[0], ctypes.POINTER(ctypes.c_int32))
+    out_p = ctypes.POINTER(ctypes.c_ubyte)()
+    out_len = ctypes.c_size_t()
+    rc = lib.pyra_encode_image(
+        src, n, width, height, channels, bit_depth, color_space, pred_type,
+        method, tile_size, transform, filter_mode, sample_rows,
+        ctypes.byref(out_p), ctypes.byref(out_len))
+    if rc != 0 or not out_p:
+        return None
+    try:
+        return ctypes.string_at(out_p, out_len.value)
+    finally:
+        lib.pyra_free_buf(out_p, out_len.value)
+
+
+def decode_image(data: bytes):
+    """Decode a whole container in one native call.
+
+    Returns (meta_dict, pixels) or None when the native backend is
+    unavailable or the file is malformed (the caller then runs the
+    pure-Python reference path, which raises the same exception).
+    """
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    raw = ctypes.create_string_buffer(data, len(data))
+    src = ctypes.cast(raw, ctypes.POINTER(ctypes.c_ubyte))
+    out_p = ctypes.POINTER(ctypes.c_int32)()
+    out_len = ctypes.c_size_t()
+    meta = (ctypes.c_int32 * 12)()
+    rc = lib.pyra_decode_image(src, len(data), ctypes.byref(out_p),
+                                ctypes.byref(out_len), meta)
+    if rc != 0 or not out_p:
+        return None
+    try:
+        pixels = _array("i")
+        pixels.frombytes(ctypes.string_at(out_p, out_len.value * 4))
+    finally:
+        lib.pyra_free_buf_i32(out_p, out_len.value)
+    m = list(meta)
+    meta_dict = {
+        "version": m[0],
+        "width": m[1],
+        "height": m[2],
+        "bit_depth": m[3],
+        "color_space": m[4],
+        "pred_type": m[5],
+        "method": m[6],
+        "tile_size": m[7],
+        "num_tiles": m[8],
+        "transform": m[9],
+        "filter_mode": m[10],
+    }
+    return meta_dict, pixels.tolist()
