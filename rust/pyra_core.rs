@@ -181,10 +181,8 @@ pub unsafe extern "C" fn pyra_rle_decode(
                 if o + c > target {
                     return E_RLE_OVERSHOOT;
                 }
-                for _ in 0..c {
-                    out[o] = 0xFF;
-                    o += 1;
-                }
+                out[o..o + c].fill(0xFF);
+                o += c;
             }
         } else {
             if i >= len {
@@ -208,10 +206,8 @@ pub unsafe extern "C" fn pyra_rle_decode(
                 if o + l > target {
                     return E_RLE_OVERSHOOT;
                 }
-                for _ in 0..l {
-                    out[o] = b_val;
-                    o += 1;
-                }
+                out[o..o + l].fill(b_val);
+                o += l;
             }
         }
     }
@@ -264,9 +260,64 @@ impl std::hash::BuildHasher for FastBuild {
     }
 }
 
-/// Greedy longest-match LZ77, 3-byte hash buckets (newest-first, bounded
-/// depth 32, ties -> smallest distance). Byte/token-identical to Python.
-/// Token buffer must hold >= len + 2 entries.
+/// Common-prefix length of `data[cand..]` and `data[at..]`, capped at
+/// `max_len`.
+#[inline]
+fn lz_match_len(data: &[u8], cand: usize, at: usize, max_len: usize) -> usize {
+    // Word-at-a-time comparison: identical result to the byte loop, but
+    // eight bytes per iteration. The first differing byte is located with
+    // trailing_zeros on the XOR of two little-endian words.
+    let mut l = 0usize;
+    while l + 8 <= max_len {
+        let a = unsafe { (data.as_ptr().add(cand + l) as *const u64).read_unaligned() };
+        let b = unsafe { (data.as_ptr().add(at + l) as *const u64).read_unaligned() };
+        if a != b {
+            let x = (a ^ b).to_le();
+            l += (x.trailing_zeros() / 8) as usize;
+            return l;
+        }
+        l += 8;
+    }
+    while l < max_len && data[cand + l] == data[at + l] {
+        l += 1;
+    }
+    l
+}
+
+/// Expand `l` bytes at offset `o` from the back-reference at distance
+/// `dist` (1-based) inside the raw output buffer.
+///
+/// The reference implementation copies byte by byte, which also reproduces
+/// self-overlapping patterns. The same bytes are produced here by copying
+/// the `dist`-byte pattern and replicating it, which is exactly what the
+/// byte loop computes as well.
+#[inline]
+unsafe fn lz_expand_raw(out: *mut u8, o: usize, dist: usize, l: usize) {
+    let src = o - dist;
+    if dist >= l {
+        std::ptr::copy_nonoverlapping(out.add(src), out.add(o), l);
+    } else {
+        std::ptr::copy_nonoverlapping(out.add(src), out.add(o), dist);
+        let mut w = o + dist;
+        let mut rem = l - dist;
+        while rem > 0 {
+            let n = if rem < dist { rem } else { dist };
+            std::ptr::copy_nonoverlapping(out.add(src), out.add(w), n);
+            w += n;
+            rem -= n;
+        }
+    }
+}
+
+/// `lz_expand_raw` for a growable output vector.
+#[inline]
+unsafe fn lz_expand_vec(out: &mut Vec<u8>, dist: usize, l: usize) {
+    let base = out.len();
+    out.reserve(l);
+    lz_expand_raw(out.as_mut_ptr(), base, dist, l);
+    out.set_len(base + l);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pyra_lz_encode(
     data: *const u8, len: usize, tokens_out: *mut u32,
@@ -315,10 +366,7 @@ pub unsafe extern "C" fn pyra_lz_encode(
                         break;
                     }
                     // verify; self-overlap handled identically by the decoder
-                    let mut l = 0usize;
-                    while l < max_len && data[cand as usize + l] == data[i + l] {
-                        l += 1;
-                    }
+                    let l = lz_match_len(data, cand as usize, i, max_len);
                     if l > best_len {
                         best_len = l;
                         best_dist = dist;
@@ -583,10 +631,8 @@ pub unsafe extern "C" fn pyra_lz_decode_tokens(
         if l + o > target {
             return E_LZ_MATCH_OVER;
         }
-        for _ in 0..l {
-            out[o] = out[o - dist];
-            o += 1;
-        }
+        lz_expand_raw(out.as_mut_ptr(), o, dist, l);
+        o += l;
     }
     if o != target {
         return E_LZ_MISMATCH;
@@ -1164,10 +1210,7 @@ pub unsafe extern "C" fn pyra_decode_lz_method(
         if l + out.len() > rle_len {
             return E_LZ_MATCH_OVER;
         }
-        for _ in 0..l {
-            let b = out[out.len() - dist];
-            out.push(b);
-        }
+        lz_expand_vec(&mut out, dist, l);
     }
     if out.len() != rle_len {
         return E_LZ_MISMATCH;
