@@ -320,26 +320,26 @@ v3 format with the automatic planner enabled):
 
 | path            | encode | decode |
 |-----------------|--------|--------|
-| 256² GRAY + RAW | 42.2x  | 57.5x  |
-| 256² GRAY + RLE | 44.7x  | 62.3x  |
-| 256² GRAY + LZ  | 40.2x  | 63.8x  |
-| 256² RGB  + RAW | 44.4x  | 56.2x  |
-| 256² RGB  + RLE | 46.8x  | 63.8x  |
-| 256² RGB  + LZ  | 39.3x  | 62.5x  |
-| 256² RGBA + RAW | 45.1x  | 57.8x  |
-| 256² RGBA + RLE | 46.4x  | 60.6x  |
-| 256² RGBA + LZ  | 38.3x  | 63.0x  |
+| 256² GRAY + RAW | 42.3x  | 59.6x  |
+| 256² GRAY + RLE | 45.2x  | 60.7x  |
+| 256² GRAY + LZ  | 38.5x  | 61.6x  |
+| 256² RGB  + RAW | 46.9x  | 54.2x  |
+| 256² RGB  + RLE | 48.2x  | 62.3x  |
+| 256² RGB  + LZ  | 41.5x  | 61.6x  |
+| 256² RGBA + RAW | 49.7x  | 58.8x  |
+| 256² RGBA + RLE | 50.3x  | 59.9x  |
+| 256² RGBA + LZ  | 43.1x  | 60.8x  |
 
 Noise-like input (worst case for the predictor) lands in the same range:
-encode 22–53x, decode 54–62x.
+encode 22–54x, decode 51–56x.
 
 A whole real photograph (640×360 RGB, Clouds) shows what the parallel
 whole-image path buys on real data:
 
 | stage   | native | pure-Python | speedup |
 |---------|--------|-------------|---------|
-| encode  | 150 ms | 13 566 ms   | 90x     |
-| decode  | 44 ms  | 3 469 ms    | 80x     |
+| encode  | 127 ms | 12 684 ms   | 100x    |
+| decode  | 31 ms  | 3 178 ms    | 102x    |
 
 Decode used to be entropy-decode-bound (the range coder stayed in Python);
 it is ported too, so both directions now run an order of magnitude faster
@@ -349,8 +349,11 @@ the final `array` → list conversion of the decoded canvas.
 Inside the coder the hot loop was tuned without changing a single output
 bit: the renormalization step picks the E1/E2/E3 branch with masks instead
 of a branch, the LZ match table is keyed by a multiply-shift hash instead of
-the standard library's SipHash, and LZ matches are compared eight bytes at a
-time.
+the standard library's SipHash, LZ matches are compared eight bytes at a
+time, and the adaptive CDF model caches the last updated symbol — updating
+a symbol never changes the cumulative sum below it, so a repeated symbol
+(the common case in real residuals) skips the tree search entirely. That last
+one alone is worth 18 % on encode and 28 % on decode of a real photo.
 
 Profiling the remaining hot spots (rdtsc counters inside the decoder) puts
 the cost at the CDF search and the renormalization, roughly 5.6

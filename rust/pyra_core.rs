@@ -827,7 +827,15 @@ struct Fenwick {
     total: i64,
     cap: i64,
     tree: Vec<i64>,
+    /// Cache of the most recently updated symbol: (cum, freq).
+    /// Updating a symbol does not change the cumulative sum *below* it, so
+    /// the cached values stay exact as long as no other symbol is touched.
+    cache_sym: usize,
+    cache_cum: i64,
+    cache_freq: i64,
 }
+
+const NO_CACHE: usize = usize::MAX;
 
 impl Fenwick {
     fn new(n: usize) -> Self {
@@ -843,6 +851,9 @@ impl Fenwick {
             // cap scales with alphabet size; halving keeps freq >= 1
             cap: std::cmp::max(1i64 << 15, 2 * n as i64),
             tree: vec![0i64; size + 1],
+            cache_sym: NO_CACHE,
+            cache_cum: 0,
+            cache_freq: 0,
         };
         f.rebuild();
         f
@@ -872,6 +883,8 @@ impl Fenwick {
         }
         self.total = self.freq.iter().sum();
         self.rebuild();
+        // every frequency changed: the cache is no longer exact
+        self.cache_sym = NO_CACHE;
     }
 
     fn add(&mut self, symbol: usize) {
@@ -885,24 +898,53 @@ impl Fenwick {
         }
         if self.total > self.cap {
             self.halve();
+        } else if self.cache_sym == symbol {
+            // cum(symbol) is unaffected by its own update, freq grew by one
+            self.cache_freq += 1;
+        } else {
+            self.cache_sym = NO_CACHE;
         }
     }
 
     /// Cumulative frequency strictly below `symbol` (0-based).
-    fn cum(&self, symbol: usize) -> i64 {
+    /// Fills the single-symbol cache so a repeated symbol is cheap.
+    fn cum(&mut self, symbol: usize) -> i64 {
+        if self.cache_sym == symbol {
+            return self.cache_cum;
+        }
         let mut s = 0i64;
         let mut i = symbol;
         while i > 0 {
             s += self.tree[i];
             i -= i & i.wrapping_neg();
         }
+        self.cache_sym = symbol;
+        self.cache_cum = s;
+        self.cache_freq = self.freq[symbol];
         s
+    }
+
+    /// Frequency of `symbol` (honours the cache).
+    fn freq_of(&self, symbol: usize) -> i64 {
+        if self.cache_sym == symbol {
+            return self.cache_freq;
+        }
+        self.freq[symbol]
     }
 
     /// Find symbol s with cum(s) <= target < cum(s+1).
     /// Returns (symbol, cum_low, freq); binary descent, identical to
     /// FenwickCDF.find including the defensive last-symbol clamp.
-    fn find(&self, target: i64) -> (usize, i64, i64) {
+    fn find(&mut self, target: i64) -> (usize, i64, i64) {
+        // Fast path: the target falls inside the symbol that was updated
+        // last (skewed distributions repeat the same symbol a lot).
+        if self.cache_sym != NO_CACHE {
+            let lo = self.cache_cum;
+            let hi = lo + self.cache_freq;
+            if target >= lo && target < hi {
+                return (self.cache_sym, lo, self.cache_freq);
+            }
+        }
         let mut pos = 0usize;
         let mut remaining = target;
         let mut bitmask = self.size;
@@ -917,9 +959,19 @@ impl Fenwick {
         if pos >= self.n {
             let p = self.n - 1;
             // Python: pos = n - 1; cumlow = self.cum(pos)
-            (p, self.cum(p), self.freq[p])
+            let cum = self.cum(p);
+            let freq = self.freq_of(p);
+            self.cache_sym = p;
+            self.cache_cum = cum;
+            self.cache_freq = freq;
+            (p, cum, freq)
         } else {
-            (pos, target - remaining, self.freq[pos])
+            let cum = target - remaining;
+            let freq = self.freq_of(pos);
+            self.cache_sym = pos;
+            self.cache_cum = cum;
+            self.cache_freq = freq;
+            (pos, cum, freq)
         }
     }
 }
@@ -1634,7 +1686,7 @@ unsafe fn encode_symbols(
             return E_ENC_SYM;
         }
         let cum = model.cum(symbol);
-        let f = model.freq[symbol];
+        let f = model.freq_of(symbol);
         let total = model.total;
         let span = high - low + 1;
         let mut r = span / total;
