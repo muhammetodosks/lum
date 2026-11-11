@@ -223,6 +223,47 @@ pub unsafe extern "C" fn pyra_rle_decode(
 
 // ----------------------------------------------------------------- LZ77
 
+/// Integer-only hasher for the LZ match table.
+///
+/// The default `HashMap` hasher is SipHash-1-3, which costs ~20 ns per
+/// lookup; the table is probed once per input byte, so the hash was the
+/// single most expensive part of the LZ encoder. This is the classic
+/// multiply-shift hash: one multiply for the key, one for the mix.
+#[derive(Default, Clone, Copy)]
+struct FastHasher {
+    hash: u64,
+}
+
+impl std::hash::Hasher for FastHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.hash = (self.hash.rotate_left(5) ^ b as u64).wrapping_mul(0x517cc1b727220a95);
+        }
+    }
+
+    #[inline]
+    fn write_u32(&mut self, v: u32) {
+        self.hash = (v as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct FastBuild;
+
+impl std::hash::BuildHasher for FastBuild {
+    type Hasher = FastHasher;
+    #[inline]
+    fn build_hasher(&self) -> FastHasher {
+        FastHasher::default()
+    }
+}
+
 /// Greedy longest-match LZ77, 3-byte hash buckets (newest-first, bounded
 /// depth 32, ties -> smallest distance). Byte/token-identical to Python.
 /// Token buffer must hold >= len + 2 entries.
@@ -239,7 +280,8 @@ pub unsafe extern "C" fn pyra_lz_encode(
         return 1;
     }
 
-    let mut table: HashMap<u32, Vec<u32>> = HashMap::with_capacity(len / 8 + 1);
+    let mut table: HashMap<u32, Vec<u32>, FastBuild> =
+        HashMap::with_capacity_and_hasher(len / 8 + 1, FastBuild);
 
     macro_rules! add_key {
         ($pos:expr) => {{
@@ -842,33 +884,22 @@ fn next_bit(data: &[u8], pos: &mut usize) -> i64 {
 #[inline]
 fn enc_renorm(low: &mut i64, high: &mut i64, bits: &mut Vec<u8>, pending: &mut i64) {
     loop {
-        if *high < HALF {
-            // E1: output 0 + pending 1s
-            bits.push(0);
-            while *pending > 0 {
-                bits.push(1);
-                *pending -= 1;
-            }
-            *low <<= 1;
-            *high = (*high << 1) | 1;
-        } else if *low >= HALF {
-            // E2: output 1 + pending 0s
-            bits.push(1);
-            while *pending > 0 {
-                bits.push(0);
-                *pending -= 1;
-            }
-            *low = (*low - HALF) << 1;
-            *high = ((*high - HALF) << 1) | 1;
-        } else if *low >= QUARTER && *high < THREE_QUARTERS {
-            // E3: straddle, pending bit (span doubles back each time,
-            // so pending stays small and i64 cannot overflow)
-            *pending += 1;
-            *low = (*low - QUARTER) << 1;
-            *high = ((*high - QUARTER) << 1) | 1;
-        } else {
+        // branchless case selection
+        let e1 = (*high < HALF) as i64;
+        let e2 = ((*low >= HALF) & (e1 == 0)) as i64;
+        let e3 = ((*low >= QUARTER) & (*high < THREE_QUARTERS) & (e1 == 0) & (e2 == 0)) as i64;
+        if (e1 | e2 | e3) == 0 {
             break;
         }
+        let n = (e1 | e2) * (*pending + 1);
+        for k in 0..n {
+            let b = if k == 0 { e2 } else { e1 };
+            bits.push(b as u8);
+        }
+        *pending = e3 * (*pending + 1);
+        let off = e2 * HALF + e3 * QUARTER;
+        *low = (*low - off) << 1;
+        *high = ((*high - off) << 1) | 1;
     }
 }
 
@@ -937,21 +968,17 @@ impl<'a> RangeDec<'a> {
         self.high = self.low + r * f - 1;
         // renormalization with value refill
         loop {
-            if self.high < HALF {
-                self.low <<= 1;
-                self.high = (self.high << 1) | 1;
-                self.value = (self.value << 1) | next_bit(self.data, &mut self.pos);
-            } else if self.low >= HALF {
-                self.low = (self.low - HALF) << 1;
-                self.high = ((self.high - HALF) << 1) | 1;
-                self.value = ((self.value - HALF) << 1) | next_bit(self.data, &mut self.pos);
-            } else if self.low >= QUARTER && self.high < THREE_QUARTERS {
-                self.low = (self.low - QUARTER) << 1;
-                self.high = ((self.high - QUARTER) << 1) | 1;
-                self.value = ((self.value - QUARTER) << 1) | next_bit(self.data, &mut self.pos);
-            } else {
+            let e1 = (self.high < HALF) as i64;
+            let e2 = ((self.low >= HALF) & (e1 == 0)) as i64;
+            let e3 = ((self.low >= QUARTER) & (self.high < THREE_QUARTERS)
+                & (e1 == 0) & (e2 == 0)) as i64;
+            if (e1 | e2 | e3) == 0 {
                 break;
             }
+            let off = e2 * HALF + e3 * QUARTER;
+            self.low = (self.low - off) << 1;
+            self.high = ((self.high - off) << 1) | 1;
+            self.value = ((self.value - off) << 1) | next_bit(self.data, &mut self.pos);
         }
         self.model.add(sym);
         sym

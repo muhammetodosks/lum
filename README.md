@@ -215,16 +215,22 @@ Whole-container effect of the native core (256×256 tiles, best of 3,
 
 | path            | encode | decode |
 |-----------------|--------|--------|
-| 256² GRAY + LZ  | 52.6x  | 63.4x  |
-| 256² RGB  + LZ  | 53.4x  | 67.1x  |
-| 256² RGB  + RLE | 39.5x  | 68.2x  |
-| 256² RGB  + RAW | 37.1x  | 55.0x  |
-| 512² RGB  + LZ  | 52.2x  | 66.7x  |
+| 256² GRAY + LZ  | 58.9x  | 66.2x  |
+| 256² RGB  + LZ  | 54.6x  | 69.3x  |
+| 256² RGB  + RLE | 42.8x  | 68.4x  |
+| 256² RGB  + RAW | 39.6x  | 67.2x  |
+| 256² RGBA + LZ  | 60.0x  | 69.5x  |
+| 512² RGB  + LZ  | 57.9x  | 67.3x  |
 
 Decode used to be entropy-decode-bound (the range coder stayed in Python);
 it is ported too, so both directions now run an order of magnitude faster
 on the same bytes. What is left on the Python side is tile bookkeeping and
 the final `array` → list conversion of the decoded canvas.
+
+Inside the coder the hot loop was tuned without changing a single output
+bit: the renormalization step picks the E1/E2/E3 branch with masks instead
+of a branch, and the LZ match table is keyed by a multiply-shift hash
+instead of the standard library's SipHash.
 
 The native library is never required: if `rustc` or the `.so` is missing,
 `native.py` returns `None` and the pure path takes over transparently.
