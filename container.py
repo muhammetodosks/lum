@@ -3,7 +3,9 @@ import zlib
 from .constants import *
 from .security import validate_dimensions, validate_chunk_size, validate_file_size, SecurityError, CorruptedFileError
 
-# Header layouts. v1 carries no transform / filter-mode byte; v2 adds both.
+# Header layouts. v1 carries no transform / filter-mode byte; v2 adds both;
+# v3 keeps that layout but packs residuals into the exact number of bytes
+# they need (v1/v2 wasted one bit per residual symbol).
 _HEADER_V1 = ">8sIIIBBBBII"
 _HEADER_V2 = ">8sIIIBBBBIIBB"
 _HEADER_V1_SIZE = struct.calcsize(_HEADER_V1)
@@ -79,7 +81,7 @@ class PyraContainer:
         if version == VERSION_LEGACY:
             header_fmt = _HEADER_V1
             header_size = _HEADER_V1_SIZE
-        elif version == VERSION:
+        elif version in (VERSION_V2, VERSION):
             header_fmt = _HEADER_V2
             header_size = _HEADER_V2_SIZE
         else:

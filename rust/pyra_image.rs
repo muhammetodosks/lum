@@ -86,6 +86,29 @@ fn pack_width(modv: u64) -> usize {
     (64 - modv.leading_zeros() as usize + 7) / 8
 }
 
+/// Packed residual width for the v3 format: only as many bytes as the
+/// residual alphabet actually needs (`((mod - 1).bit_length() + 7) / 8`).
+/// v1/v2 files used the wider `pack_width` above, so decoding has to pick
+/// the right one based on the container version.
+#[inline]
+fn pack_width_v3(modv: u64) -> usize {
+    if modv <= 1 {
+        1
+    } else {
+        (64 - (modv - 1).leading_zeros() as usize + 7) / 8
+    }
+}
+
+/// Packed residual width for the given container version.
+#[inline]
+fn pack_width_for_version(modv: u64, version: i32) -> usize {
+    if version >= 3 {
+        pack_width_v3(modv)
+    } else {
+        pack_width(modv)
+    }
+}
+
 /// Entropy-encode a symbol stream with the adaptive range coder.
 ///
 /// The output buffer grows until the coder fits; the worst case is a few
@@ -188,7 +211,7 @@ unsafe fn encode_tile_candidates(
         }
     }
 
-    let width = pack_width(modv as u64);
+    let width = pack_width_v3(modv as u64);
     let mut packed: Vec<u8> = vec![0; count * width];
     let rc = pyra_pack_residuals(
         residuals.as_ptr() as *const u32,
@@ -462,7 +485,7 @@ pub unsafe extern "C" fn pyra_encode_image(
         header_size + 4 + index_size + bodies.iter().map(|b| b.len()).sum::<usize>() + 4,
     );
     body.extend_from_slice(&[0x50, 0x59, 0x52, 0x41, 0x0D, 0x0A, 0x1A, 0x0A]); // "PYRA\r\n\x1A\n"
-    body.extend_from_slice(&2u32.to_be_bytes()); // version
+    body.extend_from_slice(&3u32.to_be_bytes()); // version
     body.extend_from_slice(&(width as u32).to_be_bytes());
     body.extend_from_slice(&(height as u32).to_be_bytes());
     body.push(bit_depth as u8);
@@ -544,6 +567,7 @@ pub unsafe extern "C" fn pyra_decode_image(
     let header_size = match version {
         1 => 32usize,
         2 => 34usize,
+        3 => 34usize,
         _ => return E_IMG_HEADER,
     };
     if len < header_size {
@@ -596,7 +620,7 @@ pub unsafe extern "C" fn pyra_decode_image(
 
     let modv = residual_mod(color_space, bit_depth, transform) as i64;
     let offset_v = canonical_offset(color_space, bit_depth, transform);
-    let width_bytes = pack_width(modv as u64);
+    let width_bytes = pack_width_for_version(modv as u64, version);
 
     // tile geometry
     let mut geoms: Vec<TileGeom> = Vec::with_capacity(num_tiles);

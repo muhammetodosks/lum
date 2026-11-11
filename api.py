@@ -95,6 +95,7 @@ def decode_region(file_bytes: bytes, rx: int, ry: int, rw: int, rh: int) -> tupl
     pred_type = meta["pred_type"]
     method = meta["method"]
     channels = PyraCodec._channels_for_colorspace(color_space)
+    legacy = meta.get("version", VERSION) < VERSION
 
     # Identify tiles intersecting region
     region_pixels = [0] * (rw * rh * channels)
@@ -113,7 +114,8 @@ def decode_region(file_bytes: bytes, rx: int, ry: int, rw: int, rh: int) -> tupl
                 tile_pixels = PyraCodec.decode_tile(
                     tile_bytes, tw, th, color_space, pred_type, bit_depth,
                     tile_method, meta.get("transform", TRANSFORM_YCOCG),
-                    meta.get("filter_mode", FILTER_GLOBAL), filter_bits)
+                    meta.get("filter_mode", FILTER_GLOBAL), filter_bits,
+                    legacy=legacy)
                 
                 # Copy intersecting pixels into region buffer
                 for y in range(th):
@@ -143,6 +145,7 @@ def iter_tiles(file_bytes: bytes) -> Generator[tuple[dict, list[int]], None, Non
     bit_depth = meta["bit_depth"]
     pred_type = meta["pred_type"]
     method = meta["method"]
+    legacy = meta.get("version", VERSION) < VERSION
     
     tile_idx = 0
     for ty in range(0, height, tile_size):
@@ -154,7 +157,8 @@ def iter_tiles(file_bytes: bytes) -> Generator[tuple[dict, list[int]], None, Non
             tile_pixels = PyraCodec.decode_tile(
                 tile_bytes, tw, th, color_space, pred_type, bit_depth,
                 tile_method, meta.get("transform", TRANSFORM_YCOCG),
-                meta.get("filter_mode", FILTER_GLOBAL), filter_bits)
+                meta.get("filter_mode", FILTER_GLOBAL), filter_bits,
+                legacy=legacy)
             tile_meta = {"x": tx, "y": ty, "width": tw, "height": th}
             yield tile_meta, tile_pixels
             tile_idx += 1

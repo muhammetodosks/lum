@@ -5,8 +5,9 @@ import os
 from typing import List, Tuple, Optional, BinaryIO, Generator
 
 MAGIC = b"PYRA\r\n\x1A\n"
-VERSION = 2
+VERSION = 3
 VERSION_LEGACY = 1
+VERSION_V2 = 2
 
 # Color Spaces
 CS_GRAY = 1

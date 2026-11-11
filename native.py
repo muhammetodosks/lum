@@ -25,6 +25,15 @@ from .constants import (CorruptedFileError, PyraError, METHOD_RAW, METHOD_RLE,
 _TOKEN_SYMBOLS = 258
 
 
+def _pack_width(mod: int, legacy: bool = False) -> int:
+    """Bytes per packed residual symbol (see compress.pack_width)."""
+    if mod < 1:
+        return 1
+    if legacy:
+        return (mod.bit_length() + 7) // 8
+    return (((mod - 1).bit_length()) + 7) // 8 or 1
+
+
 def _u32_ptr(values) -> tuple:
     """Fast u32 array: array.array("I") beats a starred ctypes tuple build."""
     a = _array("I", values)
@@ -255,11 +264,12 @@ def build_path() -> str | None:
 # Each returns None when the backend must not be used; otherwise raises the
 # reference exception on any Rust error code, or returns the result.
 
-def pack_residuals(residuals: list[int], mod: int) -> bytes | None:
+def pack_residuals(residuals: list[int], mod: int,
+                   legacy: bool = False) -> bytes | None:
     lib = _load()
     if lib is None or not enabled():
         return None
-    width = (mod.bit_length() + 7) // 8
+    width = _pack_width(mod, legacy)
     n = len(residuals)
     a, syms = _u32_ptr(residuals)
     out = (ctypes.c_ubyte * (n * width))()
@@ -270,11 +280,12 @@ def pack_residuals(residuals: list[int], mod: int) -> bytes | None:
     return bytes(memoryview(out))
 
 
-def unpack_residuals(data: bytes, mod: int, count: int) -> list[int] | None:
+def unpack_residuals(data: bytes, mod: int, count: int,
+                     legacy: bool = False) -> list[int] | None:
     lib = _load()
     if lib is None or not enabled():
         return None
-    width = (mod.bit_length() + 7) // 8
+    width = _pack_width(mod, legacy)
     if len(data) < count * width:
         raise CorruptedFileError("truncated packed residual stream")
     buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
@@ -518,12 +529,13 @@ def range_decode(data: bytes, n_symbols: int, count: int) -> list[int] | None:
 # the pure-Python reference and raises the exact reference exception
 # (bit-exact error semantics in both modes).
 
-def decode_rle_method(data: bytes, count: int, mod: int) -> list[int] | None:
+def decode_rle_method(data: bytes, count: int, mod: int,
+                      legacy: bool = False) -> list[int] | None:
     """METHOD_RLE residuals in one native call (None => use the reference)."""
     lib = _load()
     if lib is None or not enabled():
         return None
-    width = (mod.bit_length() + 7) // 8
+    width = _pack_width(mod, legacy)
     packed_len = count * width
     buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
     out = (ctypes.c_uint32 * count)()
@@ -536,12 +548,13 @@ def decode_rle_method(data: bytes, count: int, mod: int) -> list[int] | None:
     return list(out)
 
 
-def decode_lz_method(data: bytes, count: int, mod: int) -> list[int] | None:
+def decode_lz_method(data: bytes, count: int, mod: int,
+                     legacy: bool = False) -> list[int] | None:
     """METHOD_LZ residuals in one native call (None => use the reference)."""
     lib = _load()
     if lib is None or not enabled():
         return None
-    width = (mod.bit_length() + 7) // 8
+    width = _pack_width(mod, legacy)
     packed_len = count * width
     max_rle_len = 2 * packed_len + 64
     buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
@@ -606,12 +619,12 @@ def pipe_reconstruct_into(res_buf, stride: int, offset: int, mod: int,
 
 
 def decode_rle_method_into(data: bytes, count: int, mod: int,
-                           out_buf) -> bool:
+                           out_buf, legacy: bool = False) -> bool:
     """METHOD_RLE residuals written directly into out_buf."""
     lib = _load()
     if lib is None or not enabled():
         return False
-    width = (mod.bit_length() + 7) // 8
+    width = _pack_width(mod, legacy)
     packed_len = count * width
     buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
     out = _u32_view(out_buf)
@@ -625,12 +638,12 @@ def decode_rle_method_into(data: bytes, count: int, mod: int,
 
 
 def decode_lz_method_into(data: bytes, count: int, mod: int,
-                           out_buf) -> bool:
+                          out_buf, legacy: bool = False) -> bool:
     """METHOD_LZ residuals written directly into out_buf."""
     lib = _load()
     if lib is None or not enabled():
         return False
-    width = (mod.bit_length() + 7) // 8
+    width = _pack_width(mod, legacy)
     packed_len = count * width
     max_rle_len = 2 * packed_len + 64
     buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
@@ -652,7 +665,7 @@ def pack_residuals_buf(res_buf, mod: int) -> bytes | None:
     if lib is None or not enabled():
         return None
     count = len(res_buf)
-    width = (mod.bit_length() + 7) // 8
+    width = _pack_width(mod)
     syms = _u32_view(res_buf)
     if syms is None:
         return b""

@@ -17,7 +17,7 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | Feature | Status | Proof |
 |---------|--------|-------|
 | Magic `PYRA\r\n\x1A\n` | ✅ | Byte-exact, 8B, text-translation-safe control chars |
-| Lossless pipeline | ✅ | `test_lossless.py` 245 checks |
+| Lossless pipeline | ✅ | `test_lossless.py` 246 checks |
 | Deterministic encoder | ✅ | Same input → identical bytes |
 | Unsafe-input fuzz | ✅ | 200 RLE / 100 LZ / 80 pipeline / 150 corruption trials, 0 leaks |
 | CRC32 integrity | ✅ | verify command + decoder |
@@ -26,7 +26,9 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | Per-file best method select | ✅ | Encodes all 3 methods per tile, keeps cheapest globally |
 | Auto colour transform (v2) | ✅ | YCoCg vs none, measured with the real coder |
 | Auto row filter (v2) | ✅ | One predictor per row, 3 bits/row in the tile body |
-| Backward compatibility | ✅ | v1 containers still decode |
+| Narrow residual packing (v3) | ✅ | Residuals packed with exactly the bits the alphabet needs |
+| Parallel native codec (v3) | ✅ | Whole-image encode/decode in Rust, one thread per tile |
+| Backward compatibility | ✅ | v1 and v2 containers still decode |
 | SecurityError / CorruptedFileError | ✅ | Explicit typed errors |
 | 16-bit depth | ✅ | Full-pixel domain covered |
 | Animation container | ✅ | Frame count + fps header |
@@ -103,19 +105,26 @@ tile body (adaptive) = [method byte (MIX only)][row filter table][stream]
 
 ## Compression ratio (real photos, 640 px, 8-bit RGB)
 
-| Image | raw | PYRA v1 | **PYRA v2** | PNG (zlib) | v2 vs PNG |
+| Image | raw | PYRA v1 | **PYRA v3** | PNG (zlib) | v3 vs PNG |
 |-------|-----|---------|-------------|------------|----------|
 | Clouds | 691 200 | 226 227 (3.06x) | **210 553 (3.28x)** | 238 846 (2.89x) | −11.8 % |
-| Monument Valley | 687 360 | 178 485 (3.85x) | **166 910 (4.12x)** | 142 754 (4.81x) | +16.9 % |
+| Monument Valley | 687 360 | 178 485 (3.85x) | **153 140 (4.49x)** | 142 754 (4.81x) | +7.3 % |
 | Fuji-san | 689 280 | 219 158 (3.15x) | **204 653 (3.37x)** | 215 432 (3.20x) | −5.0 % |
 | Rainbow | 817 920 | 281 869 (2.90x) | **244 797 (3.34x)** | 240 207 (3.41x) | +1.9 % |
 | Numbat | 691 200 | 109 295 (6.32x) | **96 415 (7.17x)** | 91 272 (7.57x) | +5.6 % |
-| **total** | 3 576 960 | 1 015 034 (3.52x) | **923 328 (3.87x)** | 928 511 (3.85x) | **−0.6 %** |
+| **total** | 3 576 960 | 1 015 034 (3.52x) | **909 558 (3.93x)** | 928 511 (3.85x) | **−2.0 %** |
 
-v2 is **9 % smaller than v1** and, on this set, ends up level with PNG — while
-staying dependency-free and fully deterministic. Every byte is still
+v3 is **10 % smaller than v1** and, on this set, slightly *better* than PNG —
+while staying dependency-free and fully deterministic. Every byte is still
 lossless: the decoded pixels are identical to the input (checked on every
 measurement).
+
+Where the v3 gain comes from: v2's automatic planning (colour transform +
+row filter) plus the v3 residual packing, which stores a residual in exactly
+the number of bits its alphabet needs (`((mod-1).bit_length()+7)//8` bytes
+instead of rounding the alphabet up to a power of two). For an 8-bit image
+that is one byte per residual instead of two, which halves the RLE and LZ
+input — on Monument Valley that alone is 8 % off the final file.
 
 ## Compression Methods (one global per file, in the container header)
 
@@ -128,12 +137,12 @@ measurement).
 
 The encoder runs all 3 candidates per tile, sums the sizes, and picks the single method that minimizes the total (tie → lower method ID → deterministic). With `mix`, every tile independently stores whichever method wins for it — mixed-content images (solid areas + noise areas) compress substantially better than any single global method.
 
-## Container Layout (v2)
+## Container Layout (v3)
 
 ```
 ┌──────────────────────────────────────────────┐
 │ magic            8B   "PYRA\r\n\x1A\n"       │
-│ version          I    4B   (2)               │
+│ version          I    4B   (3)               │
 │ width            I    4B                     │
 │ height           I    4B                     │
 │ bit_depth        B    1B  (8 or 16)          │
@@ -156,10 +165,14 @@ The encoder runs all 3 candidates per tile, sums the sizes, and picks the single
 
 Header format string: `">8sIIIBBBBIIBB"` — 34 bytes.
 
-**v1 files still load.** Version 1 used the 32-byte header `">8sIIIBBBBII"` with
-no transform/filter bytes; such files are read as `transform = YCOCG`,
-`filter_mode = GLOBAL`, which is exactly how they were encoded. Writing v1 is
-no longer offered, reading it is.
+**v1 and v2 files still load.** Version 1 used the 32-byte header
+`">8sIIIBBBBII"` with no transform/filter bytes; such files are read as
+`transform = YCOCG`, `filter_mode = GLOBAL`, which is exactly how they were
+encoded. Version 2 has the same 34-byte layout as v3 but stores residuals
+with the old, wider packing (the alphabet rounded up to a power of two
+instead of the exact bit width); the decoder picks the packing width from
+the version byte, so v2 files decode bit-exactly as well. Writing old
+versions is no longer offered, reading them is.
 
 ## Security Limits and Fuzz Properties
 
@@ -233,6 +246,7 @@ changing a single output bit:
 | Component | Files | Notes |
 |-----------|-------|-------|
 | `rust/pyra_core.rs` | 1 | std-only cdylib, no external crates |
+| `rust/pyra_image.rs` | 1 | whole-image encoder/decoder, one thread per tile |
 | `cpp/pyra_fast.cpp` | 1 | optional C++ helper (adaptive row filters) |
 | `scripts/build_native.sh` | 1 | `rustc --edition 2021 -O --crate-type cdylib` (+ g++ if present) |
 | `native.py` | 1 | stdlib `ctypes` loader, runtime dispatch flags |
@@ -273,6 +287,13 @@ a buffer (`pyra_decode_rle_method` / `pyra_decode_lz_method`) and
 reconstructs the tile straight into the output canvas (`pipe_reconstruct_into`).
 No tile ever round-trips through a Python list any more.
 
+**v3 goes one level higher**: `pyra_encode_image` / `pyra_decode_image` run
+the *whole* container in Rust — planning, tiling, the three method
+candidates, the container header, the tile index and the CRC32 — and encode
+or decode the tiles **in parallel, one thread per tile** (`std::thread::scope`).
+Python hands over the pixel buffer and gets the finished file back; the
+pure-Python path stays available and produces byte-identical output.
+
 ```bash
 scripts/build_native.sh        # -> _libpyra_core.so (loaded automatically)
 PYRA_DISABLE_NATIVE=1 python3 -m pyra.tests.test_lossless   # force fallback
@@ -281,7 +302,7 @@ PYRA_NATIVE=0 ...              # same effect
 
 Dispatch flags are read at **call time** (not import time), so the test suite
 re-encodes whole containers in both modes and asserts the container bytes are
-identical — 245 checks pass with the native core, the same core set passes on
+identical — 246 checks pass with the native core, the same core set passes on
 the pure-Python path.
 
 Measured speedups (256k samples, best of 3):
@@ -295,24 +316,30 @@ Measured speedups (256k samples, best of 3):
 | unpack 64k         | 13 ms  | 34 ms  | 2.6x    |
 
 Whole-container effect of the native core (256×256 tiles, best of 3,
-v2 format with the automatic planner enabled; the canvas stays in one buffer
-end to end):
+v3 format with the automatic planner enabled):
 
 | path            | encode | decode |
 |-----------------|--------|--------|
-| 256² GRAY + RAW | 32.0x  | 60.6x  |
-| 256² GRAY + RLE | 42.2x  | 72.9x  |
-| 256² GRAY + LZ  | 58.3x  | 70.6x  |
-| 256² RGB  + RAW | 36.2x  | 54.8x  |
-| 256² RGB  + RLE | 38.8x  | 68.2x  |
-| 256² RGB  + LZ  | 57.5x  | 71.8x  |
-| 256² RGBA + RAW | 35.5x  | 61.5x  |
-| 256² RGBA + RLE | 40.1x  | 73.4x  |
-| 256² RGBA + LZ  | 61.3x  | 74.8x  |
-| 512² RGB  + LZ  | 61.7x  | 71.5x  |
+| 256² GRAY + RAW | 42.2x  | 57.5x  |
+| 256² GRAY + RLE | 44.7x  | 62.3x  |
+| 256² GRAY + LZ  | 40.2x  | 63.8x  |
+| 256² RGB  + RAW | 44.4x  | 56.2x  |
+| 256² RGB  + RLE | 46.8x  | 63.8x  |
+| 256² RGB  + LZ  | 39.3x  | 62.5x  |
+| 256² RGBA + RAW | 45.1x  | 57.8x  |
+| 256² RGBA + RLE | 46.4x  | 60.6x  |
+| 256² RGBA + LZ  | 38.3x  | 63.0x  |
 
 Noise-like input (worst case for the predictor) lands in the same range:
-encode 40–45x, decode 59–71x.
+encode 22–53x, decode 54–62x.
+
+A whole real photograph (640×360 RGB, Clouds) shows what the parallel
+whole-image path buys on real data:
+
+| stage   | native | pure-Python | speedup |
+|---------|--------|-------------|---------|
+| encode  | 150 ms | 13 566 ms   | 90x     |
+| decode  | 44 ms  | 3 469 ms    | 80x     |
 
 Decode used to be entropy-decode-bound (the range coder stayed in Python);
 it is ported too, so both directions now run an order of magnitude faster
@@ -352,6 +379,7 @@ pyra/
 ├── native.py          ctypes loader for _libpyra_core.so — None-output fallback contract
 ├── fast.py            ctypes loader for _libpyra_fast.so (C++ fast path, same contract)
 ├── rust/pyra_core.rs  std-only Rust cdylib port of the hot paths (bit-exact to Python)
+├── rust/pyra_image.rs whole-image encoder/decoder in Rust, one thread per tile
 ├── cpp/pyra_fast.cpp  C++20 shared library: adaptive row filters (bit-exact to Python)
 ├── scripts/build_native.sh  builds the Rust core and, if g++ is present, the C++ core
 ├── entropy.py         adaptive range coder + Fenwick tree
@@ -361,7 +389,7 @@ pyra/
 ├── tile.py            split / assemble
 ├── security.py        limits + typed errors
 ├── pngbench.py        stdlib-only PNG reader/writer (benchmark reference + write/read loop test)
-└── tests/test_lossless.py   245-check verification suite
+└── tests/test_lossless.py   246-check verification suite
 ```
 
 ## Running Tests

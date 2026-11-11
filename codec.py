@@ -9,7 +9,8 @@ from .entropycost import histogram_cost
 from .tile import split_into_tiles, assemble_from_tiles, Tile
 from .container import PyraContainer
 from .compress import (pack_residuals, unpack_residuals, rle_encode, rle_decode,
-                       lz_encode, lz_decode, TOKEN_EOF, TOKEN_MATCH, TOKEN_SYMBOLS)
+                       lz_encode, lz_decode, pack_width as _pack_width,
+                       TOKEN_EOF, TOKEN_MATCH, TOKEN_SYMBOLS)
 from . import native as _native
 from . import fast as _fast
 from array import array as _array
@@ -311,7 +312,8 @@ class PyraCodec:
         }
 
     @staticmethod
-    def _decode_residuals(data: bytes, method: int, count: int, mod: int) -> list[int]:
+    def _decode_residuals(data: bytes, method: int, count: int, mod: int,
+                          legacy: bool = False) -> list[int]:
         """Residual symbols from a tile byte stream for any method, with
         strict bounded-decode guards (no unbounded memory)."""
         if method == METHOD_RAW:
@@ -321,13 +323,14 @@ class PyraCodec:
             coder = RangeDecoder(data, mod)
             return [coder.decode_symbol() for _ in range(count)]
 
-        packed_len = count * ((mod.bit_length() + 7) // 8)
+        width = _pack_width(mod, legacy)
+        packed_len = count * width
 
         if method == METHOD_RLE:
             # Fused native path: range decode + RLE decode + residual unpack
             # in one call. On any error it returns None and the reference
             # path below re-derives the exact reference exception.
-            native = _native.decode_rle_method(data, count, mod)
+            native = _native.decode_rle_method(data, count, mod, legacy)
             if native is not None:
                 return native
             coder = RangeDecoder(data, TOKEN_SYMBOLS)
@@ -347,10 +350,10 @@ class PyraCodec:
                     raise CorruptedFileError(f"invalid RLE byte symbol {sym}")
                 raw.append(sym)
             packed = rle_decode(bytes(raw), packed_len)
-            return unpack_residuals(packed, mod, count)
+            return unpack_residuals(packed, mod, count, legacy)
 
         if method == METHOD_LZ:
-            native = _native.decode_lz_method(data, count, mod)
+            native = _native.decode_lz_method(data, count, mod, legacy)
             if native is not None:
                 return native
             coder = RangeDecoder(data, TOKEN_SYMBOLS)
@@ -365,7 +368,7 @@ class PyraCodec:
                 raise CorruptedFileError(f"implausible RLE stream length {rle_len}")
             rle = lz_decode(coder.decode_symbol, rle_len)
             packed = rle_decode(rle, packed_len)
-            return unpack_residuals(packed, mod, count)
+            return unpack_residuals(packed, mod, count, legacy)
 
         raise CorruptedFileError(f"unknown compression method {method}")
 
@@ -373,7 +376,8 @@ class PyraCodec:
     def encode_tile(cls, tile: Tile, color_space: int, pred_type: int,
                     bit_depth: int, method: int = METHOD_RAW,
                     transform: int = TRANSFORM_YCOCG,
-                    filter_mode: int = FILTER_GLOBAL) -> bytes:
+                    filter_mode: int = FILTER_GLOBAL,
+                    legacy: bool = False) -> bytes:
         if method not in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
             raise ValueError(f"invalid compression method: {method}")
         residuals, filter_bits = cls._residual_stream(
@@ -382,7 +386,7 @@ class PyraCodec:
         prefix = filter_bits or b""
         if method == METHOD_RAW:
             return prefix + cls._encode_raw(residuals, mod)
-        packed = pack_residuals(residuals, mod)
+        packed = pack_residuals(residuals, mod, legacy)
         rle = rle_encode(packed)
         if method == METHOD_RLE:
             return prefix + cls._encode_rle(rle)
@@ -393,7 +397,8 @@ class PyraCodec:
                     pred_type: int, bit_depth: int, method: int = METHOD_RAW,
                     transform: int = TRANSFORM_YCOCG,
                     filter_mode: int = FILTER_GLOBAL,
-                    filter_bits: bytes | None = None) -> list[int]:
+                    filter_bits: bytes | None = None,
+                    legacy: bool = False) -> list[int]:
         channels = PyraCodec._channels_for_colorspace(color_space)
         mod = PyraCodec._residual_mod(color_space, bit_depth, transform)
         offset = PyraCodec._canonical_offset(color_space, bit_depth, transform)
@@ -406,7 +411,8 @@ class PyraCodec:
                 filter_bits = data[:nbytes]
                 data = data[nbytes:]
 
-        residuals = cls._decode_residuals(data, method, width * height * channels, mod)
+        residuals = cls._decode_residuals(data, method, width * height * channels,
+                                         mod, legacy)
 
         if filter_mode == FILTER_ADAPTIVE:
             fast = _fast.adaptive_reconstruct(
@@ -628,6 +634,7 @@ class PyraCodec:
         tile_size = meta["tile_size"]
         transform = meta.get("transform", TRANSFORM_YCOCG)
         filter_mode = meta.get("filter_mode", FILTER_GLOBAL)
+        legacy = meta.get("version", VERSION) < VERSION
 
         channels = cls._channels_for_colorspace(color_space)
         mod = cls._residual_mod(color_space, bit_depth, transform)
@@ -668,9 +675,11 @@ class PyraCodec:
                 if tile_method == METHOD_RAW:
                     ok = _native.range_decode_into(tile_bytes, mod, count, res_buf)
                 elif tile_method == METHOD_RLE:
-                    ok = _native.decode_rle_method_into(tile_bytes, count, mod, res_buf)
+                    ok = _native.decode_rle_method_into(tile_bytes, count, mod,
+                                                        res_buf, legacy)
                 else:
-                    ok = _native.decode_lz_method_into(tile_bytes, count, mod, res_buf)
+                    ok = _native.decode_lz_method_into(tile_bytes, count, mod,
+                                                       res_buf, legacy)
                 if not ok:
                     return None
                 dst_offset = (ty * width + tx) * channels
@@ -732,6 +741,7 @@ class PyraCodec:
         tile_size = meta["tile_size"]
         transform = meta.get("transform", TRANSFORM_YCOCG)
         filter_mode = meta.get("filter_mode", FILTER_GLOBAL)
+        legacy = meta.get("version", VERSION) < VERSION
 
         native = cls._decode_native(meta, compressed_tiles)
         if native is not None:
@@ -749,7 +759,7 @@ class PyraCodec:
                     meta, compressed_tiles[tile_idx], th)
                 tile_pixels = cls.decode_tile(
                     tile_bytes, tw, th, color_space, pred_type, bit_depth,
-                    tile_method, transform, filter_mode, filter_bits)
+                    tile_method, transform, filter_mode, filter_bits, legacy)
                 tiles.append(Tile(tx, ty, tw, th, tile_pixels))
                 tile_idx += 1
 

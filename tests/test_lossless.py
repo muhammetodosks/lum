@@ -340,7 +340,9 @@ def test_compress_methods():
         syms = [rnd.randrange(mod) for _ in range(50)]
         check(f"pack/unpack mod={mod}", unpack_residuals(pack_residuals(syms, mod), mod, len(syms)) == syms)
     try:
-        unpack_residuals(b"\x00\x01", 256, 2)
+        # mod=200 packs into a single byte per symbol, so 0xC8 (=200) is
+        # out of range and must be rejected.
+        unpack_residuals(b"\x00\xc8", 200, 2)
         check("unpack range guard", False)
     except CFE:
         check("unpack range guard", True)
@@ -1113,11 +1115,12 @@ def test_buffer_pipeline():
             print(f"       - {f}")
 
 
-def test_v2_format():
-    """v2 container: auto colour transform, auto row filter, adaptive predictors."""
+def test_v3_format():
+    """v3 container: auto colour transform, auto row filter, adaptive predictors,
+    plus backward compatibility with the v1/v2 packed residual widths."""
     from pyra.constants import (TRANSFORM_YCOCG, TRANSFORM_NONE,
                                 FILTER_GLOBAL, FILTER_ADAPTIVE,
-                                VERSION, VERSION_LEGACY, MAGIC)
+                                VERSION, VERSION_LEGACY, VERSION_V2, MAGIC)
 
     def pure(fn, *args, **kwargs):
         old = os.environ.get("PYRA_DISABLE_NATIVE")
@@ -1135,10 +1138,10 @@ def test_v2_format():
     px = make_pixels("photo", w, h, 3, 8)
     blob = PyraCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16, METHOD_LZ)
     meta, tiles = PyraContainer.unpack_file(blob)
-    check("v2 container version == 2", meta["version"] == VERSION)
-    check("v2 container stores transform",
+    check("v3 container version == 3", meta["version"] == VERSION)
+    check("v3 container stores transform",
           meta["transform"] in (TRANSFORM_YCOCG, TRANSFORM_NONE))
-    check("v2 container stores filter mode",
+    check("v3 container stores filter mode",
           meta["filter_mode"] in (FILTER_GLOBAL, FILTER_ADAPTIVE))
 
     # (2) every forced transform / filter combination roundtrips
@@ -1186,14 +1189,21 @@ def test_v2_format():
                              TRANSFORM_YCOCG, FILTER_GLOBAL)
     none = PyraCodec.encode(p, 60, 40, 8, CS_RGB, PRED_PAETH, 32, METHOD_LZ,
                             TRANSFORM_NONE, FILTER_GLOBAL)
-    check("v2 transform changes the encoded stream", ycocg != none)
+    check("v3 transform changes the encoded stream", ycocg != none)
 
     # (5) v1 files (no transform / filter bytes) still decode
-    def pack_v1(width, height, bit_depth, color_space, pred_type, method,
-                tile_size, tile_blobs):
-        header = struct.pack(">8sIIIBBBBII", MAGIC, VERSION_LEGACY, width,
-                              height, bit_depth, color_space, pred_type, method,
-                              tile_size, len(tile_blobs))
+    def pack_legacy(version, width, height, bit_depth, color_space, pred_type,
+                    method, tile_size, tile_blobs, transform=TRANSFORM_YCOCG,
+                    filter_mode=FILTER_GLOBAL):
+        if version == VERSION_LEGACY:
+            header = struct.pack(">8sIIIBBBBII", MAGIC, version, width,
+                                 height, bit_depth, color_space, pred_type,
+                                 method, tile_size, len(tile_blobs))
+        else:
+            header = struct.pack(">8sIIIBBBBIIBB", MAGIC, version, width,
+                                 height, bit_depth, color_space, pred_type,
+                                 method, tile_size, len(tile_blobs),
+                                 transform, filter_mode)
         index_size = len(tile_blobs) * 8
         offset = len(header) + 4 + index_size
         index = bytearray()
@@ -1212,9 +1222,11 @@ def test_v2_format():
         p = make_pixels("photo", w, h, ch, 8)
         tiles = split_into_tiles(p, w, h, ch, 16)
         bodies = [PyraCodec.encode_tile(t, cs, PRED_PAETH, 8, METHOD_LZ,
-                                        TRANSFORM_YCOCG, FILTER_GLOBAL)
+                                        TRANSFORM_YCOCG, FILTER_GLOBAL,
+                                        legacy=True)
                   for t in tiles]
-        legacy = pack_v1(w, h, 8, cs, PRED_PAETH, METHOD_LZ, 16, bodies)
+        legacy = pack_legacy(VERSION_LEGACY, w, h, 8, cs, PRED_PAETH,
+                             METHOD_LZ, 16, bodies)
         m, decoded = PyraCodec.decode(legacy)
         if decoded != p:
             fails.append(f"v1 decode cs{cs}")
@@ -1222,6 +1234,30 @@ def test_v2_format():
                 or m["filter_mode"] != FILTER_GLOBAL:
             fails.append(f"v1 meta cs{cs}")
     check(f"v1 legacy container still decodes ({len(fails)} failures)", not fails)
+    if fails:
+        for f in fails[:5]:
+            print(f"       - {f}")
+
+    # (5b) v2 files (transform / filter bytes, legacy packed width) still decode
+    fails = []
+    for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3)):
+        for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
+            w, h = 32, 24
+            p = make_pixels("photo", w, h, ch, 8)
+            tiles = split_into_tiles(p, w, h, ch, 16)
+            bodies = [PyraCodec.encode_tile(t, cs, PRED_PAETH, 8, method,
+                                            TRANSFORM_NONE, FILTER_GLOBAL,
+                                            legacy=True)
+                      for t in tiles]
+            legacy = pack_legacy(VERSION_V2, w, h, 8, cs, PRED_PAETH,
+                                 method, 16, bodies, TRANSFORM_NONE,
+                                 FILTER_GLOBAL)
+            m, decoded = PyraCodec.decode(legacy)
+            if decoded != p:
+                fails.append(f"v2 decode cs{cs} m{method}")
+            if m["version"] != VERSION_V2 or m["transform"] != TRANSFORM_NONE:
+                fails.append(f"v2 meta cs{cs} m{method}")
+    check(f"v2 legacy container still decodes ({len(fails)} failures)", not fails)
     if fails:
         for f in fails[:5]:
             print(f"       - {f}")
@@ -1265,7 +1301,7 @@ def main():
     test_native_backend()
     test_range_coder()
     test_buffer_pipeline()
-    test_v2_format()
+    test_v3_format()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

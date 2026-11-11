@@ -38,11 +38,27 @@ _MAXRUN = 255
 
 # ---------------------------------------------------------------- packing
 
-def pack_residuals(residuals: list[int], mod: int) -> bytes:
+def pack_width(mod: int, legacy: bool = False) -> int:
+    """Bytes per packed residual symbol.
+
+    v3 stores each residual in exactly the bits it needs
+    (ceil(log2(mod)) bits, rounded up to whole bytes). v1/v2 derived the
+    width from mod.bit_length(), which added one spare bit per symbol and
+    pushed whole-byte alphabets (mod = 256) into a two-byte slot. Files
+    written before v3 are decoded with the old width."""
+    if mod < 1:
+        return 1
+    if legacy:
+        return (mod.bit_length() + 7) // 8
+    return (((mod - 1).bit_length()) + 7) // 8 or 1
+
+
+def pack_residuals(residuals: list[int], mod: int,
+                   legacy: bool = False) -> bytes:
     """Pack residual symbols (each in [0, mod)) into a byte stream with a
     fixed little-endian width of ceil(bits) bytes per symbol."""
-    width = (mod.bit_length() + 7) // 8
-    _native = native.pack_residuals(residuals, mod)
+    width = pack_width(mod, legacy)
+    _native = native.pack_residuals(residuals, mod, legacy)
     if _native is not None:
         return _native
     out = bytearray()
@@ -51,10 +67,11 @@ def pack_residuals(residuals: list[int], mod: int) -> bytes:
     return bytes(out)
 
 
-def unpack_residuals(data: bytes, mod: int, count: int) -> list[int]:
+def unpack_residuals(data: bytes, mod: int, count: int,
+                     legacy: bool = False) -> list[int]:
     """Inverse of pack_residuals for exactly `count` symbols."""
-    width = (mod.bit_length() + 7) // 8
-    _native = native.unpack_residuals(data, mod, count)
+    width = pack_width(mod, legacy)
+    _native = native.unpack_residuals(data, mod, count, legacy)
     if _native is not None:
         return _native
     if len(data) < count * width:
