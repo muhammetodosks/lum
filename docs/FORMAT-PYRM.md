@@ -67,7 +67,7 @@ One 16 byte record per tile:
 | 0  | 4 | offset of the tile body (absolute) |
 | 4  | 4 | length of the tile body |
 | 8  | 1 | method (0 = RAW, 1 = LZ) |
-| 9  | 1 | flags (0x01 = byte-plane split, 0x02 = adaptive row filter) |
+| 9  | 1 | flags (0x01 = byte-plane split, 0x02 = adaptive row filter, 0x04 = escape coding) |
 | 10 | 2 | filter table size in bytes |
 | 12 | 4 | CRC-32 of the tile body |
 
@@ -82,7 +82,7 @@ Tiles are ordered slice by slice, and inside a slice in raster order.
 
 The **row filter table** stores one predictor id per row (4 bits, MSB first,
 `ceil(rows/2)` bytes). The **entropy stream** is a range-coded symbol stream
-that carries the packed residual bytes of the tile.
+that carries the residual symbols of the tile.
 
 ## Code units
 
@@ -105,6 +105,29 @@ Float samples are *shuffled into their four byte planes* (low plane first)
 before coding, and are never predicted. The entropy coder then sees smooth
 byte streams instead of the random bit pattern of a float mantissa, which
 compresses far better and stays exactly lossless.
+
+### Escape coding (16 and 32 bit samples, flag 0x04)
+
+Coding one symbol per residual *byte* would need two symbols for a 16 bit
+sample, although more than 99 % of the residuals of real medical data fit
+into +-63. Wide samples are therefore coded with **one symbol per sample**:
+
+* the residual is mapped into the signed range `[-modulus/2, modulus/2)`;
+* a residual of at most +-63 is zig-zag encoded into the alphabet `0..127`
+  (`0` -> 0, `1` -> -1, `2` -> 1, ...);
+* a larger residual escapes: the marker `128` is followed by
+  `ceil(bits / 7)` symbols that carry the two's complement bit pattern of
+  the value in 7 bit chunks (three chunks for 16 bit samples, five for 32
+  bit ones).
+
+The entropy alphabet of such a tile is therefore 129 symbols, and the
+escape rate of typical data is below one percent. The decoder rebuilds the
+exact same residual values, so the tile stays bit-exact lossless.
+
+The encoder measures the escape rate of every tile and only uses this coding
+when at most a quarter of the residuals escape; otherwise it falls back to
+the byte plane coding, which is cheaper for noisy data. The tile flag
+records which of the two layouts was used.
 
 ## Predictors
 

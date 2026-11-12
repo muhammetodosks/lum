@@ -386,6 +386,7 @@ auditability. The full specification lives in
 | Sample formats | u8, u16, u32, i16, i32, f32 (floats are shuffled into byte planes before coding) |
 | Metadata | UTF-8 JSON block (patient ids, scanner, protocol) with its own CRC |
 | Preview | Window/level 8-bit preview of any slice, computed in C++ |
+| Speed | One entropy symbol per *sample* (not per byte): the centred residual is zig-zag coded and only rare outliers escape into a few extra symbols |
 
 The decoder never returns unverified data: every integrity check runs before
 the samples are handed back, and a mismatch raises `CorruptedFileError`.
@@ -419,6 +420,19 @@ texture), native core versus the pure-Python reference:
 The numbers in brackets are the speedup over the pure-Python reference,
 which produces the very same bytes. Over the three volumes the file size
 drops from 38.3 MB to 18.3 MB (2.09x).
+
+The numbers above are the ones of the first PYRM release. The rewritten
+Rust core and the one-symbol-per-sample coding changed both:
+
+| 256×256×32 u16 (4 MB) | before | now | gain |
+|----------------------|--------|-----|------|
+| encode (automatic method) | 2 051 ms | **434 ms** | 4.7x |
+| decode | 491 ms | **172 ms** | 2.9x |
+| file size | 2 000 713 B | **1 556 651 B** | 22 % smaller |
+
+The file gets *smaller* as well, because one zig-zag coded symbol per
+sample is a better model of the residuals than two independent byte
+models.
 
 ## Architecture
 
