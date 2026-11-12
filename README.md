@@ -413,10 +413,12 @@ texture), native core versus the pure-Python reference:
 | volume | encode | decode | ratio |
 |--------|--------|--------|-------|
 | 128×128×16 u16 | 250 ms (33x) | 61 ms (54x) | 1.83x |
-| 256×256×32 u16 | 1 946 ms | 468 ms | 2.10x |
+| 256×256×32 u16 | 1 946 ms (35x) | 468 ms (62x) | 2.10x |
+| 512×512×64 u16 | 9 140 ms | 2 361 ms | 2.10x |
 
 The numbers in brackets are the speedup over the pure-Python reference,
-which produces the very same bytes.
+which produces the very same bytes. Over the three volumes the file size
+drops from 38.3 MB to 18.3 MB (2.09x).
 
 ## Architecture
 
