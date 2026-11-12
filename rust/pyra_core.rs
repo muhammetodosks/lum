@@ -1038,28 +1038,6 @@ fn next_bit(data: &[u8], pos: &mut usize) -> i64 {
     ((data[byte_i] >> (7 - (idx & 7))) & 1) as i64
 }
 
-#[inline]
-fn enc_renorm(low: &mut i64, high: &mut i64, bits: &mut Vec<u8>, pending: &mut i64) {
-    loop {
-        // branchless case selection
-        let e1 = (*high < HALF) as i64;
-        let e2 = ((*low >= HALF) & (e1 == 0)) as i64;
-        let e3 = ((*low >= QUARTER) & (*high < THREE_QUARTERS) & (e1 == 0) & (e2 == 0)) as i64;
-        if (e1 | e2 | e3) == 0 {
-            break;
-        }
-        let n = (e1 | e2) * (*pending + 1);
-        for k in 0..n {
-            let b = if k == 0 { e2 } else { e1 };
-            bits.push(b as u8);
-        }
-        *pending = e3 * (*pending + 1);
-        let off = e2 * HALF + e3 * QUARTER;
-        *low = (*low - off) << 1;
-        *high = ((*high - off) << 1) | 1;
-    }
-}
-
 /// Integer division with a 32-bit fast path.
 ///
 /// The coder divides a span of at most 2^32 by a total that never exceeds
@@ -1086,7 +1064,9 @@ struct RangeEnc {
     model: Fenwick,
     low: i64,
     high: i64,
-    bits: Vec<u8>,
+    out: Vec<u8>,
+    acc: u32,
+    nbits: u32,
     pending: i64,
 }
 
@@ -1096,8 +1076,54 @@ impl RangeEnc {
             model: Fenwick::new(n_symbols),
             low: 0,
             high: (1i64 << 32) - 1, // inclusive
-            bits: Vec::with_capacity(cap_hint),
+            out: Vec::with_capacity(cap_hint / 8 + 16),
+            acc: 0,
+            nbits: 0,
             pending: 0,
+        }
+    }
+
+    /// Append one bit (MSB first).
+    #[inline]
+    fn put_bit(&mut self, bit: u8) {
+        self.acc = (self.acc << 1) | (bit as u32 & 1);
+        self.nbits += 1;
+        if self.nbits == 8 {
+            self.out.push(self.acc as u8);
+            self.acc = 0;
+            self.nbits = 0;
+        }
+    }
+
+    /// Append `n` copies of the same bit.
+    #[inline]
+    fn put_bits(&mut self, bit: u8, n: i64) {
+        for _ in 0..n {
+            self.put_bit(bit);
+        }
+    }
+
+    /// Renormalisation with the E1/E2/E3 cases picked by masks.
+    #[inline]
+    fn renorm(&mut self) {
+        loop {
+            let e1 = (self.high < HALF) as i64;
+            let e2 = ((self.low >= HALF) & (e1 == 0)) as i64;
+            let e3 = ((self.low >= QUARTER) & (self.high < THREE_QUARTERS)
+                & (e1 == 0) & (e2 == 0)) as i64;
+            if (e1 | e2 | e3) == 0 {
+                break;
+            }
+            let n = (e1 | e2) * (self.pending + 1);
+            if n > 0 {
+                // the leading bit is the E2 bit, the rest are E1 bits
+                self.put_bit(e2 as u8);
+                self.put_bits(e1 as u8, n - 1);
+            }
+            self.pending = e3 * (self.pending + 1);
+            let off = e2 * HALF + e3 * QUARTER;
+            self.low = (self.low - off) << 1;
+            self.high = ((self.high - off) << 1) | 1;
         }
     }
 
@@ -1119,7 +1145,7 @@ impl RangeEnc {
         }
         self.low = new_low;
         self.high = new_high;
-        enc_renorm(&mut self.low, &mut self.high, &mut self.bits, &mut self.pending);
+        self.renorm();
         self.model.add(symbol);
     }
 
@@ -1127,45 +1153,26 @@ impl RangeEnc {
     /// whole bytes.
     #[inline]
     fn bit_len(&self) -> usize {
-        self.bits.len()
+        self.out.len() * 8 + self.nbits as usize
     }
 
-    /// WNC flush plus MSB-first bit packing, zero-padded last byte.
+    /// WNC flush plus the zero padded last byte.
     fn finish(mut self) -> Vec<u8> {
         self.pending += 1;
         if self.low < QUARTER {
-            self.bits.push(0);
-            for _ in 0..self.pending {
-                self.bits.push(1);
-            }
+            self.put_bit(0);
+            self.put_bits(1, self.pending);
         } else {
-            self.bits.push(1);
-            for _ in 0..self.pending {
-                self.bits.push(0);
-            }
+            self.put_bit(1);
+            self.put_bits(0, self.pending);
         }
-        pack_bits_msb(&self.bits)
-    }
-}
-
-/// MSB-first bit packing into bytes, the last byte zero-padded.
-fn pack_bits_msb(bits: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity((bits.len() + 7) / 8);
-    let mut byte = 0u32;
-    let mut nb = 0u32;
-    for &b in bits.iter() {
-        byte = (byte << 1) | b as u32;
-        nb += 1;
-        if nb == 8 {
-            out.push(byte as u8);
-            byte = 0;
-            nb = 0;
+        if self.nbits > 0 {
+            self.out.push((self.acc << (8 - self.nbits)) as u8);
+            self.acc = 0;
+            self.nbits = 0;
         }
+        self.out
     }
-    if nb > 0 {
-        out.push((byte << (8 - nb)) as u8);
-    }
-    out
 }
 
 /// Encode a symbol list with a bit budget.

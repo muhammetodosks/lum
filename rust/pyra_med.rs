@@ -11,22 +11,27 @@
 //! [row filter table]   (only when the tile uses the adaptive filter)
 //! [entropy stream]     (range coded symbols)
 //! ```
+//!
+//! Performance notes
+//! -----------------
+//! * Every tile of every slice is an independent job: the slice context of
+//!   the `slice` predictor is derived from the *input* samples, so the
+//!   encoder needs no state from the previous slice and can spread all
+//!   tiles of the whole volume over the cores.
+//! * The decoder splits into two phases. Phase one decodes the entropy
+//!   streams of all tiles (no context needed) in parallel; phase two
+//!   reconstructs the rows slice by slice, which is cheap.
+//! * The two method candidates of a tile share the residual stream, and the
+//!   LZ candidate is encoded under a byte budget: as soon as it grows past
+//!   the raw candidate it is provably larger and is dropped.
+//! * The predictor candidates are scored in a single pass over the row and
+//!   the modular arithmetic avoids the hardware division.
 
 use super::pyra_image::crc32;
+use super::FastBuild;
 use super::RangeDec;
 use super::RangeEnc;
-use std::collections::HashMap;
-
-/// Python-style modulo for 64 bit values: the result is always in [0, m).
-#[inline]
-fn med_mod(x: i64, m: i64) -> i64 {
-    let r = x % m;
-    if r < 0 {
-        r + m
-    } else {
-        r
-    }
-}
+use std::collections::{HashMap, VecDeque};
 
 // ------------------------------------------------------------------ format
 
@@ -55,6 +60,15 @@ const METHOD_LZ: i32 = 1;
 
 const TILE_FLAG_SPLIT: u8 = 0x01;
 const TILE_FLAG_ADAPTIVE: u8 = 0x02;
+const TILE_FLAG_ESCAPE: u8 = 0x04;
+
+/// Wide samples are coded with one symbol per sample: the centred residual
+/// is zig-zag encoded into 0..127 and the rare large residuals escape into
+/// a fixed number of 7 bit chunks.
+const ESCAPE_SYMBOL: u32 = 128;
+const ESCAPE_ALPHABET: usize = 129;
+const ZIGZAG_LIMIT: i64 = 63;
+const ESCAPE_CHUNK_BITS: u32 = 7;
 
 const LZ_MIN_MATCH: usize = 4;
 const LZ_MAX_MATCH: usize = 259;
@@ -87,6 +101,10 @@ struct MedFormat {
     canon_offset: i64,
     signed: bool,
     is_float: bool,
+    /// Wide integer samples use the zig-zag + escape coding.
+    escape: bool,
+    /// Number of 7 bit chunks an escaped residual is made of.
+    escape_chunks: usize,
 }
 
 fn med_format(sample_format: i32) -> Option<MedFormat> {
@@ -108,6 +126,8 @@ fn med_format(sample_format: i32) -> Option<MedFormat> {
             canon_offset: 0,
             signed: false,
             is_float: true,
+            escape: false,
+            escape_chunks: 0,
         })
     } else {
         let bits = 8 * sample_bytes as u32;
@@ -121,12 +141,49 @@ fn med_format(sample_format: i32) -> Option<MedFormat> {
             canon_offset,
             signed,
             is_float: false,
+            escape: sample_bytes > 1,
+            escape_chunks: ((8 * sample_bytes as u32 + ESCAPE_CHUNK_BITS - 1)
+                / ESCAPE_CHUNK_BITS) as usize,
         })
+    }
+}
+
+// ------------------------------------------------------- modular arithmetic
+
+/// Normalise a value into `[0, m)`.
+///
+/// The argument must stay inside `(-2m, 3m)`; the two conditional fixes
+/// below cover that range without a hardware division.
+#[inline]
+fn mod_norm(mut r: i64, m: i64) -> i64 {
+    if r < 0 {
+        r += m;
+        if r < 0 {
+            r += m;
+        }
+    } else if r >= m {
+        r -= m;
+        if r >= m {
+            r -= m;
+        }
+    }
+    r
+}
+
+/// Circular distance of a residual from zero.
+#[inline]
+fn residual_distance(res: i64, m: i64) -> i64 {
+    let d = m - res;
+    if res <= d {
+        res
+    } else {
+        d
     }
 }
 
 // --------------------------------------------------------------- predictors
 
+#[inline]
 fn med_paeth(a: i64, b: i64, c: i64) -> i64 {
     let p = a + b - c;
     let pa = (p - a).abs();
@@ -141,6 +198,7 @@ fn med_paeth(a: i64, b: i64, c: i64) -> i64 {
     }
 }
 
+#[inline]
 fn med_median(a: i64, b: i64, c: i64) -> i64 {
     if c >= a.max(b) {
         a.min(b)
@@ -151,6 +209,12 @@ fn med_median(a: i64, b: i64, c: i64) -> i64 {
     }
 }
 
+/// Predicted value for one sample.
+///
+/// `left`/`up`/`upper_left` come from the same row/column inside the tile,
+/// `slice_val` is the same sample in the previous slice (0 for the first
+/// slice).
+#[inline]
 fn med_predict(pred: i32, left: i64, up: i64, upper_left: i64, slice_val: i64) -> i64 {
     match pred {
         0 => 0,                       // NONE
@@ -165,74 +229,105 @@ fn med_predict(pred: i32, left: i64, up: i64, upper_left: i64, slice_val: i64) -
     }
 }
 
-/// Residuals of one row for one predictor (modular alphabet).
-fn row_residuals(
-    row: &[i64],
-    prev: Option<&[i64]>,
-    slice_row: Option<&[i64]>,
-    channels: usize,
-    modulus: i64,
-    pred: i32,
-) -> Vec<i64> {
-    let n = row.len();
-    let mut out = vec![0i64; n];
-    for i in 0..n {
-        let x = i / channels;
-        let left = if x > 0 { row[i - channels] } else { 0 };
-        let up = match prev {
-            Some(p) => p[i],
-            None => 0,
-        };
-        let upper_left = if x > 0 {
-            match prev {
-                Some(p) => p[i - channels],
-                None => 0,
-            }
-        } else {
-            0
-        };
-        let slice_val = match slice_row {
-            Some(s) => s[i],
-            None => 0,
-        };
-        let p = med_predict(pred, left, up, upper_left, slice_val);
-        out[i] = med_mod(row[i] - p, modulus);
-    }
-    out
-}
-
-/// Circular distance of the residuals from zero.
-fn residual_score(res: &[i64], modulus: i64) -> i64 {
-    let mut score = 0i64;
-    for &r in res {
-        let d = modulus - r;
-        score += if r <= d { r } else { d };
-    }
-    score
-}
-
-/// Pick the cheapest predictor for one row; ties keep the first candidate.
-fn best_row_predictor(
-    row: &[i64],
-    prev: Option<&[i64]>,
-    slice_row: Option<&[i64]>,
+/// Score every predictor candidate of a row in a single pass.
+///
+/// The neighbour context is loaded once per sample instead of once per
+/// candidate, and no residual array is written: the winner is computed
+/// afterwards. Ties keep the first candidate, exactly like the reference.
+fn score_candidates(
+    row: &[u32],
+    prev: Option<&[u32]>,
+    slice_row: Option<&[u32]>,
     channels: usize,
     modulus: i64,
     candidates: &[i32],
-) -> (i32, Vec<i64>) {
-    let mut best_pred = candidates[0];
-    let mut best_res: Vec<i64> = Vec::new();
+) -> (i32, [i64; 8]) {
+    let mut scores = [0i64; 8];
+    let n = row.len();
+    let per_pixel = n / channels.max(1);
+    let mut x = 0usize;
+    for _ in 0..per_pixel {
+        let mut c = 0usize;
+        while c < channels {
+            let i = x * channels + c;
+            let left = if x > 0 { row[i - channels] as i64 } else { 0 };
+            let up = match prev {
+                Some(p) => p[i] as i64,
+                None => 0,
+            };
+            let upper_left = if x > 0 {
+                match prev {
+                    Some(p) => p[i - channels] as i64,
+                    None => 0,
+                }
+            } else {
+                0
+            };
+            let slice_val = match slice_row {
+                Some(s) => s[i] as i64,
+                None => 0,
+            };
+            let value = row[i] as i64;
+            for (k, &pred) in candidates.iter().enumerate() {
+                let p = mod_norm(med_predict(pred, left, up, upper_left, slice_val), modulus);
+                scores[k] += residual_distance(mod_norm(value - p, modulus), modulus);
+            }
+            c += 1;
+        }
+        x += 1;
+    }
+    let mut best = candidates[0];
     let mut best_score = -1i64;
-    for &pred in candidates.iter() {
-        let res = row_residuals(row, prev, slice_row, channels, modulus, pred);
-        let score = residual_score(&res, modulus);
-        if best_score < 0 || score < best_score {
-            best_score = score;
-            best_res = res;
-            best_pred = pred;
+    for (k, &pred) in candidates.iter().enumerate() {
+        if best_score < 0 || scores[k] < best_score {
+            best_score = scores[k];
+            best = pred;
         }
     }
-    (best_pred, best_res)
+    (best, scores)
+}
+
+/// Residuals of one row for one predictor (modular alphabet).
+fn row_residuals(
+    row: &[u32],
+    prev: Option<&[u32]>,
+    slice_row: Option<&[u32]>,
+    channels: usize,
+    modulus: i64,
+    pred: i32,
+) -> Vec<u32> {
+    let n = row.len();
+    let mut out = vec![0u32; n];
+    let per_pixel = n / channels.max(1);
+    let mut x = 0usize;
+    for _ in 0..per_pixel {
+        let mut c = 0usize;
+        while c < channels {
+            let i = x * channels + c;
+            let left = if x > 0 { row[i - channels] as i64 } else { 0 };
+            let up = match prev {
+                Some(p) => p[i] as i64,
+                None => 0,
+            };
+            let upper_left = if x > 0 {
+                match prev {
+                    Some(p) => p[i - channels] as i64,
+                    None => 0,
+                }
+            } else {
+                0
+            };
+            let slice_val = match slice_row {
+                Some(s) => s[i] as i64,
+                None => 0,
+            };
+            let p = mod_norm(med_predict(pred, left, up, upper_left, slice_val), modulus);
+            out[i] = mod_norm(row[i] as i64 - p, modulus) as u32;
+            c += 1;
+        }
+        x += 1;
+    }
+    out
 }
 
 /// Pack one predictor id per row (4 bits, MSB first).
@@ -280,7 +375,7 @@ fn unpack_filter_bits(data: &[u8], rows: usize) -> Vec<i32> {
 }
 
 /// Split packed residuals into byte planes (low plane first).
-fn split_planes(res: &[i64], value_bytes: usize) -> Vec<u8> {
+fn split_planes(res: &[u32], value_bytes: usize) -> Vec<u8> {
     if value_bytes == 1 {
         return res.iter().map(|&r| (r & 0xFF) as u8).collect();
     }
@@ -295,16 +390,16 @@ fn split_planes(res: &[i64], value_bytes: usize) -> Vec<u8> {
 }
 
 /// Inverse of `split_planes`.
-fn merge_planes(data: &[u8], count: usize, value_bytes: usize) -> Vec<i64> {
+fn merge_planes(data: &[u8], count: usize, value_bytes: usize) -> Vec<u32> {
     if value_bytes == 1 {
-        return data[..count].iter().map(|&b| b as i64).collect();
+        return data[..count].iter().map(|&b| b as u32).collect();
     }
-    let mut out = vec![0i64; count];
+    let mut out = vec![0u32; count];
     for plane in 0..value_bytes {
         let base = plane * count;
         let shift = 8 * plane;
         for i in 0..count {
-            out[i] |= (data[base + i] as i64) << shift;
+            out[i] |= (data[base + i] as u32) << shift;
         }
     }
     out
@@ -313,46 +408,155 @@ fn merge_planes(data: &[u8], count: usize, value_bytes: usize) -> Vec<i64> {
 // ------------------------------------------------------------------ samples
 
 /// Read `count` samples and map them into the unsigned code domain.
-fn canonical_row(src: &[u8], offset: usize, count: usize, fmt: &MedFormat) -> Vec<i64> {
+fn canonical_range(src: &[u8], offset: usize, count: usize, fmt: &MedFormat) -> Vec<u32> {
     let mut out = Vec::with_capacity(count * fmt.values_per_sample);
     if fmt.is_float {
         for i in 0..count {
-            let base = offset + i * 4;
+            let b = offset + i * 4;
             for plane in 0..4 {
-                out.push(src[base + plane] as i64);
+                out.push(src[b + plane] as u32);
             }
         }
         return out;
     }
     let sb = fmt.sample_bytes;
-    let bits = 8 * sb as u32;
+    let canon = fmt.canon_offset;
+    let bits = 8 * sb;
     for i in 0..count {
-        let mut v: i64 = 0;
+        let b = offset + i * sb;
+        let mut raw: u64 = 0;
         for k in 0..sb {
-            v |= (src[offset + i * sb + k] as i64) << (8 * k);
+            raw |= (src[b + k] as u64) << (8 * k);
         }
-        if fmt.signed && bits < 64 && (v & (1i64 << (bits - 1))) != 0 {
-            v -= 1i64 << bits;
-        }
-        out.push(med_mod(v + fmt.canon_offset, fmt.modulus));
+        let value: i64 = if fmt.signed && (raw & (1u64 << (bits - 1))) != 0 {
+            (raw as i64) - (1i64 << bits)
+        } else {
+            raw as i64
+        };
+        out.push(((value + canon) as u64 & 0xFFFF_FFFF) as u32);
     }
     out
 }
 
-/// Inverse of `canonical_row`.
-fn decode_row(values: &[i64], fmt: &MedFormat) -> Vec<u8> {
+/// Inverse of `canonical_range`.
+fn decode_row(values: &[u32], fmt: &MedFormat) -> Vec<u8> {
     if fmt.is_float {
         return values.iter().map(|&v| (v & 0xFF) as u8).collect();
     }
     let sb = fmt.sample_bytes;
+    let canon = fmt.canon_offset;
+    let mask: u64 = if sb == 8 {
+        u64::MAX
+    } else {
+        (1u64 << (8 * sb)) - 1
+    };
     let mut out = Vec::with_capacity(values.len() * sb);
     for &v in values {
-        let x = med_mod(v - fmt.canon_offset, fmt.modulus);
+        let bits = ((v as i64 - canon) as u64) & mask;
         for k in 0..sb {
-            out.push(((x >> (8 * k)) & 0xFF) as u8);
+            out.push(((bits >> (8 * k)) & 0xFF) as u8);
         }
     }
     out
+}
+
+/// Decide whether the escape coding beats the byte plane coding.
+///
+/// The escape coding needs one symbol per sample, but a residual that does
+/// not fit into +-63 costs one marker plus `escape_chunks` chunk symbols.
+/// It only pays off when the residuals are concentrated around zero, which
+/// is the normal case for real medical data. For noisy data the byte planes
+/// are cheaper, so the encoder measures the escape rate and picks the
+/// better of the two. The rule is a fixed fraction, so both backends agree.
+fn escape_worth_it(residuals: &[u32], fmt: &MedFormat) -> bool {
+    if residuals.is_empty() {
+        return true;
+    }
+    let half = fmt.modulus >> 1;
+    let mut escapes = 0usize;
+    for &r in residuals.iter() {
+        let rv = r as i64;
+        let c = if rv < half { rv } else { rv - fmt.modulus };
+        if c < -ZIGZAG_LIMIT || c > ZIGZAG_LIMIT {
+            escapes += 1;
+            if escapes * 4 > residuals.len() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Code residuals as one symbol per sample.
+///
+/// A residual that fits into +-63 is zig-zag encoded into 0..127. Anything
+/// larger escapes: the marker 128 is followed by a fixed number of 7 bit
+/// chunks that carry the two's complement bit pattern of the value.
+fn escape_symbols(residuals: &[u32], fmt: &MedFormat) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::with_capacity(residuals.len() + residuals.len() / 16);
+    let half = fmt.modulus >> 1;
+    let bits = 8 * fmt.sample_bytes as u32;
+    for &r in residuals.iter() {
+        let rv = r as i64;
+        let c = if rv < half { rv } else { rv - fmt.modulus };
+        if c >= -ZIGZAG_LIMIT && c <= ZIGZAG_LIMIT {
+            let z = if c >= 0 { 2 * c } else { -2 * c - 1 };
+            out.push(z as u32);
+        } else {
+            out.push(ESCAPE_SYMBOL);
+            let raw = (c as u64) & ((1u64 << bits) - 1);
+            for k in 0..fmt.escape_chunks {
+                out.push(((raw >> (ESCAPE_CHUNK_BITS as usize * k)) & 0x7F) as u32);
+            }
+        }
+    }
+    out
+}
+
+/// Inverse of `escape_symbols`; returns the modular residuals.
+fn escape_residuals<I: Iterator<Item = u32>>(
+    mut it: I,
+    count: usize,
+    fmt: &MedFormat,
+) -> Result<Vec<u32>, isize> {
+    let mut out: Vec<u32> = Vec::with_capacity(count);
+    let bits = 8 * fmt.sample_bytes as u32;
+    let sign_bit = 1u64 << (bits - 1);
+    let modulus = 1u64 << bits;
+    while out.len() < count {
+        let sym = match it.next() {
+            Some(s) => s,
+            None => return Err(E_MED_TRUNC),
+        };
+        let c: i64 = if sym < ESCAPE_SYMBOL {
+            if sym & 1 != 0 {
+                -(((sym + 1) / 2) as i64)
+            } else {
+                (sym / 2) as i64
+            }
+        } else if sym == ESCAPE_SYMBOL {
+            let mut raw: u64 = 0;
+            for k in 0..fmt.escape_chunks {
+                let part = match it.next() {
+                    Some(p) => p,
+                    None => return Err(E_MED_TRUNC),
+                };
+                if part >= ESCAPE_SYMBOL {
+                    return Err(E_MED_LZ);
+                }
+                raw |= (part as u64) << (ESCAPE_CHUNK_BITS as usize * k);
+            }
+            if raw & sign_bit != 0 {
+                (raw as i64) - (modulus as i64)
+            } else {
+                raw as i64
+            }
+        } else {
+            return Err(E_MED_LZ);
+        };
+        out.push(mod_norm(c, fmt.modulus) as u32);
+    }
+    Ok(out)
 }
 
 // ------------------------------------------------------------------ entropy
@@ -365,81 +569,108 @@ fn entropy_encode(symbols: &[u32], n_symbols: usize) -> Vec<u8> {
     enc.finish()
 }
 
-fn entropy_decode(data: &[u8], n_symbols: usize, count: usize) -> Vec<u32> {
+/// Decode `count` symbols into bytes (the raw method only ever produces
+/// byte sized symbols).
+fn entropy_decode_bytes(data: &[u8], n_symbols: usize, count: usize) -> Vec<u8> {
     let mut dec = RangeDec::new(data, n_symbols);
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
-        out.push(dec.decode_symbol() as u32);
+        out.push(dec.decode_symbol() as u8);
     }
     out
 }
 
 // ---------------------------------------------------------------------- lz
 
-/// Tokenise `data` into the LZ77 symbol stream (without the EOF marker).
-fn lz_encode(data: &[u8]) -> Vec<u32> {
-    let n = data.len();
-    let mut out: Vec<u32> = Vec::new();
-    let mut table: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut i = 0usize;
-    while i < n {
-        let mut advance = 1usize;
-        if i + LZ_MIN_MATCH <= n {
-            let key = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | data[i + 2] as u32;
-            let mut best_len = 0usize;
-            let mut best_dist = 0usize;
-            if let Some(chain) = table.get(&key) {
-                let limit = if LZ_MAX_MATCH < n - i { LZ_MAX_MATCH } else { n - i };
-                for &pos in chain.iter().rev() {
-                    let dist = i - (pos as usize);
-                    if dist > LZ_MAX_DIST {
+enum LzTok {
+    Lit(u8),
+    Match { len: usize, dist: usize },
+    Eof,
+}
+
+/// Greedy LZ77 matcher with 3 byte hash chains.
+///
+/// The token sequence is identical to the pure-Python reference: the newest
+/// candidate wins ties, buckets are capped at `LZ_CHAIN_LIMIT` positions
+/// with FIFO eviction and a match must be at least four bytes long.
+struct MedLz<'a> {
+    data: &'a [u8],
+    table: HashMap<u32, VecDeque<u32>, FastBuild>,
+    pos: usize,
+}
+
+impl<'a> MedLz<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        MedLz {
+            data,
+            table: HashMap::with_capacity_and_hasher(data.len() / 8 + 1, FastBuild),
+            pos: 0,
+        }
+    }
+
+    #[inline]
+    fn key_at(&self, pos: usize) -> u32 {
+        ((self.data[pos] as u32) << 16)
+            | ((self.data[pos + 1] as u32) << 8)
+            | (self.data[pos + 2] as u32)
+    }
+
+    /// Remember the 3 byte key at `pos` (if a full key fits).
+    fn add_key(&mut self, pos: usize) {
+        if pos + 3 <= self.data.len() {
+            let key = self.key_at(pos);
+            let bucket = self.table.entry(key).or_insert_with(VecDeque::new);
+            bucket.push_back(pos as u32);
+            if bucket.len() > LZ_CHAIN_LIMIT {
+                bucket.pop_front();
+            }
+        }
+    }
+
+    /// The next token of the stream.
+    fn next_token(&mut self) -> LzTok {
+        let len = self.data.len();
+        let i = self.pos;
+        if i >= len {
+            return LzTok::Eof;
+        }
+        let mut best_len = 0usize;
+        let mut best_dist = 0usize;
+        if i + LZ_MIN_MATCH <= len {
+            let key = self.key_at(i);
+            if let Some(chain) = self.table.get(&key) {
+                let max_len = if LZ_MAX_MATCH < len - i { LZ_MAX_MATCH } else { len - i };
+                for &cand in chain.iter().rev() {
+                    let dist = i - cand as usize;
+                    if dist == 0 || dist > LZ_MAX_DIST {
                         break;
                     }
-                    let cand = pos as usize;
-                    let mut length = 0usize;
-                    while length < limit && data[cand + length] == data[i + length] {
-                        length += 1;
-                    }
-                    if length > best_len {
-                        best_len = length;
+                    let l = super::lz_match_len(self.data, cand as usize, i, max_len);
+                    if l > best_len {
+                        best_len = l;
                         best_dist = dist;
-                        if best_len == limit {
+                        if l >= max_len {
                             break;
                         }
                     }
                 }
             }
-            if best_len >= LZ_MIN_MATCH {
-                out.push(LZ_TOKEN_MATCH);
-                out.push((best_len - LZ_MIN_MATCH) as u32);
-                out.push(((best_dist - 1) >> 8) as u32);
-                out.push(((best_dist - 1) & 0xFF) as u32);
-                advance = best_len;
-            } else {
-                out.push(data[i] as u32);
+        }
+        if best_len >= LZ_MIN_MATCH {
+            for k in i..i + best_len {
+                self.add_key(k);
+            }
+            self.pos = i + best_len;
+            LzTok::Match {
+                len: best_len,
+                dist: best_dist,
             }
         } else {
-            out.push(data[i] as u32);
+            self.add_key(i);
+            self.pos = i + 1;
+            LzTok::Lit(self.data[i])
         }
-        // remember every position covered by this step
-        let cap = n.saturating_sub(LZ_MIN_MATCH - 1);
-        let mut stop = i + advance;
-        if stop > cap {
-            stop = cap;
-        }
-        let mut j = i;
-        while j < stop {
-            let key = ((data[j] as u32) << 16) | ((data[j + 1] as u32) << 8) | data[j + 2] as u32;
-            let chain = table.entry(key).or_insert_with(Vec::new);
-            chain.push(j as u32);
-            if chain.len() > LZ_CHAIN_LIMIT {
-                chain.remove(0);
-            }
-            j += 1;
-        }
-        i += advance;
     }
-    out
 }
 
 /// Rebuild the byte stream from an LZ77 symbol list.
@@ -492,6 +723,88 @@ fn lz_decode(symbols: &[u32], target_len: usize) -> Result<Vec<u8>, isize> {
     Ok(out)
 }
 
+/// Encode the LZ method (token stream plus end marker) with a byte budget.
+///
+/// `max_bits` is the number of bits the candidate may use. The token stream
+/// is produced and coded in one pass, so an oversized candidate is dropped
+/// before the whole stream is tokenised. The final size of a stream is never
+/// smaller than the bits emitted so far, so an abandoned candidate can never
+/// become the winner.
+fn encode_lz_capped(packed: &[u8], max_bits: usize) -> Option<Vec<u8>> {
+    let mut enc = RangeEnc::new(ENTROPY_SYMBOLS_LZ, packed.len() * 2 + 64);
+    let mut matcher = MedLz::new(packed);
+    loop {
+        match matcher.next_token() {
+            LzTok::Eof => {
+                enc.push(LZ_TOKEN_EOF as usize);
+                break;
+            }
+            LzTok::Lit(b) => enc.push(b as usize),
+            LzTok::Match { len, dist } => {
+                enc.push(LZ_TOKEN_MATCH as usize);
+                enc.push(len - LZ_MIN_MATCH);
+                enc.push((dist - 1) >> 8);
+                enc.push((dist - 1) & 0xFF);
+            }
+        }
+        if enc.bit_len() > max_bits {
+            return None;
+        }
+    }
+    Some(enc.finish())
+}
+
+/// Rebuild the byte stream from an LZ77 symbol list, decoding until the
+/// end-of-stream marker. `max_len` bounds the output.
+///
+/// The escape coding uses this variant because the length of the symbol
+/// stream is only known while it is being decoded.
+fn lz_decode_bounded(symbols: &[u32], max_len: usize) -> Result<Vec<u8>, isize> {
+    let mut out: Vec<u8> = Vec::with_capacity(max_len.min(1 << 20));
+    let mut pos = 0usize;
+    let n = symbols.len();
+    while pos < n {
+        let sym = symbols[pos];
+        pos += 1;
+        if sym == LZ_TOKEN_EOF {
+            break;
+        }
+        if sym < 256 {
+            if out.len() >= max_len {
+                return Err(E_MED_LZ);
+            }
+            out.push(sym as u8);
+            continue;
+        }
+        if sym != LZ_TOKEN_MATCH {
+            return Err(E_MED_LZ);
+        }
+        if pos + 3 > n {
+            return Err(E_MED_LZ);
+        }
+        let len_extra = symbols[pos];
+        let dist_hi = symbols[pos + 1];
+        let dist_lo = symbols[pos + 2];
+        pos += 3;
+        if len_extra > 255 || dist_hi > 255 || dist_lo > 255 {
+            return Err(E_MED_LZ);
+        }
+        let length = LZ_MIN_MATCH + len_extra as usize;
+        let dist = (dist_hi * 256 + dist_lo + 1) as usize;
+        if dist > out.len() {
+            return Err(E_MED_LZ);
+        }
+        if out.len() + length > max_len {
+            return Err(E_MED_LZ);
+        }
+        for _ in 0..length {
+            let b = out[out.len() - dist];
+            out.push(b);
+        }
+    }
+    Ok(out)
+}
+
 // -------------------------------------------------------------------- tile
 
 struct TileGeom {
@@ -517,15 +830,24 @@ fn tile_grid(width: usize, height: usize, tile_size: usize) -> Vec<TileGeom> {
     out
 }
 
-/// Encode one tile; returns (body, method, flags).
-fn encode_tile(
-    rows: &[Vec<i64>],
+/// The predictor choice and the residual stream of one tile.
+struct TilePrep {
+    residuals: Vec<u32>,
+    pred_ids: Vec<i32>,
+    table: Vec<u8>,
+    flags: u32,
+}
+
+/// Predict one tile and pack its residuals.
+fn prepare_tile(
+    rows: &[u32],
+    per_row: usize,
+    th: usize,
     channels: usize,
     fmt: &MedFormat,
-    slice_rows: Option<&[Vec<i64>]>,
+    slice_rows: Option<&[u32]>,
     predictor: i32,
-    method: i32,
-) -> (Vec<u8>, i32, u32) {
+) -> TilePrep {
     let mut flags: u32 = 0;
     let candidates: &[i32] = if slice_rows.is_some() {
         &CANDIDATES_3D
@@ -534,14 +856,20 @@ fn encode_tile(
     };
     let mut table: Vec<u8> = Vec::new();
     let mut pred_ids: Vec<i32> = Vec::new();
-    let mut residuals: Vec<i64> = Vec::new();
-    for (r, row) in rows.iter().enumerate() {
-        let prev = if r > 0 { Some(rows[r - 1].as_slice()) } else { None };
-        let slice_row = slice_rows.map(|s| s[r].as_slice());
+    let mut residuals: Vec<u32> = Vec::with_capacity(per_row * th);
+    for r in 0..th {
+        let row = &rows[r * per_row..(r + 1) * per_row];
+        let prev: Option<&[u32]> = if r > 0 {
+            Some(&rows[(r - 1) * per_row..r * per_row])
+        } else {
+            None
+        };
+        let slice_row = slice_rows.map(|s| &s[r * per_row..(r + 1) * per_row]);
         if predictor < 0 {
-            let (pred_id, res) =
-                best_row_predictor(row, prev, slice_row, channels, fmt.modulus, candidates);
+            let (pred_id, _) = score_candidates(row, prev, slice_row, channels,
+                                               fmt.modulus, candidates);
             pred_ids.push(pred_id);
+            let res = row_residuals(row, prev, slice_row, channels, fmt.modulus, pred_id);
             residuals.extend_from_slice(&res);
         } else {
             let res = row_residuals(row, prev, slice_row, channels, fmt.modulus, predictor);
@@ -552,114 +880,67 @@ fn encode_tile(
         table = pack_filter_bits(&pred_ids);
         flags |= TILE_FLAG_ADAPTIVE as u32;
     }
-
-    let packed = if fmt.value_bytes > 1 {
-        flags |= TILE_FLAG_SPLIT as u32;
-        split_planes(&residuals, fmt.value_bytes)
-    } else {
-        residuals.iter().map(|&r| (r & 0xFF) as u8).collect()
-    };
-
-    let stream = if method == METHOD_LZ {
-        let mut tokens = lz_encode(&packed);
-        tokens.push(LZ_TOKEN_EOF);
-        entropy_encode(&tokens, ENTROPY_SYMBOLS_LZ)
-    } else {
-        let symbols: Vec<u32> = packed.iter().map(|&b| b as u32).collect();
-        entropy_encode(&symbols, ENTROPY_SYMBOLS_RAW)
-    };
-
-    let mut body = table;
-    body.extend_from_slice(&stream);
-    (body, method, flags)
+    TilePrep {
+        residuals,
+        pred_ids,
+        table,
+        flags,
+    }
 }
 
-/// Decode one tile into canonical rows.
-fn decode_tile(
-    body: &[u8],
-    flags: u32,
-    method: i32,
-    tw: usize,
+/// Rebuild the canonical rows of one tile from its residuals.
+fn reconstruct_tile(
+    residuals: &[u32],
+    pred_ids: &[i32],
+    per_row: usize,
     th: usize,
     channels: usize,
     fmt: &MedFormat,
-    slice_rows: Option<&[Vec<i64>]>,
-    predictor: i32,
-) -> Result<Vec<Vec<i64>>, isize> {
-    let (stream, pred_ids): (&[u8], Vec<i32>) = if flags & TILE_FLAG_ADAPTIVE as u32 != 0 {
-        let nbytes = (th + 1) / 2;
-        if body.len() < nbytes {
-            return Err(E_MED_TRUNC);
-        }
-        (&body[nbytes..], unpack_filter_bits(&body[..nbytes], th))
-    } else {
-        (body, vec![predictor; th])
-    };
-    if method != METHOD_RAW && method != METHOD_LZ {
-        return Err(E_MED_METHOD);
-    }
-
-    let per_row = tw * channels * fmt.values_per_sample;
-    let count = per_row * th;
-    let packed: Vec<u8> = if method == METHOD_LZ {
-        let mut dec = RangeDec::new(stream, ENTROPY_SYMBOLS_LZ);
-        let mut tokens: Vec<u32> = Vec::new();
-        let limit = count * fmt.value_bytes * 2 + 64;
-        loop {
-            let sym = dec.decode_symbol() as u32;
-            tokens.push(sym);
-            if sym == LZ_TOKEN_EOF {
-                break;
-            }
-            if tokens.len() > limit {
-                return Err(E_MED_LZ);
-            }
-        }
-        lz_decode(&tokens, count * fmt.value_bytes)?
-    } else {
-        entropy_decode(stream, ENTROPY_SYMBOLS_RAW, count * fmt.value_bytes)
-            .iter()
-            .map(|&b| b as u8)
-            .collect()
-    };
-
-    let residuals = if flags & TILE_FLAG_SPLIT as u32 != 0 {
-        merge_planes(&packed, count, fmt.value_bytes)
-    } else {
-        packed[..count].iter().map(|&b| b as i64).collect()
-    };
-
-    let mut rows: Vec<Vec<i64>> = Vec::with_capacity(th);
+    slice_rows: Option<&[u32]>,
+) -> Vec<u32> {
+    let mut rows: Vec<u32> = vec![0u32; per_row * th];
     for r in 0..th {
         let row_res = &residuals[r * per_row..(r + 1) * per_row];
-        let prev: Option<&[i64]> = if r > 0 { Some(rows[r - 1].as_slice()) } else { None };
-        let slice_row = slice_rows.map(|s| s[r].as_slice());
-        let mut row = vec![0i64; per_row];
-        for i in 0..per_row {
-            let x = i / channels;
-            let left = if x > 0 { row[i - channels] } else { 0 };
-            let up = match prev {
-                Some(p) => p[i],
-                None => 0,
-            };
-            let upper_left = if x > 0 {
-                match prev {
-                    Some(p) => p[i - channels],
+        let (head, tail) = rows.split_at_mut(r * per_row);
+        let row_out = &mut tail[..per_row];
+        let prev: Option<&[u32]> = if r > 0 {
+            Some(&head[(r - 1) * per_row..r * per_row])
+        } else {
+            None
+        };
+        let slice_row = slice_rows.map(|s| &s[r * per_row..(r + 1) * per_row]);
+        let pred = pred_ids[r];
+        let mut x = 0usize;
+        let per_pixel = per_row / channels.max(1);
+        for _ in 0..per_pixel {
+            let mut c = 0usize;
+            while c < channels {
+                let i = x * channels + c;
+                let left = if x > 0 { row_out[i - channels] as i64 } else { 0 };
+                let up = match prev {
+                    Some(p) => p[i] as i64,
                     None => 0,
-                }
-            } else {
-                0
-            };
-            let slice_val = match slice_row {
-                Some(s) => s[i],
-                None => 0,
-            };
-            let p = med_predict(pred_ids[r], left, up, upper_left, slice_val);
-            row[i] = med_mod(row_res[i] + p, fmt.modulus);
+                };
+                let upper_left = if x > 0 {
+                    match prev {
+                        Some(p) => p[i - channels] as i64,
+                        None => 0,
+                    }
+                } else {
+                    0
+                };
+                let slice_val = match slice_row {
+                    Some(s) => s[i] as i64,
+                    None => 0,
+                };
+                let p = med_predict(pred, left, up, upper_left, slice_val);
+                row_out[i] = mod_norm(row_res[i] as i64 + p, fmt.modulus) as u32;
+                c += 1;
+            }
+            x += 1;
         }
-        rows.push(row);
     }
-    Ok(rows)
+    rows
 }
 
 // ------------------------------------------------------------------ sha-256
@@ -747,7 +1028,56 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
+// --------------------------------------------------------------- parallelism
+
+/// Run `f` over `0..n` on the available cores, preserving the order.
+fn parallel_map<T, F>(n: usize, f: F) -> Vec<T>
+where
+    F: Fn(usize) -> T + Sync,
+    T: Send,
+{
+    if n == 0 {
+        return Vec::new();
+    }
+    let threads = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(4)
+        .min(n);
+    let chunk = (n + threads - 1) / threads;
+    let mut parts: Vec<Vec<T>> = Vec::new();
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut start = 0usize;
+        while start < n {
+            let end = (start + chunk).min(n);
+            let fref = &f;
+            handles.push(scope.spawn(move || {
+                let mut local = Vec::with_capacity(end - start);
+                for i in start..end {
+                    local.push(fref(i));
+                }
+                local
+            }));
+            start = end;
+        }
+        for h in handles {
+            match h.join() {
+                Ok(v) => parts.push(v),
+                Err(_) => parts.push(Vec::new()),
+            }
+        }
+    });
+    parts.into_iter().flatten().collect()
+}
+
 // ----------------------------------------------------------------- encoder
+
+/// One encoded tile of the volume.
+struct TileBody {
+    body: Vec<u8>,
+    method: u32,
+    flags: u32,
+}
 
 /// Encode a whole medical volume and return the container bytes.
 #[no_mangle]
@@ -802,97 +1132,120 @@ pub unsafe extern "C" fn pyra_med_encode(
 
     let grid = tile_grid(width, height, tile_size);
     let tiles_per_slice = grid.len();
+    let vps = fmt.values_per_sample;
 
-    let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(tiles_per_slice * depth);
-    let mut methods: Vec<u32> = Vec::with_capacity(tiles_per_slice * depth);
-    let mut flags_v: Vec<u32> = Vec::with_capacity(tiles_per_slice * depth);
+    // Every tile of every slice is an independent job: the slice context is
+    // taken from the input samples, so no state crosses a slice boundary.
+    let tasks = depth * tiles_per_slice;
+    let encoded: Vec<TileBody> = parallel_map(tasks, |task| {
+        let z = task / tiles_per_slice;
+        let t = task % tiles_per_slice;
+        let geom = &grid[t];
+        let per_row = geom.w * channels * vps;
+        let slice_stride = width * height * channels * fmt.sample_bytes;
+        let row_stride = width * channels * fmt.sample_bytes;
 
-    let row_values = width * channels * fmt.values_per_sample;
-    let mut prev_slice: Option<Vec<Vec<i64>>> = None;
-
-    for z in 0..depth {
-        let slice_offset = z * width * height * channels * fmt.sample_bytes;
-        let mut slice_rows: Vec<Vec<i64>> = Vec::with_capacity(height);
-        for y in 0..height {
-            let base = slice_offset + y * width * channels * fmt.sample_bytes;
-            slice_rows.push(canonical_row(samples, base, width * channels, &fmt));
+        // the canonical rows of this slice (tile columns only)
+        let mut rows: Vec<u32> = Vec::with_capacity(per_row * geom.h);
+        for r in 0..geom.h {
+            let base = z * slice_stride + (geom.y + r) * row_stride
+                + geom.x * channels * fmt.sample_bytes;
+            rows.extend_from_slice(&canonical_range(
+                samples,
+                base,
+                geom.w * channels,
+                &fmt,
+            ));
         }
-        // encode the tiles of this slice in parallel
-        let prev_ref: Option<&Vec<Vec<i64>>> = prev_slice.as_ref();
-        let encoded: Vec<Option<(Vec<u8>, u32, u32)>> = std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(grid.len());
-            for geom in grid.iter() {
-                let rows_ref = &slice_rows;
-                let prev_ref = prev_ref;
-                handles.push(scope.spawn(move || {
-                    let lo = geom.x * channels * fmt.values_per_sample;
-                    let hi = lo + geom.w * channels * fmt.values_per_sample;
-                    let rows: Vec<Vec<i64>> = (0..geom.h)
-                        .map(|r| rows_ref[geom.y + r][lo..hi].to_vec())
-                        .collect();
-                    let slice_ctx: Option<Vec<Vec<i64>>> = prev_ref.map(|p| {
-                        (0..geom.h)
-                            .map(|r| p[geom.y + r][lo..hi].to_vec())
-                            .collect()
-                    });
-                    let slice_ctx_ref = slice_ctx.as_deref();
-                    let (raw_body, _raw_method, raw_flags) =
-                        encode_tile(&rows, channels, &fmt, slice_ctx_ref, predictor, METHOD_RAW);
-                    if method == -1 {
-                        let (lz_body, _, lz_flags) = encode_tile(
-                            &rows,
-                            channels,
-                            &fmt,
-                            slice_ctx_ref,
-                            predictor,
-                            METHOD_LZ,
-                        );
-                        if lz_body.len() < raw_body.len() {
-                            Some((lz_body, METHOD_LZ as u32, lz_flags))
-                        } else {
-                            Some((raw_body, METHOD_RAW as u32, raw_flags))
-                        }
-                    } else if method == METHOD_LZ {
-                        let (lz_body, _, lz_flags) = encode_tile(
-                            &rows,
-                            channels,
-                            &fmt,
-                            slice_ctx_ref,
-                            predictor,
-                            METHOD_LZ,
-                        );
-                        Some((lz_body, METHOD_LZ as u32, lz_flags))
-                    } else {
-                        Some((raw_body, METHOD_RAW as u32, raw_flags))
-                    }
-                }));
+
+        // the slice context of the previous slice (only needed when the
+        // volumetric predictor is a candidate or is used)
+        let slice_ctx: Option<Vec<u32>> = if z > 0
+            && (predictor < 0 || predictor == PRED_SLICE)
+        {
+            let mut ctx: Vec<u32> = Vec::with_capacity(per_row * geom.h);
+            for r in 0..geom.h {
+                let base = (z - 1) * slice_stride + (geom.y + r) * row_stride
+                    + geom.x * channels * fmt.sample_bytes;
+                ctx.extend_from_slice(&canonical_range(
+                    samples,
+                    base,
+                    geom.w * channels,
+                    &fmt,
+                ));
             }
-            let mut out = Vec::with_capacity(handles.len());
-            for h in handles {
-                match h.join() {
-                    Ok(v) => out.push(v),
-                    Err(_) => out.push(None),
-                }
+            Some(ctx)
+        } else {
+            None
+        };
+
+        let prep = prepare_tile(
+            &rows,
+            per_row,
+            geom.h,
+            channels,
+            &fmt,
+            slice_ctx.as_deref(),
+            predictor,
+        );
+
+        let use_escape = fmt.escape && escape_worth_it(&prep.residuals, &fmt);
+        let (packed, symbols, alphabet, extra_flag) = if use_escape {
+            // one symbol per sample (zig-zag plus escape)
+            let syms = escape_symbols(&prep.residuals, &fmt);
+            let bytes: Vec<u8> = syms.iter().map(|&s| s as u8).collect();
+            (bytes, syms, ESCAPE_ALPHABET, TILE_FLAG_ESCAPE as u32)
+        } else if fmt.value_bytes > 1 {
+            let b = split_planes(&prep.residuals, fmt.value_bytes);
+            let s: Vec<u32> = b.iter().map(|&x| x as u32).collect();
+            (b, s, ENTROPY_SYMBOLS_RAW, TILE_FLAG_SPLIT as u32)
+        } else {
+            let b: Vec<u8> = prep.residuals.iter().map(|&r| (r & 0xFF) as u8).collect();
+            let s: Vec<u32> = b.iter().map(|&x| x as u32).collect();
+            (b, s, ENTROPY_SYMBOLS_RAW, 0)
+        };
+        let flags = prep.flags | extra_flag;
+
+        // the raw candidate
+        let raw_stream = if method == METHOD_LZ {
+            Vec::new()
+        } else {
+            entropy_encode(&symbols, alphabet)
+        };
+
+        // the LZ candidate; with the automatic method it only gets a byte
+        // budget of the raw candidate, because a bigger stream can never win
+        let lz_stream = if method == METHOD_RAW {
+            None
+        } else if method == METHOD_LZ {
+            encode_lz_capped(&packed, usize::MAX)
+        } else {
+            encode_lz_capped(&packed, raw_stream.len().saturating_mul(8))
+        };
+
+        let (stream, used_method) = if method == METHOD_LZ {
+            (lz_stream.unwrap_or_default(), METHOD_LZ)
+        } else if method == METHOD_RAW {
+            (raw_stream, METHOD_RAW)
+        } else {
+            match lz_stream {
+                Some(lz) if lz.len() < raw_stream.len() => (lz, METHOD_LZ),
+                _ => (raw_stream, METHOD_RAW),
             }
-            out
-        });
-        for item in encoded {
-            match item {
-                Some((body, m, f)) => {
-                    bodies.push(body);
-                    methods.push(m);
-                    flags_v.push(f);
-                }
-                None => return E_MED_ALLOC,
-            }
+        };
+
+        let mut body = prep.table;
+        body.extend_from_slice(&stream);
+        TileBody {
+            body,
+            method: used_method as u32,
+            flags,
         }
-        prev_slice = Some(slice_rows);
-    }
-    let _ = row_values;
+    });
 
     // ---- assemble
     let meta_crc = crc32(meta_blob);
-    let index_size = bodies.len() * MED_INDEX_ENTRY_SIZE;
+    let index_size = encoded.len() * MED_INDEX_ENTRY_SIZE;
     let meta_offset = MED_HEADER_SIZE;
     let index_offset = meta_offset + meta_blob.len();
     let payload_offset = index_offset + index_size;
@@ -900,15 +1253,15 @@ pub unsafe extern "C" fn pyra_med_encode(
     let mut index = Vec::with_capacity(index_size);
     let mut payload: Vec<u8> = Vec::new();
     let mut offset = payload_offset;
-    for (i, body) in bodies.iter().enumerate() {
+    for item in encoded.iter() {
         index.extend_from_slice(&(offset as u32).to_le_bytes());
-        index.extend_from_slice(&(body.len() as u32).to_le_bytes());
-        index.push(methods[i] as u8);
-        index.push(flags_v[i] as u8);
+        index.extend_from_slice(&(item.body.len() as u32).to_le_bytes());
+        index.push(item.method as u8);
+        index.push(item.flags as u8);
         index.extend_from_slice(&0u16.to_le_bytes());
-        index.extend_from_slice(&crc32(body).to_le_bytes());
-        payload.extend_from_slice(body);
-        offset += body.len();
+        index.extend_from_slice(&crc32(&item.body).to_le_bytes());
+        payload.extend_from_slice(&item.body);
+        offset += item.body.len();
     }
     let payload_crc = crc32(&payload);
     let digest = sha256(samples);
@@ -925,7 +1278,7 @@ pub unsafe extern "C" fn pyra_med_encode(
         sample_format,
         8 * fmt.sample_bytes as u32,
         tile_size as u32,
-        bodies.len() as u32,
+        encoded.len() as u32,
         index_offset as u32,
         index_size as u32,
         meta_offset as u32,
@@ -1084,86 +1437,160 @@ pub unsafe extern "C" fn pyra_med_decode(
     if hdr.num_tiles != tiles_per_slice * hdr.depth {
         return E_MED_HEADER;
     }
+    let vps = fmt.values_per_sample;
 
     let total_bytes = hdr.width * hdr.height * hdr.depth * hdr.channels * fmt.sample_bytes;
     let mut out: Vec<u8> = vec![0u8; total_bytes];
     let row_bytes = hdr.width * hdr.channels * fmt.sample_bytes;
-    let mut payload: Vec<u8> = Vec::new();
-    let mut prev_slice: Option<Vec<Vec<i64>>> = None;
 
-    for z in 0..hdr.depth {
-        let mut slice_rows: Vec<Vec<i64>> =
-            vec![vec![0i64; hdr.width * hdr.channels * fmt.values_per_sample]; hdr.height];
-        let prev_ref: Option<&Vec<Vec<i64>>> = prev_slice.as_ref();
-        let decoded: Vec<Option<Result<Vec<Vec<i64>>, isize>>> = std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(grid.len());
-            for (t, geom) in grid.iter().enumerate() {
-                let entry_off = (z * tiles_per_slice + t) * MED_INDEX_ENTRY_SIZE;
-                let tile_off = rd_u32(index, entry_off) as usize;
-                let tile_len = rd_u32(index, entry_off + 4) as usize;
-                let method = index[entry_off + 8] as i32;
-                let flags = index[entry_off + 9] as u32;
-                let crc = rd_u32(index, entry_off + 12);
-                let prev_ref = prev_ref;
-                handles.push(scope.spawn(move || {
-                    if tile_off + tile_len > data.len() {
-                        return Err(E_MED_TRUNC);
-                    }
-                    let body = &data[tile_off..tile_off + tile_len];
-                    if crc32(body) != crc {
-                        return Err(E_MED_CRC);
-                    }
-                    let prev_ref = prev_ref;
-                    let lo = geom.x * hdr.channels * fmt.values_per_sample;
-                    let hi = lo + geom.w * hdr.channels * fmt.values_per_sample;
-                    let slice_ctx: Option<Vec<Vec<i64>>> = prev_ref.map(|p| {
-                        (0..geom.h)
-                            .map(|r| p[geom.y + r][lo..hi].to_vec())
-                            .collect()
-                    });
-                    decode_tile(
-                        body,
-                        flags,
-                        method,
-                        geom.w,
-                        geom.h,
-                        hdr.channels,
-                        &fmt,
-                        slice_ctx.as_deref(),
-                        hdr.predictor,
-                    )
-                }));
-            }
-            let mut res = Vec::with_capacity(handles.len());
-            for h in handles {
-                match h.join() {
-                    Ok(v) => res.push(Some(v)),
-                    Err(_) => res.push(None),
+    // ---- phase one: decode every entropy stream (no context needed)
+    let tasks = hdr.depth * tiles_per_slice;
+    let decoded: Vec<Result<(Vec<u32>, Vec<i32>), isize>> = parallel_map(tasks, |task| {
+        let z = task / tiles_per_slice;
+        let t = task % tiles_per_slice;
+        let geom = &grid[t];
+        let entry_off = task * MED_INDEX_ENTRY_SIZE;
+        let tile_off = rd_u32(index, entry_off) as usize;
+        let tile_len = rd_u32(index, entry_off + 4) as usize;
+        let method = index[entry_off + 8] as i32;
+        let flags = index[entry_off + 9] as u32;
+        let crc = rd_u32(index, entry_off + 12);
+        if tile_off + tile_len > data.len() {
+            return Err(E_MED_TRUNC);
+        }
+        let body = &data[tile_off..tile_off + tile_len];
+        if crc32(body) != crc {
+            return Err(E_MED_CRC);
+        }
+        let _ = z;
+        let (stream, pred_ids): (&[u8], Vec<i32>) =
+            if flags & TILE_FLAG_ADAPTIVE as u32 != 0 {
+                let nbytes = (geom.h + 1) / 2;
+                if body.len() < nbytes {
+                    return Err(E_MED_TRUNC);
                 }
+                (&body[nbytes..], unpack_filter_bits(&body[..nbytes], geom.h))
+            } else {
+                (body, vec![hdr.predictor; geom.h])
+            };
+        if method != METHOD_RAW && method != METHOD_LZ {
+            return Err(E_MED_METHOD);
+        }
+        let per_row = geom.w * hdr.channels * vps;
+        let count = per_row * geom.h;
+        let residuals: Vec<u32> = if flags & TILE_FLAG_ESCAPE as u32 != 0 {
+            // one symbol per sample: zig-zag values plus escaped residuals
+            if method == METHOD_LZ {
+                let mut dec = RangeDec::new(stream, ENTROPY_SYMBOLS_LZ);
+                let mut tokens: Vec<u32> = Vec::new();
+                let limit = count * (1 + fmt.escape_chunks) + 64;
+                loop {
+                    let sym = dec.decode_symbol() as u32;
+                    tokens.push(sym);
+                    if sym == LZ_TOKEN_EOF {
+                        break;
+                    }
+                    if tokens.len() > limit {
+                        return Err(E_MED_LZ);
+                    }
+                }
+                let bytes = lz_decode_bounded(&tokens, limit)?;
+                escape_residuals(bytes.iter().map(|&b| b as u32), count, &fmt)?
+            } else {
+                let mut dec = RangeDec::new(stream, ESCAPE_ALPHABET);
+                let iter = std::iter::from_fn(|| Some(dec.decode_symbol() as u32));
+                escape_residuals(iter, count, &fmt)?
             }
-            res
-        });
-        for (t, item) in decoded.iter().enumerate() {
+        } else {
+            let packed: Vec<u8> = if method == METHOD_LZ {
+                let mut dec = RangeDec::new(stream, ENTROPY_SYMBOLS_LZ);
+                let mut tokens: Vec<u32> = Vec::new();
+                let limit = count * fmt.value_bytes * 2 + 64;
+                loop {
+                    let sym = dec.decode_symbol() as u32;
+                    tokens.push(sym);
+                    if sym == LZ_TOKEN_EOF {
+                        break;
+                    }
+                    if tokens.len() > limit {
+                        return Err(E_MED_LZ);
+                    }
+                }
+                match lz_decode(&tokens, count * fmt.value_bytes) {
+                    Ok(v) => v,
+                    Err(e) => return Err(e),
+                }
+            } else {
+                entropy_decode_bytes(stream, ENTROPY_SYMBOLS_RAW, count * fmt.value_bytes)
+            };
+            if flags & TILE_FLAG_SPLIT as u32 != 0 {
+                merge_planes(&packed, count, fmt.value_bytes)
+            } else {
+                packed[..count].iter().map(|&b| b as u32).collect()
+            }
+        };
+        Ok((residuals, pred_ids))
+    });
+
+    for item in decoded.iter() {
+        match item {
+            Ok(_) => {}
+            Err(e) => return *e,
+        }
+    }
+    if decoded.len() != tasks {
+        return E_MED_ALLOC;
+    }
+
+    // ---- phase two: reconstruct the rows slice by slice
+    let mut payload: Vec<u8> = Vec::new();
+    let mut prev_slice: Option<Vec<u32>> = None;
+    for z in 0..hdr.depth {
+        let mut slice_rows: Vec<u32> =
+            vec![0u32; hdr.width * hdr.channels * vps * hdr.height];
+        let base_task = z * tiles_per_slice;
+        let rows_per_slice: Vec<Vec<u32>> = parallel_map(tiles_per_slice, |t| {
             let geom = &grid[t];
-            let item = match item {
-                Some(r) => r,
-                None => return E_MED_ALLOC,
+            let per_row = geom.w * hdr.channels * vps;
+            let (residuals, pred_ids) = match &decoded[base_task + t] {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
             };
-            let rows = match item {
-                Ok(r) => r,
-                Err(e) => return *e,
-            };
-            let lo = geom.x * hdr.channels * fmt.values_per_sample;
-            for (r, row) in rows.iter().enumerate() {
-                slice_rows[geom.y + r][lo..lo + row.len()].copy_from_slice(row);
-                let byte_off =
-                    (z * hdr.height + geom.y + r) * row_bytes + geom.x * hdr.channels * fmt.sample_bytes;
+            let slice_ctx: Option<Vec<u32>> = prev_slice.as_ref().map(|p| {
+                let mut ctx: Vec<u32> = Vec::with_capacity(per_row * geom.h);
+                for r in 0..geom.h {
+                    let src = (geom.y + r) * (hdr.width * hdr.channels * vps)
+                        + geom.x * hdr.channels * vps;
+                    ctx.extend_from_slice(&p[src..src + geom.w * hdr.channels * vps]);
+                }
+                ctx
+            });
+            reconstruct_tile(
+                residuals,
+                pred_ids,
+                per_row,
+                geom.h,
+                hdr.channels,
+                &fmt,
+                slice_ctx.as_deref(),
+            )
+        });
+        for (t, rows) in rows_per_slice.iter().enumerate() {
+            let geom = &grid[t];
+            let per_row = geom.w * hdr.channels * vps;
+            for r in 0..geom.h {
+                let row = &rows[r * per_row..(r + 1) * per_row];
+                let lo = geom.x * hdr.channels * vps;
+                let slice_row = (geom.y + r) * (hdr.width * hdr.channels * vps) + lo;
+                slice_rows[slice_row..slice_row + row.len()].copy_from_slice(row);
+                let byte_off = (z * hdr.height + geom.y + r) * row_bytes
+                    + geom.x * hdr.channels * fmt.sample_bytes;
                 let bytes = decode_row(row, &fmt);
                 out[byte_off..byte_off + bytes.len()].copy_from_slice(&bytes);
             }
         }
         // keep the payload CRC over the tile bodies in container order
-        for (t, _geom) in grid.iter().enumerate() {
+        for t in 0..tiles_per_slice {
             let entry_off = (z * tiles_per_slice + t) * MED_INDEX_ENTRY_SIZE;
             let tile_off = rd_u32(index, entry_off) as usize;
             let tile_len = rd_u32(index, entry_off + 4) as usize;

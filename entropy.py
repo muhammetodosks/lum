@@ -110,7 +110,10 @@ class RangeEncoder:
 
     def __init__(self, n_symbols: int):
         self.model = AdaptiveModel(n_symbols)
-        self.bits = bytearray()
+        # the bits are packed into bytes while they are produced
+        self.out = bytearray()
+        self.acc = 0
+        self.nbits = 0
         self.pending = 0
         self.low = 0
         self.high = (1 << 32) - 1  # inclusive
@@ -162,7 +165,12 @@ class RangeEncoder:
                 break
 
     def _put(self, bit: int):
-        self.bits.append(1 if bit else 0)
+        self.acc = (self.acc << 1) | (1 if bit else 0)
+        self.nbits += 1
+        if self.nbits == 8:
+            self.out.append(self.acc)
+            self.acc = 0
+            self.nbits = 0
 
     def flush(self) -> bytes:
         # Emit a bit string inside [low, high]:
@@ -178,21 +186,12 @@ class RangeEncoder:
             self._put(1)
             for _ in range(self.pending):
                 self._put(0)
-        # pack bits to bytes
-        out = bytearray()
-        byte = 0
-        n = 0
-        for b in self.bits:
-            byte = (byte << 1) | b
-            n += 1
-            if n == 8:
-                out.append(byte)
-                byte = 0
-                n = 0
-        if n:
-            byte <<= (8 - n)
-            out.append(byte)
-        return bytes(out)
+        # the last byte is zero padded
+        if self.nbits:
+            self.out.append(self.acc << (8 - self.nbits))
+            self.acc = 0
+            self.nbits = 0
+        return bytes(self.out)
 
 
 class RangeDecoder:

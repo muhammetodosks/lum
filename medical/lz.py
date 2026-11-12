@@ -83,22 +83,29 @@ def lz_encode(data: bytes) -> list[int]:
     return out
 
 
-def lz_decode(symbols: list[int], target_len: int) -> bytes:
+def lz_decode(symbols: list[int], target_len: int | None = None,
+              max_len: int | None = None) -> bytes:
     """Rebuild the byte stream from an LZ77 symbol list.
 
-    `target_len` is the exact expected size of the result.
+    `target_len` is the exact expected size of the result. When it is None
+    the stream is decoded until the end-of-stream marker and `max_len` bounds
+    the result (used by the escape coding, where the length of the symbol
+    stream is only known while it is being decoded).
     """
     out = bytearray()
     pos = 0
     n = len(symbols)
+    limit = max_len if max_len is not None else (target_len or 0)
     while pos < n:
         sym = symbols[pos]
         pos += 1
         if sym == LZ_TOKEN_EOF:
             break
         if sym < 256:
-            if len(out) >= target_len:
+            if target_len is not None and len(out) >= target_len:
                 raise CorruptedFileError("LZ literal overshoots target length")
+            if len(out) >= limit:
+                raise CorruptedFileError("LZ output exceeds the length limit")
             out.append(sym)
             continue
         if sym != LZ_TOKEN_MATCH:
@@ -115,11 +122,13 @@ def lz_decode(symbols: list[int], target_len: int) -> bytes:
         dist = dist_hi * 256 + dist_lo + 1
         if dist > len(out):
             raise CorruptedFileError(f"invalid LZ back-reference distance {dist}")
-        if len(out) + length > target_len:
+        if target_len is not None and len(out) + length > target_len:
             raise CorruptedFileError("LZ match overshoots target length")
+        if len(out) + length > limit:
+            raise CorruptedFileError("LZ output exceeds the length limit")
         for _ in range(length):
             out.append(out[len(out) - dist])
-    if len(out) != target_len:
+    if target_len is not None and len(out) != target_len:
         raise CorruptedFileError("LZ output length mismatch")
     return bytes(out)
 

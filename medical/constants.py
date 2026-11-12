@@ -89,6 +89,18 @@ METHOD_COUNT = 2
 #: Tile body flag bits.
 TILE_FLAG_SPLIT = 0x01   # residual bytes were split into byte planes
 TILE_FLAG_ADAPTIVE = 0x02  # the body starts with a row filter table
+TILE_FLAG_ESCAPE = 0x04  # residuals use the zigzag + escape coding
+
+# ------------------------------------------------------- escape coding
+# Wide samples are coded with one symbol per sample instead of one symbol
+# per byte: the centred residual is zig-zag encoded into 0..127 and the rare
+# large residuals escape into a fixed number of 7 bit chunks. For medical
+# data more than 99 % of the residuals fit into +-63, so the entropy coder
+# sees half as many symbols and the tile is coded noticeably faster.
+ESCAPE_SYMBOL = 128       # marks an escaped residual
+ESCAPE_ALPHABET = 129     # 0..127 zig-zag values, 128 escape marker
+ZIGZAG_LIMIT = 63         # largest centred residual that fits in 7 bits
+ESCAPE_CHUNK_BITS = 7     # bits per escape chunk
 
 # --------------------------------------------------------------- LZ77 tokens
 LZ_MIN_MATCH = 4

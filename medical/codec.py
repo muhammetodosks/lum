@@ -33,9 +33,11 @@ import hashlib
 import zlib
 
 from ..entropy import RangeDecoder, RangeEncoder
-from .constants import (LZ_TOKEN_EOF, LZ_TOKEN_SYMBOLS, METHOD_LZ, METHOD_RAW,
+from .constants import (ESCAPE_ALPHABET, ESCAPE_CHUNK_BITS, ESCAPE_SYMBOL,
+                        LZ_TOKEN_EOF, LZ_TOKEN_SYMBOLS, METHOD_LZ, METHOD_RAW,
                         SAMPLE_BYTES, SAMPLE_FORMATS, SAMPLE_SIGNED, SFMT_F32,
-                        TILE_FLAG_ADAPTIVE, TILE_FLAG_SPLIT, VERSION,
+                        TILE_FLAG_ADAPTIVE, TILE_FLAG_ESCAPE, TILE_FLAG_SPLIT,
+                        VERSION, ZIGZAG_LIMIT,
                         CorruptedFileError, UnsupportedFormatError,
                         sample_domain)
 from . import container as _container
@@ -56,7 +58,8 @@ class _Format:
     """Coding parameters of a sample format."""
 
     __slots__ = ("sample_format", "sample_bytes", "values_per_sample",
-                 "value_bytes", "modulus", "canon_offset", "signed", "is_float")
+                 "value_bytes", "modulus", "canon_offset", "signed", "is_float",
+                 "escape", "escape_chunks")
 
     def __init__(self, sample_format: int):
         if sample_format not in SAMPLE_FORMATS:
@@ -70,11 +73,20 @@ class _Format:
             self.modulus = 256
             self.canon_offset = 0
             self.signed = False
+            # floats are shuffled into byte planes; no escape coding
+            self.escape = False
+            self.escape_chunks = 0
         else:
             self.values_per_sample = 1
             self.value_bytes = self.sample_bytes
             self.modulus, self.canon_offset = sample_domain(sample_format)
             self.signed = sample_format in SAMPLE_SIGNED
+            # wide integer samples use one symbol per sample (zig-zag plus
+            # escape) instead of one symbol per byte
+            self.escape = self.sample_bytes > 1
+            self.escape_chunks = ((8 * self.sample_bytes
+                                   + ESCAPE_CHUNK_BITS - 1)
+                                  // ESCAPE_CHUNK_BITS)
 
 
 def _tile_grid(width: int, height: int, tile_size: int):
@@ -138,6 +150,108 @@ def _entropy_encode(symbols: list[int], n_symbols: int) -> bytes:
     return coder.flush()
 
 
+def _centre(residual: int, modulus: int) -> int:
+    """Map a modular residual into the signed range [-modulus/2, modulus/2)."""
+    half = modulus >> 1
+    return residual if residual < half else residual - modulus
+
+
+def _escape_worth_it(residuals: list[int], fmt: _Format) -> bool:
+    """Decide whether the escape coding beats the byte plane coding.
+
+    The escape coding needs one symbol per sample, but a residual that does
+    not fit into +-63 costs one marker plus `escape_chunks` chunk symbols.
+    It only pays off when the residuals are concentrated around zero, which
+    is the normal case for real medical data (more than 99 % of the
+    residuals fit). For noisy data the byte planes are cheaper, so the
+    encoder measures the escape rate and picks the better of the two.
+
+    The rule is a fixed fraction, so the encoder and the decoder always
+    agree and the tile flag tells the decoder which layout was used.
+    """
+    if not residuals:
+        return True
+    limit = fmt.modulus >> 1
+    escapes = 0
+    for r in residuals:
+        c = r if r < limit else r - fmt.modulus
+        if c < -ZIGZAG_LIMIT or c > ZIGZAG_LIMIT:
+            escapes += 1
+            if escapes * 4 > len(residuals):
+                return False
+    return True
+
+
+def _escape_symbols(residuals: list[int], fmt: _Format) -> list[int]:
+    """Code residuals as one symbol per sample.
+
+    A residual that fits into +-63 is zig-zag encoded into 0..127. Anything
+    larger escapes: the marker 128 is followed by a fixed number of 7 bit
+    chunks that carry the two's complement bit pattern of the value.
+    """
+    out: list[int] = []
+    bits = 8 * fmt.sample_bytes
+    mask = (1 << bits) - 1
+    chunks = fmt.escape_chunks
+    for r in residuals:
+        c = _centre(r, fmt.modulus)
+        if -ZIGZAG_LIMIT <= c <= ZIGZAG_LIMIT:
+            out.append(2 * c if c >= 0 else -2 * c - 1)
+        else:
+            out.append(ESCAPE_SYMBOL)
+            raw = c & mask
+            for k in range(chunks):
+                out.append((raw >> (ESCAPE_CHUNK_BITS * k)) & 0x7F)
+    return out
+
+
+def _escape_residuals(symbols, count: int, fmt: _Format) -> list[int]:
+    """Inverse of :func:`_escape_symbols`; returns modular residuals.
+
+    `symbols` is an iterable of symbol values (0..127 zig-zag values and the
+    escape marker 128)."""
+    out: list[int] = []
+    bits = 8 * fmt.sample_bytes
+    sign_bit = 1 << (bits - 1)
+    modulus = 1 << bits
+    chunks = fmt.escape_chunks
+    it = iter(symbols)
+    while len(out) < count:
+        try:
+            sym = next(it)
+        except StopIteration:
+            raise CorruptedFileError("residual stream ended too early") from None
+        if sym < ESCAPE_SYMBOL:
+            if sym & 1:
+                c = -((sym + 1) >> 1)
+            else:
+                c = sym >> 1
+        elif sym == ESCAPE_SYMBOL:
+            raw = 0
+            for k in range(chunks):
+                try:
+                    part = next(it)
+                except StopIteration:
+                    raise CorruptedFileError(
+                        "escape chunk stream ended too early") from None
+                if part >= ESCAPE_SYMBOL:
+                    raise CorruptedFileError("invalid escape chunk symbol")
+                raw |= part << (ESCAPE_CHUNK_BITS * k)
+            if raw & sign_bit:
+                raw -= modulus
+            c = raw
+        else:
+            raise CorruptedFileError(f"invalid residual symbol {sym}")
+        out.append(c % fmt.modulus)
+    return out
+
+
+def _symbol_stream(coder: RangeDecoder):
+    """Infinite stream of decoded symbols."""
+    while True:
+        yield coder.decode_symbol()
+
+
 def _entropy_decode(data: bytes, n_symbols: int, count: int) -> list[int]:
     coder = RangeDecoder(data, n_symbols)
     return [coder.decode_symbol() for _ in range(count)]
@@ -171,6 +285,18 @@ def _encode_tile(rows: list[list[int]], channels: int, fmt: _Format,
     if predictor < 0:
         table = pack_filter_bits(pred_ids)
         flags |= TILE_FLAG_ADAPTIVE
+
+    if fmt.escape and _escape_worth_it(residuals, fmt):
+        # Wide samples: one symbol per sample (zig-zag plus escape).
+        symbols = _escape_symbols(residuals, fmt)
+        flags |= TILE_FLAG_ESCAPE
+        if method == METHOD_LZ:
+            tokens = lz_encode(bytes(symbols))
+            tokens.append(LZ_TOKEN_EOF)
+            stream = _entropy_encode(tokens, _ENTROPY_SYMBOLS_LZ)
+        else:
+            stream = _entropy_encode(symbols, ESCAPE_ALPHABET)
+        return table + stream, method, flags
 
     if fmt.value_bytes > 1:
         packed = split_planes(residuals, fmt.value_bytes)
@@ -319,26 +445,49 @@ def _decode_tile(body: bytes, flags: int, method: int, tw: int, th: int,
 
     per_row = tw * channels * fmt.values_per_sample
     count = per_row * th
-    if method == METHOD_LZ:
-        coder = RangeDecoder(stream, _ENTROPY_SYMBOLS_LZ)
-        tokens = []
-        limit = count * fmt.value_bytes * 2 + 64
-        while True:
-            sym = coder.decode_symbol()
-            tokens.append(sym)
-            if sym == LZ_TOKEN_EOF:
-                break
-            if len(tokens) > limit:
-                raise CorruptedFileError("LZ token stream exceeds length limit")
-        packed = lz_decode(tokens, count * fmt.value_bytes)
-    else:
-        packed = _entropy_decode(stream, _ENTROPY_SYMBOLS_RAW,
-                                 count * fmt.value_bytes)
 
-    if flags & TILE_FLAG_SPLIT:
-        residuals = merge_planes(packed, count, fmt.value_bytes)
+    if flags & TILE_FLAG_ESCAPE:
+        # One symbol per sample: zig-zag values plus escaped residuals.
+        if method == METHOD_LZ:
+            coder = RangeDecoder(stream, _ENTROPY_SYMBOLS_LZ)
+            tokens = []
+            # one LZ token per symbol byte at worst (a match of four bytes
+            # costs four tokens), and the symbol stream is at most
+            # count * (1 + escape_chunks) bytes long
+            limit = count * (1 + fmt.escape_chunks) + 64
+            while True:
+                sym = coder.decode_symbol()
+                tokens.append(sym)
+                if sym == LZ_TOKEN_EOF:
+                    break
+                if len(tokens) > limit:
+                    raise CorruptedFileError("LZ token stream exceeds length limit")
+            packed = lz_decode(tokens, None, count * 4 + 64)
+            residuals = _escape_residuals(packed, count, fmt)
+        else:
+            coder = RangeDecoder(stream, ESCAPE_ALPHABET)
+            residuals = _escape_residuals(_symbol_stream(coder), count, fmt)
     else:
-        residuals = unpack_residuals(packed, count, fmt.value_bytes)
+        if method == METHOD_LZ:
+            coder = RangeDecoder(stream, _ENTROPY_SYMBOLS_LZ)
+            tokens = []
+            limit = count * fmt.value_bytes * 2 + 64
+            while True:
+                sym = coder.decode_symbol()
+                tokens.append(sym)
+                if sym == LZ_TOKEN_EOF:
+                    break
+                if len(tokens) > limit:
+                    raise CorruptedFileError("LZ token stream exceeds length limit")
+            packed = lz_decode(tokens, count * fmt.value_bytes)
+        else:
+            packed = _entropy_decode(stream, _ENTROPY_SYMBOLS_RAW,
+                                     count * fmt.value_bytes)
+
+        if flags & TILE_FLAG_SPLIT:
+            residuals = merge_planes(packed, count, fmt.value_bytes)
+        else:
+            residuals = unpack_residuals(packed, count, fmt.value_bytes)
 
     rows: list[list[int]] = []
     for r in range(th):
