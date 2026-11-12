@@ -33,6 +33,9 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | 16-bit depth | ✅ | Full-pixel domain covered |
 | Animation container | ✅ | Frame count + fps header |
 | CLI | ✅ | encode/decode/inspect/verify/benchmark |
+| Medical container PYRM | ✅ | `test_medical.py` 20 checks, 648 native/pure parity trials |
+| 3D volume support | ✅ | Slice-local tiles, `slice` predictor for volumetric data |
+| SHA-256 content hash | ✅ | Every container carries the hash of the raw samples |
 
 ## The Pipeline
 
@@ -368,6 +371,53 @@ does not pay off for the large alphabets that the RAW method uses.
 The native library is never required: if `rustc` or the `.so` is missing,
 `native.py` returns `None` and the pure path takes over transparently.
 
+## Medical imaging (PYRM)
+
+`PYRM` is a sibling container for medical data: the same lossless
+predictor + entropy coder core, but built for volumes, signed samples and
+auditability. The full specification lives in
+[`docs/FORMAT-PYRM.md`](docs/FORMAT-PYRM.md).
+
+| Property | How it is met |
+|----------|---------------|
+| Lossless | The decoded samples are bit-identical to the input; the container stores the SHA-256 of the raw samples |
+| Corruption detection | Header CRC-32, metadata CRC-32, per-tile CRC-32, payload CRC-32 and the SHA-256 content hash are all verified on decode |
+| Volumes | `depth` slices, tile-local coding so slices and tiles decode in parallel, plus a `slice` predictor that reads the previous slice |
+| Sample formats | u8, u16, u32, i16, i32, f32 (floats are shuffled into byte planes before coding) |
+| Metadata | UTF-8 JSON block (patient ids, scanner, protocol) with its own CRC |
+| Preview | Window/level 8-bit preview of any slice, computed in C++ |
+
+The decoder never returns unverified data: every integrity check runs before
+the samples are handed back, and a mismatch raises `CorruptedFileError`.
+
+```python
+from pyra.medical import encode, decode, info, preview_slice
+
+blob = encode(samples, width, height, depth=1, channels=1, sample_format=1,
+              metadata={"scanner": "Siemens"})
+meta, samples_back = decode(blob)
+```
+
+```bash
+python3 -m pyra med encode ct.raw --width 512 --height 512 --depth 64 \
+        --format u16 --meta scanner=Siemens --meta patient=anon -o ct.pyrm
+python3 -m pyra med info ct.pyrm
+python3 -m pyra med preview ct.pyrm --slice 30 --window 400 --level 40 -o s30.pgm
+```
+
+### PYRM speed
+
+Measured on a synthetic 16-bit CT-like volume (gradient + noise + bone
+texture), native core versus the pure-Python reference:
+
+| volume | encode | decode | ratio |
+|--------|--------|--------|-------|
+| 128×128×16 u16 | 250 ms (33x) | 61 ms (54x) | 1.83x |
+| 256×256×32 u16 | 1 946 ms | 468 ms | 2.10x |
+
+The numbers in brackets are the speedup over the pure-Python reference,
+which produces the very same bytes.
+
 ## Architecture
 
 ```
@@ -392,13 +442,17 @@ pyra/
 ├── tile.py            split / assemble
 ├── security.py        limits + typed errors
 ├── pngbench.py        stdlib-only PNG reader/writer (benchmark reference + write/read loop test)
-└── tests/test_lossless.py   246-check verification suite
+├── medical/           PYRM medical container (constants, container, predictors, lz, codec, preview, native)
+├── rust/pyra_med.rs   native PYRM encoder/decoder (SHA-256, parallel tiles)
+├── docs/FORMAT-PYRM.md    the PYRM format specification
+└── tests/             test_lossless.py (246 checks) + test_medical.py (20 checks)
 ```
 
 ## Running Tests
 
 ```bash
 python3 -m pyra.tests.test_lossless
+python3 -m pyra.tests.test_medical
 ```
 
 Every check asserts `decoded == original` (no sampling, no approximation).
