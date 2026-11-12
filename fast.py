@@ -47,6 +47,23 @@ def _load():
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_int32),
         ]
+        lib.pyra_med_preview.restype = ctypes.c_int
+        lib.pyra_med_preview.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_double, ctypes.c_double,
+            ctypes.POINTER(ctypes.c_uint8),
+        ]
+        lib.pyra_pnm_read.restype = ctypes.c_int
+        lib.pyra_pnm_read.argtypes = [
+            ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        lib.pyra_pnm_write.restype = ctypes.c_int
+        lib.pyra_pnm_write.argtypes = [
+            ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ]
         _LIB = lib
     except (OSError, AttributeError):
         _LIB = None
@@ -141,3 +158,66 @@ def plan(pixels, width, height, channels, bit_depth, color_space,
     in the Rust core — so there is exactly one planner, and the pure-Python
     reference mirrors it."""
     return None
+
+
+# --------------------------------------------------------------- medical
+
+
+def medical_preview(samples: bytes, width: int, height: int, depth: int,
+                    channels: int, sample_format: int, slice: int,
+                    window: float, level: float):
+    """Window/level 8 bit preview of one slice of a medical volume.
+
+    The samples are little endian, exactly like in the PYRM container.
+    Returns the preview bytes (one byte per sample) or None."""
+    lib = _load()
+    if lib is None:
+        return None
+    if width <= 0 or height <= 0 or depth <= 0 or channels <= 0:
+        return None
+    if not samples:
+        return None
+    src = ctypes.create_string_buffer(bytes(samples), len(samples))
+    src_view = ctypes.cast(src, ctypes.POINTER(ctypes.c_uint8))
+    count = width * height * channels
+    out_buf = bytearray(count)
+    out_view = (ctypes.c_uint8 * count).from_buffer(out_buf)
+    rc = lib.pyra_med_preview(src_view, len(samples), width, height, depth,
+                              channels, sample_format, slice, window, level,
+                              out_view)
+    if rc != 0:
+        return None
+    return bytes(out_buf)
+
+
+def pnm_read(path: str):
+    """Read a binary PGM/PPM file.
+
+    Returns (raw_bytes, channels, width, height, bit_depth, max_val) or
+    None. The raw bytes hold the samples exactly as stored in the file."""
+    lib = _load()
+    if lib is None:
+        return None
+    cap = 1 << 28
+    buf = bytearray(cap)
+    view = (ctypes.c_uint8 * cap).from_buffer(buf)
+    info = (ctypes.c_int * 6)()
+    rc = lib.pyra_pnm_read(path.encode("utf-8"), view, cap, info)
+    if rc <= 0:
+        return None
+    return (bytes(buf[:rc]), info[0], info[1], info[2], info[3], info[4])
+
+
+def pnm_write(path: str, data: bytes, width: int, height: int, channels: int,
+              bit_depth: int) -> bool:
+    """Write a binary PGM/PPM file. Returns True on success."""
+    lib = _load()
+    if lib is None:
+        return False
+    if not data:
+        return False
+    src = ctypes.create_string_buffer(bytes(data), len(data))
+    src_view = ctypes.cast(src, ctypes.POINTER(ctypes.c_uint8))
+    rc = lib.pyra_pnm_write(path.encode("utf-8"), src_view, width, height,
+                            channels, bit_depth)
+    return rc == 0

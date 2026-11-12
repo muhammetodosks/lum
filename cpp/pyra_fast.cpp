@@ -19,7 +19,11 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <cctype>
+#include <cstdio>
 #include <algorithm>
+#include <string>
 #include <vector>
 
 extern "C" {
@@ -290,4 +294,171 @@ int pyra_fast_adaptive_reconstruct(const int32_t* res, int count, int width,
     return 0;
 }
 
+// ------------------------------------------------- medical preview (PYRM)
+
+// Window/level mapping of one slice of a medical volume into 8 bit.
+//
+// The sample formats are the ones of the PYRM container: U8, U16, U32, I16,
+// I32 and F32 (little endian). Signed samples are shifted into their signed
+// range before the window is applied, which is what a radiologist expects:
+// the level is given in the units of the modality (Hounsfield units for CT,
+// for instance).
+//
+// `window` is the width of the window, `level` its centre. A window of 0 is
+// treated as 1 (a flat window shows the level itself).
+
+int pyra_med_preview(const uint8_t* samples, size_t len, int width, int height,
+                     int depth, int channels, int sample_format, int slice,
+                     double window, double level, uint8_t* out) {
+    if (!samples || !out || width <= 0 || height <= 0 || depth <= 0 ||
+        channels <= 0 || slice < 0 || slice >= depth) {
+        return -1;
+    }
+    if (sample_format < 0 || sample_format > 5) {
+        return -1;
+    }
+    static const int kSampleBytes[6] = {1, 2, 4, 2, 4, 4};
+    static const int kSigned[6] = {0, 0, 0, 1, 1, 0};
+    const int sb = kSampleBytes[sample_format];
+    const size_t slice_samples = (size_t)width * (size_t)height * (size_t)channels;
+    const size_t slice_bytes = slice_samples * (size_t)sb;
+    if (len < slice_bytes * (size_t)(slice + 1)) {
+        return -1;
+    }
+    const uint8_t* src = samples + slice_bytes * (size_t)slice;
+
+    double lo = level - window * 0.5;
+    double span = window > 0.0 ? window : 1.0;
+
+    for (size_t i = 0; i < slice_samples; i++) {
+        const uint8_t* p = src + i * (size_t)sb;
+        double value;
+        if (sample_format == 5) {
+            float f;
+            std::memcpy(&f, p, 4);
+            value = (double)f;
+        } else {
+            uint64_t raw = 0;
+            for (int b = 0; b < sb; b++) raw |= (uint64_t)p[b] << (8 * b);
+            if (kSigned[sample_format]) {
+                // shift the raw bit pattern into the signed range
+                int64_t sval = (int64_t)(raw << (64 - 8 * sb)) >>
+                               (64 - 8 * sb);
+                value = (double)sval;
+            } else {
+                value = (double)raw;
+            }
+        }
+        double scaled = (value - lo) * 255.0 / span;
+        if (scaled < 0.0) scaled = 0.0;
+        if (scaled > 255.0) scaled = 255.0;
+        out[i] = (uint8_t)(scaled + 0.5);
+    }
+    return 0;
+}
+
+// ------------------------------------------------------------- PNM helpers
+
+// Read a binary PGM/PPM file (P5/P6) into a raw sample buffer.
+//
+// The header is parsed exactly like the Python reference in pyra/api.py:
+// comments start with '#' and run to the end of the line, tokens may be
+// spread over several lines. 16 bit samples stay big endian.
+//
+// Returns the number of bytes written into `out`, or a negative error code:
+// -1 bad arguments, -2 unreadable file, -3 malformed header, -4 truncated
+// data, -5 unsupported variant.
+
+int pyra_pnm_read(const char* path, uint8_t* out, size_t out_cap,
+                  int* info) {
+    if (!path || !out || !info) return -1;
+    FILE* f = std::fopen(path, "rb");
+    if (!f) return -2;
+
+    auto read_token = [&](std::string& tok) -> bool {
+        tok.clear();
+        int c;
+        for (;;) {
+            c = std::fgetc(f);
+            if (c == EOF) return false;
+            if (c == '#') {
+                while (c != EOF && c != '\n') c = std::fgetc(f);
+                continue;
+            }
+            if (!std::isspace(c)) break;
+        }
+        if (c == EOF) return false;
+        do {
+            tok.push_back((char)c);
+            c = std::fgetc(f);
+        } while (c != EOF && !std::isspace(c));
+        return true;
+    };
+
+    std::string magic, t1, t2, t3;
+    if (!read_token(magic) || magic != "P5" && magic != "P6") {
+        std::fclose(f);
+        return magic == "P2" || magic == "P3" ? -5 : -3;
+    }
+    if (!read_token(t1) || !read_token(t2) || !read_token(t3)) {
+        std::fclose(f);
+        return -3;
+    }
+    const long width = std::strtol(t1.c_str(), nullptr, 10);
+    const long height = std::strtol(t2.c_str(), nullptr, 10);
+    const long maxval = std::strtol(t3.c_str(), nullptr, 10);
+    if (width <= 0 || height <= 0 || maxval <= 0 || maxval > 65535) {
+        std::fclose(f);
+        return -3;
+    }
+    const int channels = magic == "P5" ? 1 : 3;
+    const int bit_depth = maxval > 255 ? 16 : 8;
+    const size_t need = (size_t)width * (size_t)height * (size_t)channels *
+                        (size_t)(bit_depth == 16 ? 2 : 1);
+    if (need > out_cap) {
+        std::fclose(f);
+        return -1;
+    }
+    const size_t got = std::fread(out, 1, need, f);
+    std::fclose(f);
+    if (got != need) return -4;
+
+    info[0] = channels;
+    info[1] = (int)width;
+    info[2] = (int)height;
+    info[3] = bit_depth;
+    info[4] = (int)maxval;
+    info[5] = (int)need;
+    return (int)need;
+}
+
+// Write a binary PGM/PPM file from a raw sample buffer.
+//
+// The buffer holds the samples exactly as they are stored in the file: 8 bit
+// samples are written as they are, 16 bit samples are big endian (the PNM
+// order), which is what `pyra_pnm_read` returns. Returns 0 on success, -1 on
+// bad arguments, -2 on I/O error.
+
+int pyra_pnm_write(const char* path, const uint8_t* data, int width, int height,
+                   int channels, int bit_depth) {
+    if (!path || !data || width <= 0 || height <= 0 || channels <= 0) {
+        return -1;
+    }
+    if (bit_depth != 8 && bit_depth != 16) return -1;
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return -2;
+    const char* magic = channels == 1 ? "P5" : "P6";
+    const unsigned maxval = bit_depth == 16 ? 65535u : 255u;
+    std::fprintf(f, "%s\n%d %d\n%u\n", magic, width, height, maxval);
+    const size_t samples = (size_t)width * (size_t)height * (size_t)channels;
+    if (bit_depth == 8) {
+        std::fwrite(data, 1, samples, f);
+    } else {
+        std::fwrite(data, 1, samples * 2, f);
+    }
+    const bool ok = std::fclose(f) == 0;
+    return ok ? 0 : -2;
+}
+
 }  // extern "C"
+

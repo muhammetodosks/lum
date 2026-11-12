@@ -13,6 +13,11 @@ from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
                         FILTER_GLOBAL, FILTER_ADAPTIVE,
                         PyraError, CorruptedFileError)
 from .pngbench import encode_png
+from .medical import codec as _med_codec
+from .medical import preview as _med_preview_mod
+from .medical.constants import (SFMT_U16, METHOD_LZ as MED_METHOD_LZ,
+                                METHOD_RAW as MED_METHOD_RAW,
+                                PRED_SLICE, MedicalError)
 
 _METHOD_NAMES = {METHOD_RAW: "raw", METHOD_RLE: "rle", METHOD_LZ: "lz", METHOD_MIX: "mix"}
 _PRED_NAMES = {
@@ -29,6 +34,15 @@ _METHOD_BY_NAME = {v: k for k, v in _METHOD_NAMES.items()}
 _CS_BY_NAME = {v: k for k, v in _CS_NAMES.items()}
 _TRANSFORM_BY_NAME = {v: k for k, v in _TRANSFORM_NAMES.items()}
 _FILTER_BY_NAME = {v: k for k, v in _FILTER_NAMES.items()}
+
+# ------------------------------------------------------------ medical (PYRM)
+_MED_FORMAT_NAMES = {0: "u8", 1: "u16", 2: "u32", 3: "i16", 4: "i32", 5: "f32"}
+_MED_PRED_NAMES = {0: "none", 1: "left", 2: "up", 3: "average", 4: "paeth",
+                   5: "gradient", 6: "median", 7: "slice"}
+_MED_METHOD_NAMES = {MED_METHOD_RAW: "raw", MED_METHOD_LZ: "lz"}
+_MED_FORMAT_BY_NAME = {v: k for k, v in _MED_FORMAT_NAMES.items()}
+_MED_PRED_BY_NAME = {v: k for k, v in _MED_PRED_NAMES.items()}
+_MED_METHOD_BY_NAME = {v: k for k, v in _MED_METHOD_NAMES.items()}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -62,6 +76,38 @@ def _build_parser() -> argparse.ArgumentParser:
     b.add_argument("--transform", choices=["auto"] + list(_TRANSFORM_BY_NAME), default="auto")
     b.add_argument("--filter", choices=["auto"] + list(_FILTER_BY_NAME), default="auto")
     b.add_argument("--tile", type=int, default=256)
+
+    med = sub.add_parser("med", help="PYRM medical container tools")
+    med_sub = med.add_subparsers(dest="med_cmd", required=True)
+
+    me = med_sub.add_parser("encode", help="encode raw samples into a .pyrm file")
+    me.add_argument("input", help="raw sample file (little-endian)")
+    me.add_argument("output")
+    me.add_argument("--width", type=int, required=True)
+    me.add_argument("--height", type=int, required=True)
+    me.add_argument("--depth", type=int, default=1)
+    me.add_argument("--channels", type=int, default=1)
+    me.add_argument("--format", choices=list(_MED_FORMAT_BY_NAME), default="u16")
+    me.add_argument("--tile", type=int, default=256)
+    me.add_argument("--predictor", choices=["auto"] + list(_MED_PRED_BY_NAME),
+                    default="auto")
+    me.add_argument("--method", choices=["auto", "raw", "lz"], default="auto")
+    me.add_argument("--meta", action="append", default=[],
+                    metavar="KEY=VALUE", help="metadata entry (repeatable)")
+
+    md = med_sub.add_parser("decode", help="decode a .pyrm file into raw samples")
+    md.add_argument("input")
+    md.add_argument("output")
+
+    mi = med_sub.add_parser("info", help="print container metadata")
+    mi.add_argument("input")
+
+    mv = med_sub.add_parser("preview", help="render one slice as an 8-bit PGM")
+    mv.add_argument("input")
+    mv.add_argument("output")
+    mv.add_argument("--slice", type=int, default=0)
+    mv.add_argument("--window", type=float, default=400.0)
+    mv.add_argument("--level", type=float, default=40.0)
     return p
 
 
@@ -145,6 +191,89 @@ def _benchmark(args) -> int:
     return 0
 
 
+# ------------------------------------------------------------- medical (PYRM)
+
+def _med_meta(pairs: list[str]) -> dict:
+    """Parse `KEY=VALUE` metadata arguments."""
+    meta = {}
+    for item in pairs:
+        if "=" not in item:
+            raise ValueError(f"metadata entry must be KEY=VALUE: {item!r}")
+        key, value = item.split("=", 1)
+        meta[key.strip()] = value.strip()
+    return meta
+
+
+def _med_encode(args) -> int:
+    with open(args.input, "rb") as f:
+        samples = f.read()
+    fmt = _MED_FORMAT_BY_NAME[args.format]
+    predictor = _MED_PRED_BY_NAME.get(args.predictor, -1)
+    method = _MED_METHOD_BY_NAME.get(args.method, -1)
+    blob = _med_codec.encode(samples, args.width, args.height, args.depth,
+                              args.channels, fmt, metadata=_med_meta(args.meta),
+                              tile_size=args.tile, predictor=predictor,
+                              method=method)
+    with open(args.output, "wb") as f:
+        f.write(blob)
+    info = _med_codec.info(blob)
+    print(f"Encoded {args.input} -> {args.output}")
+    print(f"  geometry: {info['width']}x{info['height']}x{info['depth']} "
+          f"ch={info['channels']} {_MED_FORMAT_NAMES.get(info['sample_format'])}")
+    print(f"  size: {len(blob)} bytes, tiles: {info['num_tiles']}")
+    return 0
+
+
+def _med_decode(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    metadata, samples = _med_codec.decode(blob)
+    with open(args.output, "wb") as f:
+        f.write(samples)
+    info = _med_codec.info(blob)
+    print(f"Decoded {args.input} -> {args.output}")
+    print(f"  geometry: {info['width']}x{info['height']}x{info['depth']} "
+          f"ch={info['channels']} {_MED_FORMAT_NAMES.get(info['sample_format'])}")
+    print(f"  samples: {len(samples)} bytes")
+    if metadata:
+        print(f"  metadata: {metadata}")
+    return 0
+
+
+def _med_info(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    info = _med_codec.info(blob)
+    print(f"=== PYRM Medical Inspection: {args.input} ===")
+    for key in ("width", "height", "depth", "channels", "sample_format",
+                "bits", "tile_size", "num_tiles"):
+        print(f"  {key}: {info[key]}")
+    print(f"  format: {_MED_FORMAT_NAMES.get(info['sample_format'])}")
+    print(f"  file_size: {len(blob)} bytes")
+    return 0
+
+
+def _med_preview(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    info = _med_codec.info(blob)
+    _metadata, samples = _med_codec.decode(blob)
+    pixels = _med_preview_mod.preview_slice(
+        samples, info["width"], info["height"], info["depth"],
+        info["channels"], info["sample_format"], args.slice,
+        args.window, args.level)
+    if pixels is None:
+        print("pyra: error: cannot render this slice", file=sys.stderr)
+        return 1
+    header = f"P5\n{info['width']} {info['height']}\n255\n".encode()
+    with open(args.output, "wb") as f:
+        f.write(header)
+        f.write(pixels)
+    print(f"Preview {args.input} slice {args.slice} -> {args.output}")
+    print(f"  window: {args.window}, level: {args.level}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -195,9 +324,21 @@ def main(argv=None) -> int:
         if args.cmd == "benchmark":
             return _benchmark(args)
 
+        if args.cmd == "med":
+            if args.med_cmd == "encode":
+                return _med_encode(args)
+            if args.med_cmd == "decode":
+                return _med_decode(args)
+            if args.med_cmd == "info":
+                return _med_info(args)
+            if args.med_cmd == "preview":
+                return _med_preview(args)
+            print(f"Unknown medical command: {args.med_cmd}", file=sys.stderr)
+            return 2
+
         print(f"Unknown command: {args.cmd}", file=sys.stderr)
         return 2
-    except (PyraError, OSError, ValueError) as e:
+    except (PyraError, MedicalError, OSError, ValueError) as e:
         print(f"pyra: error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
