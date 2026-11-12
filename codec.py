@@ -530,6 +530,38 @@ class PyraCodec:
         return compressed_tiles, method
 
     @classmethod
+    def encode_samples(cls, raw: bytes, width: int, height: int,
+                       bit_depth: int = 8, color_space: int = CS_RGB,
+                       pred_type: int = -1, tile_size: int = 256,
+                       method: int = -1, transform: int = -1,
+                       filter_mode: int = -1) -> bytes:
+        """Encode an image given as raw sample bytes.
+
+        8-bit input holds one sample per byte, 16-bit input holds big-endian
+        `u16` samples. The native core widens the samples itself, so no
+        intermediate Python list is built; the fallback path converts and
+        calls `encode`, which produces the very same bytes.
+        """
+        channels = cls._channels_for_colorspace(color_space)
+        samples = width * height * channels
+        need = samples * (2 if bit_depth == 16 else 1)
+        if bit_depth not in (8, 16) or len(raw) < need:
+            raise ValueError("raw sample buffer too small for the given geometry")
+        native_blob = _native.encode_image_bytes(
+            raw[:need], width, height, channels, bit_depth, color_space,
+            pred_type, method, tile_size, transform, filter_mode,
+            _PLAN_SAMPLE_ROWS)
+        if native_blob is not None:
+            return native_blob
+        if bit_depth == 8:
+            pixels = list(raw[:need])
+        else:
+            import struct
+            pixels = list(struct.unpack(f">{samples}H", raw[:need]))
+        return cls.encode(pixels, width, height, bit_depth, color_space,
+                          pred_type, tile_size, method, transform, filter_mode)
+
+    @classmethod
     def encode(cls, pixels: list[int], width: int, height: int,
                bit_depth: int = 8, color_space: int = CS_RGB,
                pred_type: int = -1, tile_size: int = 256, method: int = -1,

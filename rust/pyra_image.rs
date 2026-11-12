@@ -142,14 +142,28 @@ struct TileGeom {
 }
 
 /// The three method candidates of one tile plus the adaptive row table.
+///
+/// A candidate that grew past the size of the best candidate of the same
+/// tile is abandoned: `None` means "provably larger", and `lb` holds the
+/// lower bound that proves it.
 struct TileCandidates {
     raw: Vec<u8>,
-    rle: Vec<u8>,
-    lz: Vec<u8>,
+    rle: Option<Vec<u8>>,
+    lz: Option<Vec<u8>>,
+    rle_lb: usize,
+    lz_lb: usize,
     filter_bits: Vec<u8>,
 }
 
-unsafe fn encode_tile_candidates(
+/// Transform, predict and pack one tile; the shared preparation step of all
+/// three method candidates.
+struct TilePrep {
+    residuals: Vec<i32>,
+    rle_raw: Vec<u8>,
+    filter_bits: Vec<u8>,
+}
+
+unsafe fn prepare_tile(
     canvas: &[i32],
     src_stride: usize,
     geom: &TileGeom,
@@ -160,8 +174,7 @@ unsafe fn encode_tile_candidates(
     pred_type: i32,
     transform: i32,
     filter_mode: i32,
-    wanted: &[i32],
-) -> Option<TileCandidates> {
+) -> Option<TilePrep> {
     let stride = geom.w * channels;
     let count = stride * geom.h;
     let mut tile: Vec<i32> = vec![0; count];
@@ -224,46 +237,103 @@ unsafe fn encode_tile_candidates(
         return None;
     }
 
+    // The RLE byte stream is shared by the RLE and LZ candidates.
+    let mut rle_raw: Vec<u8> = Vec::new();
+    if !packed.is_empty() {
+        let mut buf = vec![0u8; packed.len() * 2 + 16];
+        let n = pyra_rle_encode(packed.as_ptr(), packed.len(), buf.as_mut_ptr());
+        if n < 0 {
+            return None;
+        }
+        buf.truncate(n as usize);
+        rle_raw = buf;
+    }
+
+    Some(TilePrep {
+        residuals,
+        rle_raw,
+        filter_bits,
+    })
+}
+
+/// The RAW candidate: the residual symbols straight into the entropy coder.
+fn raw_candidate(prep: &TilePrep, modv: i64) -> Vec<u8> {
+    let syms: Vec<u32> = prep.residuals.iter().map(|&v| v as u32).collect();
+    encode_symbols_grow(&syms, modv as usize)
+}
+
+/// The RLE candidate, abandoned once it is larger than `budget` bytes.
+fn rle_candidate(prep: &TilePrep, budget: Option<usize>) -> Option<Vec<u8>> {
+    let mut syms: Vec<u32> = prep.rle_raw.iter().map(|&b| b as u32).collect();
+    syms.push(TOKEN_EOF);
+    let max_bits = match budget {
+        Some(b) => b.saturating_mul(8),
+        None => usize::MAX,
+    };
+    match encode_symbols_capped(&syms, TOKEN_SYMBOLS as usize, max_bits) {
+        Ok(v) => Some(v),
+        Err(E_ENC_ABORT) => None,
+        Err(_) => None,
+    }
+}
+
+/// The LZ candidate, abandoned once it is larger than `budget` bytes.
+fn lz_candidate(prep: &TilePrep, budget: Option<usize>) -> Option<Vec<u8>> {
+    let max_bits = match budget {
+        Some(b) => b.saturating_mul(8),
+        None => usize::MAX,
+    };
+    match encode_lz_method_capped(&prep.rle_raw, max_bits) {
+        Ok(v) => Some(v),
+        Err(E_ENC_ABORT) => None,
+        Err(_) => None,
+    }
+}
+
+unsafe fn encode_tile_candidates(
+    canvas: &[i32],
+    src_stride: usize,
+    geom: &TileGeom,
+    channels: usize,
+    color_space: i32,
+    offset: i64,
+    modv: i64,
+    pred_type: i32,
+    transform: i32,
+    filter_mode: i32,
+    wanted: &[i32],
+) -> Option<TileCandidates> {
+    let prep = prepare_tile(
+        canvas, src_stride, geom, channels, color_space, offset, modv, pred_type, transform,
+        filter_mode,
+    )?;
+
     // RAW candidate: residual symbols straight into the entropy coder.
     let raw = if wanted.contains(&METHOD_RAW_V) {
-        let syms: Vec<u32> = residuals.iter().map(|&v| v as u32).collect();
-        encode_symbols_grow(&syms, modv as usize)
+        raw_candidate(&prep, modv)
     } else {
         Vec::new()
     };
 
-    // RLE / LZ candidates share the packed byte stream.
-    let mut rle: Vec<u8> = Vec::new();
-    let mut lz: Vec<u8> = Vec::new();
-    if wanted.contains(&METHOD_RLE_V) || wanted.contains(&METHOD_LZ_V) {
-        let mut rle_raw = vec![0u8; packed.len() * 2 + 16];
-        let n = pyra_rle_encode(packed.as_ptr(), packed.len(), rle_raw.as_mut_ptr());
-        if n < 0 {
-            return None;
+    // The RLE and LZ candidates are abandoned as soon as they grow past the
+    // RAW candidate of the same tile: their final size can only grow, so
+    // they can never win here. The lower bound that proves it is kept for
+    // the global method decision.
+    let budget = if raw.is_empty() { None } else { Some(raw.len()) };
+    let mut rle: Option<Vec<u8>> = None;
+    let mut rle_lb = 0usize;
+    if wanted.contains(&METHOD_RLE_V) {
+        match rle_candidate(&prep, budget) {
+            Some(v) => rle = Some(v),
+            None => rle_lb = budget.map(|b| b + 1).unwrap_or(0),
         }
-        rle_raw.truncate(n as usize);
-
-        if wanted.contains(&METHOD_RLE_V) {
-            let mut syms: Vec<u32> = rle_raw.iter().map(|&b| b as u32).collect();
-            syms.push(TOKEN_EOF);
-            rle = encode_symbols_grow(&syms, TOKEN_SYMBOLS as usize);
-        }
-
-        if wanted.contains(&METHOD_LZ_V) {
-            let mut tokens: Vec<u32> = vec![0u32; rle_raw.len() + 2];
-            let n = pyra_lz_encode(rle_raw.as_ptr(), rle_raw.len(), tokens.as_mut_ptr());
-            if n < 0 {
-                return None;
-            }
-            tokens.truncate(n as usize);
-            let rle_len = rle_raw.len() as u32;
-            let mut syms: Vec<u32> = Vec::with_capacity(tokens.len() + 4);
-            syms.push((rle_len >> 24) & 0xFF);
-            syms.push((rle_len >> 16) & 0xFF);
-            syms.push((rle_len >> 8) & 0xFF);
-            syms.push(rle_len & 0xFF);
-            syms.extend_from_slice(&tokens);
-            lz = encode_symbols_grow(&syms, TOKEN_SYMBOLS as usize);
+    }
+    let mut lz: Option<Vec<u8>> = None;
+    let mut lz_lb = 0usize;
+    if wanted.contains(&METHOD_LZ_V) {
+        match lz_candidate(&prep, budget) {
+            Some(v) => lz = Some(v),
+            None => lz_lb = budget.map(|b| b + 1).unwrap_or(0),
         }
     }
 
@@ -271,8 +341,81 @@ unsafe fn encode_tile_candidates(
         raw,
         rle,
         lz,
-        filter_bits,
+        rle_lb,
+        lz_lb,
+        filter_bits: prep.filter_bits,
     })
+}
+
+/// Re-encode the candidates that were abandoned inside a tile so that the
+/// global method decision sees exact sizes again.
+///
+/// Only reached when the lower bounds cannot decide the winner, which means
+/// the method really is competitive and its bytes are needed anyway.
+unsafe fn refill_method(
+    method_idx: usize,
+    canvas: &[i32],
+    src_stride: usize,
+    geoms: &[TileGeom],
+    tiles: &mut [TileCandidates],
+    channels: usize,
+    color_space: i32,
+    offset: i64,
+    modv: i64,
+    pred_type: i32,
+    transform: i32,
+    filter_mode: i32,
+) -> bool {
+    let needed: Vec<usize> = (0..tiles.len())
+        .filter(|&i| match method_idx {
+            1 => tiles[i].rle.is_none(),
+            2 => tiles[i].lz.is_none(),
+            _ => false,
+        })
+        .collect();
+    if needed.is_empty() {
+        return true;
+    }
+    let encoded: Vec<Option<Vec<u8>>> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(needed.len());
+        for &i in needed.iter() {
+            let px_ref = canvas;
+            let geom_ref = &geoms[i];
+            handles.push(scope.spawn(move || {
+                let prep = prepare_tile(
+                    px_ref, src_stride, geom_ref, channels, color_space, offset, modv, pred_type,
+                    transform, filter_mode,
+                )?;
+                match method_idx {
+                    1 => rle_candidate(&prep, None),
+                    _ => lz_candidate(&prep, None),
+                }
+            }));
+        }
+        let mut out = Vec::with_capacity(needed.len());
+        for h in handles {
+            match h.join() {
+                Ok(v) => out.push(v),
+                Err(_) => return Vec::new(),
+            }
+        }
+        out
+    });
+    if encoded.len() != needed.len() {
+        return false;
+    }
+    for (k, &i) in needed.iter().enumerate() {
+        let v = match &encoded[k] {
+            Some(v) => v,
+            None => return false,
+        };
+        if method_idx == 1 {
+            tiles[i].rle = Some(v.clone());
+        } else {
+            tiles[i].lz = Some(v.clone());
+        }
+    }
+    true
 }
 
 // ----------------------------------------------------------- whole encode
@@ -427,13 +570,19 @@ pub unsafe extern "C" fn pyra_encode_image(
         for t in tiles.iter() {
             let mut best_id = METHOD_RAW_V;
             let mut best_len = usize::MAX;
+            // An abandoned candidate is provably larger than the tile's
+            // budget, so it can never be picked here.
             for (mid, data) in [
-                (METHOD_RAW_V, &t.raw),
-                (METHOD_RLE_V, &t.rle),
-                (METHOD_LZ_V, &t.lz),
+                (METHOD_RAW_V, Some(t.raw.as_slice())),
+                (METHOD_RLE_V, t.rle.as_deref()),
+                (METHOD_LZ_V, t.lz.as_deref()),
             ] {
-                if data.len() < best_len || (data.len() == best_len && mid < best_id) {
-                    best_len = data.len();
+                let len = match data {
+                    Some(d) => d.len(),
+                    None => continue,
+                };
+                if len < best_len || (len == best_len && mid < best_id) {
+                    best_len = len;
                     best_id = mid;
                 }
             }
@@ -442,22 +591,60 @@ pub unsafe extern "C" fn pyra_encode_image(
             body.extend_from_slice(&t.filter_bits);
             match best_id {
                 METHOD_RAW_V => body.extend_from_slice(&t.raw),
-                METHOD_RLE_V => body.extend_from_slice(&t.rle),
-                _ => body.extend_from_slice(&t.lz),
+                METHOD_RLE_V => body.extend_from_slice(t.rle.as_ref().unwrap()),
+                _ => body.extend_from_slice(t.lz.as_ref().unwrap()),
             }
             bodies.push(body);
         }
     } else {
         let pick = if method == -1 {
-            let mut totals = [0usize; 3];
+            // Global method: the smallest total wins (ties go to the lower
+            // method id, exactly like the reference).
+            //
+            // A candidate that was abandoned inside a tile is only known to
+            // be larger than that tile's budget, which gives a lower bound
+            // on the total. When the lower bounds already prove that a
+            // method cannot win it is skipped; otherwise the missing tiles
+            // are encoded a second time to obtain the exact total.
+            let mut total = [0usize; 3];
+            let mut exact = [true, true, true];
             for t in tiles.iter() {
-                totals[0] += t.raw.len();
-                totals[1] += t.rle.len();
-                totals[2] += t.lz.len();
+                total[0] += t.raw.len();
+                match &t.rle {
+                    Some(v) => total[1] += v.len(),
+                    None => {
+                        total[1] += t.rle_lb;
+                        exact[1] = false;
+                    }
+                }
+                match &t.lz {
+                    Some(v) => total[2] += v.len(),
+                    None => {
+                        total[2] += t.lz_lb;
+                        exact[2] = false;
+                    }
+                }
             }
             let mut best = 0usize;
             for m in 1..3 {
-                if totals[m] < totals[best] {
+                if !exact[m] {
+                    if total[m] >= total[best] {
+                        // provably not the smallest method
+                        continue;
+                    }
+                    // ambiguous: encode the missing tiles again, exactly
+                    if !refill_method(
+                        m, px, src_stride, &geoms, &mut tiles, channels, color_space, offset,
+                        modv, pred_type, transform, filter_mode,
+                    ) {
+                        return E_IMG_ALLOC;
+                    }
+                    total[m] = match m {
+                        1 => tiles.iter().map(|t| t.rle.as_ref().map(|v| v.len()).unwrap_or(0)).sum(),
+                        _ => tiles.iter().map(|t| t.lz.as_ref().map(|v| v.len()).unwrap_or(0)).sum(),
+                    };
+                }
+                if total[m] < total[best] {
                     best = m;
                 }
             }
@@ -471,8 +658,8 @@ pub unsafe extern "C" fn pyra_encode_image(
             body.extend_from_slice(&t.filter_bits);
             match pick {
                 METHOD_RAW_V => body.extend_from_slice(&t.raw),
-                METHOD_RLE_V => body.extend_from_slice(&t.rle),
-                _ => body.extend_from_slice(&t.lz),
+                METHOD_RLE_V => body.extend_from_slice(t.rle.as_ref().unwrap()),
+                _ => body.extend_from_slice(t.lz.as_ref().unwrap()),
             }
             bodies.push(body);
         }
@@ -516,6 +703,73 @@ pub unsafe extern "C" fn pyra_encode_image(
     *out_ptr = ptr;
     *out_len = len;
     0
+}
+
+/// Encode a whole image from raw sample bytes.
+///
+/// 8-bit input stores one sample per byte, 16-bit input stores big-endian
+/// `u16` samples (the PNM order). The samples are widened to the internal
+/// `i32` domain here, which keeps the Python driver from building a list of
+/// ints just to hand it over. The output is byte-identical to
+/// `pyra_encode_image` fed with the same samples.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_encode_image_bytes(
+    data: *const u8,
+    len: usize,
+    width: usize,
+    height: usize,
+    channels: usize,
+    bit_depth: u32,
+    color_space: i32,
+    pred_type: i32,
+    method: i32,
+    tile_size: usize,
+    transform: i32,
+    filter_mode: i32,
+    sample_rows: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> isize {
+    if width == 0 || height == 0 || channels == 0 {
+        return E_IMG_SHAPE;
+    }
+    let samples = width * height * channels;
+    let need = match bit_depth {
+        8 => samples,
+        16 => samples * 2,
+        _ => return E_IMG_SHAPE,
+    };
+    if data.is_null() || len < need {
+        return E_IMG_SHAPE;
+    }
+    let raw = std::slice::from_raw_parts(data, need);
+    let mut px: Vec<i32> = Vec::with_capacity(samples);
+    if bit_depth == 8 {
+        for &b in raw {
+            px.push(b as i32);
+        }
+    } else {
+        for pair in raw.chunks_exact(2) {
+            px.push(((pair[0] as i32) << 8) | (pair[1] as i32));
+        }
+    }
+    pyra_encode_image(
+        px.as_ptr(),
+        samples,
+        width,
+        height,
+        channels,
+        bit_depth,
+        color_space,
+        pred_type,
+        method,
+        tile_size,
+        transform,
+        filter_mode,
+        sample_rows,
+        out_ptr,
+        out_len,
+    )
 }
 
 /// Release a buffer returned by `pyra_encode_image` / `pyra_decode_image`.

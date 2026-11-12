@@ -15,9 +15,12 @@ def decode(file_bytes: bytes) -> tuple[dict, list[int]]:
     """Decode PYRA byte format into metadata and raw pixels."""
     return PyraCodec.decode(file_bytes)
 
-def _parse_pnm(input_path: str) -> tuple[int, int, int, list[int], int, int]:
-    """Parse PNM (P5/PGM gray, P6/PPM RGB). Returns (magic, width, height, pixels, bit_depth, max_val).
-    Pixels are ints in the sample domain; 16-bit samples are unpacked per PNM spec (big-endian)."""
+def _parse_pnm_raw(input_path: str) -> tuple[bytes, int, int, bytes, int, int]:
+    """Parse a PNM file into raw sample bytes.
+
+    Returns (magic, width, height, raw_samples, bit_depth, max_val) where
+    raw_samples holds one byte per sample for 8-bit images and big-endian
+    u16 samples for 16-bit images (the PNM order)."""
     with open(input_path, "rb") as f:
         magic = f.readline().strip()
         if magic not in (b"P5", b"P6"):
@@ -39,11 +42,17 @@ def _parse_pnm(input_path: str) -> tuple[int, int, int, list[int], int, int]:
         pixel_data = f.read(count)
         if len(pixel_data) < count:
             raise ValueError("Truncated PNM pixel data")
-        if bit_depth == 8:
-            pixels = list(pixel_data)
-        else:
-            import struct
-            pixels = list(struct.unpack(f">{width*height*channels}H", pixel_data))
+    return magic, width, height, pixel_data, bit_depth, max_val
+
+def _parse_pnm(input_path: str) -> tuple[int, int, int, list[int], int, int]:
+    """Parse PNM (P5/PGM gray, P6/PPM RGB). Returns (magic, width, height, pixels, bit_depth, max_val).
+    Pixels are ints in the sample domain; 16-bit samples are unpacked per PNM spec (big-endian)."""
+    magic, width, height, raw, bit_depth, max_val = _parse_pnm_raw(input_path)
+    if bit_depth == 8:
+        pixels = list(raw)
+    else:
+        import struct
+        pixels = list(struct.unpack(f">{len(raw)//2}H", raw))
     return magic, width, height, pixels, bit_depth, max_val
 
 def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1, transform: int = -1, filter_mode: int = -1) -> dict:
@@ -51,10 +60,15 @@ def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_t
     color_space=-1 auto-detects from the PNM magic; method=-1 picks the
     method automatically. transform=-1 / filter_mode=-1 pick the colour
     transform and the row filter mode automatically. Returns encode metadata."""
-    magic, width, height, pixels, bit_depth, extent_max = _parse_pnm(input_path)
+    magic, width, height, raw, bit_depth, extent_max = _parse_pnm_raw(input_path)
     if color_space == -1:
         color_space = CS_GRAY if magic == b"P5" else CS_RGB
-    encoded = encode(pixels, width, height, bit_depth, color_space, pred_type, tile_size, method, transform, filter_mode)
+    channels = 1 if color_space == CS_GRAY else 3
+    # The native core widens the raw samples itself; the pure-Python path
+    # converts them here. Both produce identical container bytes.
+    encoded = PyraCodec.encode_samples(raw, width, height, bit_depth,
+                                        color_space, pred_type, tile_size,
+                                        method, transform, filter_mode)
     with open(output_path, "wb") as f:
         f.write(encoded)
     return {"width": width, "height": height, "bit_depth": bit_depth,

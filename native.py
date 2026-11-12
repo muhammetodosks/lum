@@ -230,6 +230,12 @@ def _load():
                 ctypes.POINTER(ctypes.c_ubyte), _sz,
                 ctypes.POINTER(ctypes.POINTER(_i32)), ctypes.POINTER(_sz),
                 ctypes.POINTER(_i32)]
+            lib.pyra_encode_image_bytes.restype = _isize
+            lib.pyra_encode_image_bytes.argtypes = [
+                ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz, _sz,
+                ctypes.c_uint32, _i32, _i32, _i32, _sz, _i32, _i32, _sz,
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+                ctypes.POINTER(_sz)]
             lib.pyra_free_buf.restype = None
             lib.pyra_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
             lib.pyra_free_buf_i32.restype = None
@@ -994,6 +1000,41 @@ def encode_image(pixels, width: int, height: int, channels: int,
     out_len = ctypes.c_size_t()
     rc = lib.pyra_encode_image(
         src, n, width, height, channels, bit_depth, color_space, pred_type,
+        method, tile_size, transform, filter_mode, sample_rows,
+        ctypes.byref(out_p), ctypes.byref(out_len))
+    if rc != 0 or not out_p:
+        return None
+    try:
+        return ctypes.string_at(out_p, out_len.value)
+    finally:
+        lib.pyra_free_buf(out_p, out_len.value)
+
+
+def encode_image_bytes(raw: bytes, width: int, height: int, channels: int,
+                      bit_depth: int, color_space: int, pred_type: int = -1,
+                      method: int = -1, tile_size: int = 256,
+                      transform: int = -1, filter_mode: int = -1,
+                      sample_rows: int = 8) -> bytes | None:
+    """Encode a whole image from raw sample bytes (8-bit or big-endian u16).
+
+    This is the zero-conversion variant of `encode_image`: the samples are
+    widened inside the native core, so the caller never has to build a
+    Python list of ints. Returns None when the native backend is unavailable
+    or refuses the input.
+    """
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    samples = width * height * channels
+    need = samples * (2 if bit_depth == 16 else 1)
+    if bit_depth not in (8, 16) or len(raw) < need:
+        return None
+    buf = ctypes.create_string_buffer(bytes(raw[:need]), need)
+    src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
+    out_p = ctypes.POINTER(ctypes.c_ubyte)()
+    out_len = ctypes.c_size_t()
+    rc = lib.pyra_encode_image_bytes(
+        src, need, width, height, channels, bit_depth, color_space, pred_type,
         method, tile_size, transform, filter_mode, sample_rows,
         ctypes.byref(out_p), ctypes.byref(out_len))
     if rc != 0 or not out_p:

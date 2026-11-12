@@ -23,6 +23,7 @@
 use std::collections::{HashMap, VecDeque};
 
 mod pyra_image;
+mod pyra_med;
 
 pub const TOKEN_MATCH: u32 = 256;
 pub const TOKEN_EOF: u32 = 257;
@@ -320,6 +321,102 @@ unsafe fn lz_expand_vec(out: &mut Vec<u8>, dist: usize, l: usize) {
     out.set_len(base + l);
 }
 
+/// One LZ77 token produced by [`LzMatcher`].
+enum LzTok {
+    /// A literal byte.
+    Lit(u8),
+    /// A back-reference of `len` bytes at 1-based `dist`.
+    Match { len: usize, dist: usize },
+    /// End of the stream.
+    Eof,
+}
+
+/// Greedy LZ77 matcher with 3-byte hash buckets.
+///
+/// The token sequence is identical to the Python reference: the newest
+/// candidate wins ties, buckets are capped at `BUCKET_MAX` positions with
+/// FIFO eviction, and a match must be at least `MINMATCH` bytes long.
+/// Producing the tokens lazily lets a caller stop as soon as the encoded
+/// stream is already larger than the best candidate found so far.
+struct LzMatcher<'a> {
+    data: &'a [u8],
+    table: HashMap<u32, VecDeque<u32>, FastBuild>,
+    pos: usize,
+}
+
+impl<'a> LzMatcher<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        LzMatcher {
+            data,
+            table: HashMap::with_capacity_and_hasher(data.len() / 8 + 1, FastBuild),
+            pos: 0,
+        }
+    }
+
+    /// Remember the 3-byte key at `pos` (if a full key fits).
+    fn add_key(&mut self, pos: usize) {
+        let len = self.data.len();
+        if pos + 3 <= len {
+            let key = (self.data[pos] as u32)
+                | ((self.data[pos + 1] as u32) << 8)
+                | ((self.data[pos + 2] as u32) << 16);
+            let bucket = self.table.entry(key).or_insert_with(VecDeque::new);
+            bucket.push_back(pos as u32);
+            if bucket.len() > BUCKET_MAX {
+                bucket.pop_front();
+            }
+        }
+    }
+
+    /// The next token of the stream.
+    fn next_token(&mut self) -> LzTok {
+        let len = self.data.len();
+        let i = self.pos;
+        if i >= len {
+            return LzTok::Eof;
+        }
+        let mut best_len = 0usize;
+        let mut best_dist = 0usize;
+        if i + MINMATCH <= len {
+            let key = (self.data[i] as u32)
+                | ((self.data[i + 1] as u32) << 8)
+                | ((self.data[i + 2] as u32) << 16);
+            if let Some(positions) = self.table.get(&key) {
+                let max_len = usize::min(len - i, MAXMATCH);
+                for &cand in positions.iter().rev() {
+                    let dist = i - cand as usize;
+                    if dist == 0 || dist > MAXDIST {
+                        break;
+                    }
+                    // verify; self-overlap handled identically by the decoder
+                    let l = lz_match_len(self.data, cand as usize, i, max_len);
+                    if l > best_len {
+                        best_len = l;
+                        best_dist = dist;
+                        if l >= max_len {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if best_len >= MINMATCH {
+            for k in i..i + best_len {
+                self.add_key(k);
+            }
+            self.pos = i + best_len;
+            LzTok::Match {
+                len: best_len,
+                dist: best_dist,
+            }
+        } else {
+            self.add_key(i);
+            self.pos = i + 1;
+            LzTok::Lit(self.data[i])
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pyra_lz_encode(
     data: *const u8, len: usize, tokens_out: *mut u32,
@@ -333,75 +430,28 @@ pub unsafe extern "C" fn pyra_lz_encode(
         return 1;
     }
 
-    // Ring buffers: `Vec::remove(0)` memmoves the whole bucket on every
-    // insert, `VecDeque::pop_front` is O(1) and keeps the newest-first
-    // iteration order the reference relies on.
-    let mut table: HashMap<u32, VecDeque<u32>, FastBuild> =
-        HashMap::with_capacity_and_hasher(len / 8 + 1, FastBuild);
-
-    macro_rules! add_key {
-        ($pos:expr) => {{
-            let pos: usize = $pos;
-            if pos + 3 <= len {
-                let key = (data[pos] as u32)
-                    | ((data[pos + 1] as u32) << 8)
-                    | ((data[pos + 2] as u32) << 16);
-                let bucket = table.entry(key).or_insert_with(VecDeque::new);
-                bucket.push_back(pos as u32);
-                if bucket.len() > BUCKET_MAX {
-                    bucket.pop_front();
-                }
+    let mut matcher = LzMatcher::new(data);
+    loop {
+        match matcher.next_token() {
+            LzTok::Eof => {
+                out[t] = TOKEN_EOF;
+                t += 1;
+                break;
             }
-        }};
-    }
-
-    let mut i = 0usize;
-    while i < len {
-        let mut best_len = 0usize;
-        let mut best_dist = 0usize;
-        if i + MINMATCH <= len {
-            let key = (data[i] as u32)
-                | ((data[i + 1] as u32) << 8)
-                | ((data[i + 2] as u32) << 16);
-            if let Some(positions) = table.get(&key) {
-                let max_len = usize::min(len - i, MAXMATCH);
-                for &cand in positions.iter().rev() {
-                    let dist = i - cand as usize;
-                    if dist == 0 || dist > MAXDIST {
-                        break;
-                    }
-                    // verify; self-overlap handled identically by the decoder
-                    let l = lz_match_len(data, cand as usize, i, max_len);
-                    if l > best_len {
-                        best_len = l;
-                        best_dist = dist;
-                        if l >= max_len {
-                            break;
-                        }
-                    }
-                }
+            LzTok::Lit(b) => {
+                out[t] = b as u32;
+                t += 1;
+            }
+            LzTok::Match { len, dist } => {
+                out[t] = TOKEN_MATCH;
+                out[t + 1] = (len - MINMATCH) as u32;
+                let d0 = dist - 1; // zero-based distance
+                out[t + 2] = (d0 & 0xFF) as u32;
+                out[t + 3] = (d0 >> 8) as u32;
+                t += 4;
             }
         }
-        if best_len >= MINMATCH {
-            out[t] = TOKEN_MATCH;
-            out[t + 1] = (best_len - MINMATCH) as u32;
-            let d0 = best_dist - 1; // zero-based distance
-            out[t + 2] = (d0 & 0xFF) as u32;
-            out[t + 3] = (d0 >> 8) as u32;
-            t += 4;
-            for k in i..i + best_len {
-                add_key!(k);
-            }
-            i += best_len;
-        } else {
-            out[t] = data[i] as u32;
-            t += 1;
-            add_key!(i);
-            i += 1;
-        }
     }
-    out[t] = TOKEN_EOF;
-    t += 1;
     t as isize
 }
 
@@ -811,6 +861,7 @@ pub unsafe extern "C" fn pyra_pipe_reconstruct(
 const E_MODEL_SYMS: isize = -40;     // n_symbols < 1
 const E_ENC_BUF: isize = -41;        // encoder output buffer too small
 const E_ENC_SYM: isize = -42;        // encode symbol >= alphabet (defensive)
+const E_ENC_ABORT: isize = -43;      // candidate grew past its byte budget
 const E_DEC_HDR: isize = -45;        // LZ header symbol is not a byte
 
 const HALF: i64 = 1 << 31;
@@ -1009,6 +1060,176 @@ fn enc_renorm(low: &mut i64, high: &mut i64, bits: &mut Vec<u8>, pending: &mut i
     }
 }
 
+/// Integer division with a 32-bit fast path.
+///
+/// The coder divides a span of at most 2^32 by a total that never exceeds
+/// the alphabet cap, so the division fits into 32 bits almost always - and a
+/// 32-bit division is markedly cheaper than a 64-bit one. The result is
+/// identical either way (both truncate towards zero, both operands are
+/// positive).
+#[inline]
+fn div_span(span: i64, total: i64) -> i64 {
+    if span <= u32::MAX as i64 && total <= u32::MAX as i64 {
+        (span as u32 / total as u32) as i64
+    } else {
+        span / total
+    }
+}
+
+/// Streaming range encoder.
+///
+/// Symbols are pushed one at a time and the number of emitted bits can be
+/// inspected, which lets a caller abandon a candidate that is already larger
+/// than the best one found so far: the final size only ever grows, so an
+/// abandoned candidate can never win.
+struct RangeEnc {
+    model: Fenwick,
+    low: i64,
+    high: i64,
+    bits: Vec<u8>,
+    pending: i64,
+}
+
+impl RangeEnc {
+    fn new(n_symbols: usize, cap_hint: usize) -> Self {
+        RangeEnc {
+            model: Fenwick::new(n_symbols),
+            low: 0,
+            high: (1i64 << 32) - 1, // inclusive
+            bits: Vec::with_capacity(cap_hint),
+            pending: 0,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, symbol: usize) {
+        let cum = self.model.cum(symbol);
+        let f = self.model.freq_of(symbol);
+        let total = self.model.total;
+        let span = self.high - self.low + 1;
+        let mut r = div_span(span, total);
+        if r < 1 {
+            r = 1;
+        }
+        let cum_high = cum + f;
+        let new_low = self.low + r * cum;
+        let mut new_high = self.low + r * cum_high - 1;
+        if new_high < new_low {
+            new_high = new_low;
+        }
+        self.low = new_low;
+        self.high = new_high;
+        enc_renorm(&mut self.low, &mut self.high, &mut self.bits, &mut self.pending);
+        self.model.add(symbol);
+    }
+
+    /// Bits emitted so far; the flushed size is at least this rounded up to
+    /// whole bytes.
+    #[inline]
+    fn bit_len(&self) -> usize {
+        self.bits.len()
+    }
+
+    /// WNC flush plus MSB-first bit packing, zero-padded last byte.
+    fn finish(mut self) -> Vec<u8> {
+        self.pending += 1;
+        if self.low < QUARTER {
+            self.bits.push(0);
+            for _ in 0..self.pending {
+                self.bits.push(1);
+            }
+        } else {
+            self.bits.push(1);
+            for _ in 0..self.pending {
+                self.bits.push(0);
+            }
+        }
+        pack_bits_msb(&self.bits)
+    }
+}
+
+/// MSB-first bit packing into bytes, the last byte zero-padded.
+fn pack_bits_msb(bits: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity((bits.len() + 7) / 8);
+    let mut byte = 0u32;
+    let mut nb = 0u32;
+    for &b in bits.iter() {
+        byte = (byte << 1) | b as u32;
+        nb += 1;
+        if nb == 8 {
+            out.push(byte as u8);
+            byte = 0;
+            nb = 0;
+        }
+    }
+    if nb > 0 {
+        out.push((byte << (8 - nb)) as u8);
+    }
+    out
+}
+
+/// Encode a symbol list with a bit budget.
+///
+/// `max_bits` is the number of bits the candidate may use before it is
+/// abandoned (`usize::MAX` means "no budget"). Abandoning is safe: the
+/// flushed size of a stream is never smaller than the bits emitted so far,
+/// so the candidate is provably larger than the budget owner.
+fn encode_symbols_capped(
+    syms: &[u32], n_symbols: usize, max_bits: usize,
+) -> Result<Vec<u8>, isize> {
+    if n_symbols == 0 {
+        return Err(E_MODEL_SYMS);
+    }
+    let mut enc = RangeEnc::new(n_symbols, 4 * syms.len() + 64);
+    for &s in syms.iter() {
+        let symbol = s as usize;
+        if symbol >= n_symbols {
+            return Err(E_ENC_SYM);
+        }
+        enc.push(symbol);
+        if enc.bit_len() > max_bits {
+            return Err(E_ENC_ABORT);
+        }
+    }
+    Ok(enc.finish())
+}
+
+/// Encode the LZ method (four-byte length header plus the token stream) with
+/// a bit budget.
+///
+/// The tokens are produced and encoded in one pass, so an oversized
+/// candidate is abandoned before the whole stream is tokenised.
+fn encode_lz_method_capped(rle_raw: &[u8], max_bits: usize) -> Result<Vec<u8>, isize> {
+    let mut enc = RangeEnc::new(TOKEN_SYMBOLS as usize, 4 * (rle_raw.len() + 2) + 64);
+    let rle_len = rle_raw.len() as u32;
+    for shift in [24u32, 16, 8, 0] {
+        enc.push(((rle_len >> shift) & 0xFF) as usize);
+    }
+    let mut matcher = LzMatcher::new(rle_raw);
+    loop {
+        match matcher.next_token() {
+            LzTok::Eof => {
+                enc.push(TOKEN_EOF as usize);
+                break;
+            }
+            LzTok::Lit(b) => {
+                enc.push(b as usize);
+            }
+            LzTok::Match { len, dist } => {
+                enc.push(TOKEN_MATCH as usize);
+                enc.push(len - MINMATCH);
+                let d0 = dist - 1; // zero-based distance
+                enc.push((d0 & 0xFF) as usize);
+                enc.push((d0 >> 8) as usize);
+            }
+        }
+        if enc.bit_len() > max_bits {
+            return Err(E_ENC_ABORT);
+        }
+    }
+    Ok(enc.finish())
+}
+
 /// Encode `count` symbols as a packed bit string, byte-identical to
 /// RangeEncoder(...).flush(). Output buffer >= 2*count + 256 bytes.
 #[no_mangle]
@@ -1056,13 +1277,13 @@ impl<'a> RangeDec<'a> {
     fn decode_symbol(&mut self) -> usize {
         let total = self.model.total;
         let span = self.high - self.low + 1;
-        let mut r = span / total;
+        let mut r = div_span(span, total);
         if r < 1 {
             r = 1;
         }
         // Python floor division; the negative-target clamp makes the Rust
         // truncation difference immaterial
-        let mut target = (self.value - self.low) / r;
+        let mut target = div_span(self.value - self.low, r);
         if target < 0 {
             target = 0;
         }
@@ -1674,74 +1895,20 @@ unsafe fn encode_symbols(
     if n_symbols == 0 {
         return E_MODEL_SYMS;
     }
-    let mut model = Fenwick::new(n_symbols);
-    let mut low: i64 = 0;
-    let mut high: i64 = (1i64 << 32) - 1; // inclusive
-    let mut bits: Vec<u8> = Vec::with_capacity(4 * syms.len() + 64);
-    let mut pending: i64 = 0;
-
+    let mut enc = RangeEnc::new(n_symbols, 4 * syms.len() + 64);
     for &s in syms.iter() {
         let symbol = s as usize;
         if symbol >= n_symbols {
             return E_ENC_SYM;
         }
-        let cum = model.cum(symbol);
-        let f = model.freq_of(symbol);
-        let total = model.total;
-        let span = high - low + 1;
-        let mut r = span / total;
-        if r < 1 {
-            r = 1;
-        }
-        let cum_high = cum + f;
-        let new_low = low + r * cum;
-        let mut new_high = low + r * cum_high - 1;
-        if new_high < new_low {
-            new_high = new_low;
-        }
-        low = new_low;
-        high = new_high;
-        enc_renorm(&mut low, &mut high, &mut bits, &mut pending);
-        model.add(symbol);
+        enc.push(symbol);
     }
-
-    // WNC flush: pending+1 ones (low in lower half) or zeros
-    pending += 1;
-    if low < QUARTER {
-        bits.push(0);
-        for _ in 0..pending {
-            bits.push(1);
-        }
-    } else {
-        bits.push(1);
-        for _ in 0..pending {
-            bits.push(0);
-        }
-    }
-
-    // MSB-first bit packing, zero-padded last byte
-    let packed_len = (bits.len() + 7) / 8;
-    if packed_len > out_cap {
+    let packed = enc.finish();
+    if packed.len() > out_cap {
         return E_ENC_BUF;
     }
-    let out = std::slice::from_raw_parts_mut(out, packed_len);
-    let mut byte = 0u32;
-    let mut nb = 0u32;
-    let mut o = 0usize;
-    for &b in bits.iter() {
-        byte = (byte << 1) | b as u32;
-        nb += 1;
-        if nb == 8 {
-            out[o] = byte as u8;
-            o += 1;
-            byte = 0;
-            nb = 0;
-        }
-    }
-    if nb > 0 {
-        out[o] = (byte << (8 - nb)) as u8;
-    }
-    packed_len as isize
+    std::ptr::copy_nonoverlapping(packed.as_ptr(), out, packed.len());
+    packed.len() as isize
 }
 
 /// METHOD_RAW encoder: residual symbols straight into the range coder.
