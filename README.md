@@ -413,22 +413,22 @@ texture), native core versus the pure-Python reference:
 
 | volume | encode | decode | ratio |
 |--------|--------|--------|-------|
-| 128×128×16 u16 | 250 ms (33x) | 61 ms (54x) | 1.83x |
-| 256×256×32 u16 | 1 946 ms (35x) | 468 ms (62x) | 2.10x |
-| 512×512×64 u16 | 9 140 ms | 2 361 ms | 2.10x |
+| 128×128×16 u16 | 67 ms (108x) | 32 ms (67x) | 2.67x |
+| 256×256×32 u16 | 447 ms (100x) | 179 ms (96x) | 2.69x |
+| 512×512×64 u16 | 4 372 ms | 1 585 ms | 2.70x |
 
 The numbers in brackets are the speedup over the pure-Python reference,
 which produces the very same bytes. Over the three volumes the file size
-drops from 38.3 MB to 18.3 MB (2.09x).
+drops from 38.3 MB to 14.2 MB (2.69x).
 
-The numbers above are the ones of the first PYRM release. The rewritten
-Rust core and the one-symbol-per-sample coding changed both:
+Compared to the first PYRM release the rewritten Rust core and the
+one-symbol-per-sample coding changed both:
 
 | 256×256×32 u16 (4 MB) | before | now | gain |
 |----------------------|--------|-----|------|
-| encode (automatic method) | 2 051 ms | **434 ms** | 4.7x |
-| decode | 491 ms | **172 ms** | 2.9x |
-| file size | 2 000 713 B | **1 556 651 B** | 22 % smaller |
+| encode (automatic method) | 2 051 ms | **447 ms** | 4.6x |
+| decode | 491 ms | **179 ms** | 2.7x |
+| file size | 2 000 713 B | **1 556 684 B** | 22 % smaller |
 
 The file gets *smaller* as well, because one zig-zag coded symbol per
 sample is a better model of the residuals than two independent byte
