@@ -406,8 +406,18 @@ meta, samples_back = decode(blob)
 ```
 
 ```bash
+# a clinically complete container: the geometry dependent attributes are
+# derived, --require-dicom refuses to write an invalid metadata block
+python3 -m pyra med encode ct.raw --width 512 --height 512 --depth 64 \
+        --format u16 --dicom --require-dicom \
+        --patient-id ANON-001 --modality CT \
+        --study-uid 1.2.840.113619.2.1 --series-uid 1.2.840.113619.2.1.4 \
+        --window-center 40 --window-width 400 ct.pyrm
+
+# or a free form metadata block
 python3 -m pyra med encode ct.raw --width 512 --height 512 --depth 64 \
         --format u16 --meta scanner=Siemens --meta patient=anon ct.pyrm
+
 python3 -m pyra med info ct.pyrm          # header + clinical attributes
 python3 -m pyra med dump ct.pyrm          # the metadata block as JSON
 python3 -m pyra med verify ct.pyrm        # every integrity guarantee
@@ -427,7 +437,7 @@ texture), native core versus the pure-Python reference:
 | volume | encode | decode | ratio |
 |--------|--------|--------|-------|
 | 128×128×16 u16 | 67 ms (108x) | 32 ms (67x) | 2.67x |
-| 256×256×32 u16 | 447 ms (100x) | 179 ms (96x) | 2.69x |
+| 256×256×32 u16 | 266 ms (100x) | 157 ms (96x) | 2.69x |
 | 512×512×64 u16 | 4 372 ms | 1 585 ms | 2.70x |
 
 The numbers in brackets are the speedup over the pure-Python reference,
@@ -439,13 +449,28 @@ one-symbol-per-sample coding changed both:
 
 | 256×256×32 u16 (4 MB) | before | now | gain |
 |----------------------|--------|-----|------|
-| encode (automatic method) | 2 051 ms | **447 ms** | 4.6x |
-| decode | 491 ms | **179 ms** | 2.7x |
+| encode (automatic method) | 2 051 ms | **266 ms** | 7.7x |
+| decode | 491 ms | **157 ms** | 3.1x |
 | file size | 2 000 713 B | **1 556 684 B** | 22 % smaller |
 
 The file gets *smaller* as well, because one zig-zag coded symbol per
 sample is a better model of the residuals than two independent byte
 models.
+
+Two more changes in the same vein made the encoder faster without
+touching a single output bit:
+
+* the modular reduction of a residual is a **mask** instead of a chain of
+  conditionals - the residual modulus is always a power of two, and the
+  sign of a residual is data dependent, so every mispredicted branch cost
+  more than the arithmetic around it;
+* the LZ matcher uses the classic two array layout (the most recent
+  position per key hash plus a "previous position with the same hash"
+  array) instead of a hash map with a heap allocated chain per key, so it
+  never allocates and its working set stays inside the cache.
+
+The Python reference implements the same matcher, so both paths still
+produce byte-identical containers.
 
 ## Architecture
 

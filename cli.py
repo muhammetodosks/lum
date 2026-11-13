@@ -96,6 +96,26 @@ def _build_parser() -> argparse.ArgumentParser:
     me.add_argument("--method", choices=["auto", "raw", "lz"], default="auto")
     me.add_argument("--meta", action="append", default=[],
                     metavar="KEY=VALUE", help="metadata entry (repeatable)")
+    me.add_argument("--dicom", action="store_true",
+                    help="build a complete DICOM compatible metadata block "
+                         "from the geometry and the clinical options below")
+    me.add_argument("--patient-id", default=None)
+    me.add_argument("--patient-name", default=None)
+    me.add_argument("--modality", default=None)
+    me.add_argument("--study-uid", default=None)
+    me.add_argument("--series-uid", default=None)
+    me.add_argument("--sop-uid", default=None)
+    me.add_argument("--study-date", default=None)
+    me.add_argument("--slice-thickness", type=float, default=None)
+    me.add_argument("--rescale-slope", type=float, default=1.0)
+    me.add_argument("--rescale-intercept", type=float, default=0.0)
+    me.add_argument("--window-center", type=float, default=None)
+    me.add_argument("--window-width", type=float, default=None)
+    me.add_argument("--photometric", choices=["mono1", "mono2", "rgb"],
+                    default=None)
+    me.add_argument("--require-dicom", action="store_true",
+                    help="refuse to write a container whose metadata does not "
+                         "pass the clinical validation")
 
     md = med_sub.add_parser("decode", help="decode a .pyrm file into raw samples")
     md.add_argument("input")
@@ -220,10 +240,44 @@ def _med_encode(args) -> int:
     fmt = _MED_FORMAT_BY_NAME[args.format]
     predictor = _MED_PRED_BY_NAME.get(args.predictor, -1)
     method = _MED_METHOD_BY_NAME.get(args.method, -1)
+
+    metadata = _med_meta(args.meta)
+    if args.dicom:
+        # The geometry dependent attributes are derived, so the result is
+        # always self consistent; the explicit --meta entries win.
+        clinical = _med_dicom.build_dicom_metadata(
+            args.width, args.height, args.depth, args.channels, fmt,
+            patient_id=args.patient_id or "",
+            patient_name=args.patient_name or "",
+            modality=args.modality or "",
+            study_uid=args.study_uid or "",
+            series_uid=args.series_uid or "",
+            sop_uid=args.sop_uid or "",
+            study_date=args.study_date or "",
+            slice_thickness=args.slice_thickness,
+            rescale_slope=args.rescale_slope,
+            rescale_intercept=args.rescale_intercept,
+            window_center=args.window_center or 0.0,
+            window_width=args.window_width or 0.0,
+            photometric={"mono1": "MONOCHROME1", "mono2": "MONOCHROME2",
+                         "rgb": "RGB"}.get(args.photometric or "", ""))
+        clinical.update(metadata)
+        metadata = clinical
+
+    if args.require_dicom:
+        problems = _med_dicom.validate_dicom_metadata(
+            metadata, args.width, args.height, args.depth, args.channels,
+            fmt, strict=True)
+        if problems:
+            for problem in problems:
+                print(f"pyra: error: metadata: {problem}", file=sys.stderr)
+            return 1
+
     blob = _med_codec.encode(samples, args.width, args.height, args.depth,
-                              args.channels, fmt, metadata=_med_meta(args.meta),
+                              args.channels, fmt, metadata=metadata,
                               tile_size=args.tile, predictor=predictor,
-                              method=method)
+                              method=method,
+                              require_dicom=args.require_dicom)
     with open(args.output, "wb") as f:
         f.write(blob)
     info = _med_codec.info(blob)
@@ -231,6 +285,9 @@ def _med_encode(args) -> int:
     print(f"  geometry: {info['width']}x{info['height']}x{info['depth']} "
           f"ch={info['channels']} {_MED_FORMAT_NAMES.get(info['sample_format'])}")
     print(f"  size: {len(blob)} bytes, tiles: {info['num_tiles']}")
+    if args.dicom or args.require_dicom:
+        print(f"  dicom compatible: "
+              f"{_med_dicom.is_dicom_compatible(metadata)}")
     return 0
 
 

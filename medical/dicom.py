@@ -159,8 +159,6 @@ def build_dicom_metadata(width: int, height: int, depth: int = 1,
         "StudyDate": str(study_date),
         "RescaleSlope": float(rescale_slope),
         "RescaleIntercept": float(rescale_intercept),
-        "WindowCenter": float(window_center),
-        "WindowWidth": float(window_width),
         "PhotometricInterpretation": photo,
         "BitsAllocated": 8 * SAMPLE_BYTES[sample_format],
         "BitsStored": bits_stored_for(sample_format),
@@ -175,6 +173,11 @@ def build_dicom_metadata(width: int, height: int, depth: int = 1,
         meta["SliceThickness"] = float(slice_thickness)
     if pixel_spacing is not None:
         meta["PixelSpacing"] = [float(pixel_spacing[0]), float(pixel_spacing[1])]
+    # The display window is optional: it is only written when a positive
+    # width was given, because a zero width is not a usable window.
+    if window_width and window_width > 0.0:
+        meta["WindowCenter"] = float(window_center)
+        meta["WindowWidth"] = float(window_width)
     return meta
 
 

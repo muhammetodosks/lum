@@ -493,6 +493,52 @@ def test_preview_semantics():
               native == python_inverted and native_plain == calibrated)
 
 
+def test_cli_dicom():
+    """The command line can build a clinically valid container."""
+    import tempfile
+    from pyra import cli as _cli
+
+    raw = make_samples("smooth", 24, 16, 3, 1, SFMT_U16)
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "vol.raw")
+        dst = os.path.join(tmp, "vol.pyrm")
+        with open(src, "wb") as f:
+            f.write(raw)
+        rc = _cli.main([
+            "med", "encode", src, dst,
+            "--width", "24", "--height", "16", "--depth", "3",
+            "--format", "u16", "--dicom", "--patient-id", "ANON-007",
+            "--modality", "CT",
+            "--study-uid", "1.2.840.113619.2.1",
+            "--series-uid", "1.2.840.113619.2.1.4",
+            "--require-dicom",
+        ])
+        ok = rc == 0 and os.path.exists(dst)
+        if ok:
+            with open(dst, "rb") as f:
+                blob = f.read()
+            metadata, samples = decode(blob)
+            ok = samples == raw and _dicom.is_dicom_compatible(metadata)
+            ok = ok and metadata["PatientID"] == "ANON-007"
+            ok = ok and metadata["Modality"] == "CT"
+            ok = ok and metadata["Rows"] == 16 and metadata["Columns"] == 24
+    check("the CLI builds a DICOM compatible container", ok)
+
+    # A container without the required attributes must be refused.
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "vol.raw")
+        dst = os.path.join(tmp, "vol.pyrm")
+        with open(src, "wb") as f:
+            f.write(raw)
+        rc = _cli.main([
+            "med", "encode", src, dst,
+            "--width", "24", "--height", "16", "--depth", "3",
+            "--format", "u16", "--dicom", "--require-dicom",
+        ])
+        check("the CLI refuses an incomplete clinical metadata block",
+              rc != 0 and not os.path.exists(dst))
+
+
 def main():
     print("=== PYRM medical format test suite ===")
     test_roundtrip_matrix()
@@ -509,6 +555,7 @@ def main():
     test_verify_command()
     test_med_predictor()
     test_preview_semantics()
+    test_cli_dicom()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

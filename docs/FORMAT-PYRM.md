@@ -264,6 +264,29 @@ python3 -m pyra med preview volume.pyrm slice.pgm --slice 12
 `--window` and `--level` are optional for the preview: without them the
 window of the metadata is used.
 
+### Building a clinically complete container
+
+`--dicom` derives every geometry dependent attribute (Rows, Columns,
+NumberOfFrames, SamplesPerPixel, BitsAllocated, BitsStored,
+PixelRepresentation, PhotometricInterpretation) from the image itself and
+fills the clinical attributes from the options:
+
+```bash
+python3 -m pyra med encode raw.bin volume.pyrm --width 512 --height 512 \
+        --depth 64 --format u16 --dicom --require-dicom \
+        --patient-id ANON-001 --patient-name "Doe^Jane" --modality CT \
+        --study-uid 1.2.840.113619.2.1 --series-uid 1.2.840.113619.2.1.4 \
+        --sop-uid 1.2.840.113619.2.1.4.9 --study-date 20260113 \
+        --slice-thickness 1.5 --rescale-slope 1 --rescale-intercept -1024 \
+        --window-center 40 --window-width 400 --photometric mono2
+```
+
+`--require-dicom` validates the metadata against the geometry before
+anything is written: a missing identifier, a contradicting geometry, a
+zero rescale slope or a non-positive window width aborts the encoding with
+a non-zero exit code and no file. `--meta KEY=VALUE` entries override the
+derived values, so a free form attribute can always be added.
+
 ## Error classes
 
 * `MedicalError` — base class of the format errors.
