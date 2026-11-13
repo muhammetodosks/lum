@@ -334,6 +334,21 @@ python3 -m pyra med from-dicom volume.dcm volume.pyrm
 A round trip keeps both the pixels (byte for byte) and the clinical
 attributes.
 
+## Design notes (measured)
+
+Some ideas were implemented, measured and **rejected**. They are listed
+here because the negative result is worth as much as the positive one.
+
+| Idea | Result | Why |
+|------|--------|-----|
+| LOCO-I gradient (bias) correction | **-0.6 % to -57 %** | The correction is derived from the mean error of the previous row. On imaging data the residuals are noise, so the mean error is a random number that only adds variance to the prediction. It helps on smooth gradient images, not on scans. |
+| A larger zig-zag limit (127 instead of 63) | **+0.05 %** | The alphabet grows from 129 to 257 symbols while only 2.3 % of the residuals actually need the escape path. The extra symbols cost more than the rare escapes save. |
+| A smaller zig-zag limit (31) | **+4.5 %** | 95.5 % of the residuals still fit directly, but the alphabet shrinks to 65 symbols, and the samples that no longer fit pay for the escape marker. |
+| A two level CDF model instead of the Fenwick tree | **decode 170 ms -> 187 ms** | The smaller working set does not pay for the extra bookkeeping in the update path. The Fenwick tree with the last-symbol cache is faster on this machine. |
+| A branchless Fenwick tree | **decode 170 ms -> 178 ms** | The real data has a well behaved branch pattern, so the branchless variant only adds work. |
+
+The numbers above are from the 256×256×32 u16 CT volume.
+
 ## Error classes
 
 * `MedicalError` — base class of the format errors.

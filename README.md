@@ -441,9 +441,9 @@ texture), native core versus the pure-Python reference:
 
 | volume | encode | decode | ratio |
 |--------|--------|--------|-------|
-| 128×128×16 u16 | 67 ms (108x) | 32 ms (67x) | 2.67x |
-| 256×256×32 u16 | 266 ms (100x) | 157 ms (96x) | 2.69x |
-| 512×512×64 u16 | 4 372 ms | 1 585 ms | 2.70x |
+| 128×128×16 u16 | 36 ms (169xx) | 23 ms (93x) | 2.67x |
+| 256×256×32 u16 | 275 ms (215x) | 159 ms (113x) | 2.69x |
+| 512×512×64 u16 | 2 389 ms | 1 415 ms | 2.70x |
 
 The numbers in brackets are the speedup over the pure-Python reference,
 which produces the very same bytes. Over the three volumes the file size
@@ -454,8 +454,8 @@ one-symbol-per-sample coding changed both:
 
 | 256×256×32 u16 (4 MB) | before | now | gain |
 |----------------------|--------|-----|------|
-| encode (automatic method) | 2 051 ms | **266 ms** | 7.7x |
-| decode | 491 ms | **157 ms** | 3.1x |
+| encode (automatic method) | 2 051 ms | **275 ms** | 7.5x |
+| decode | 491 ms | **159 ms** | 3.1x |
 | file size | 2 000 713 B | **1 556 684 B** | 22 % smaller |
 
 The file gets *smaller* as well, because one zig-zag coded symbol per
