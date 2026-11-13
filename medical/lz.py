@@ -26,36 +26,55 @@ from .constants import (LZ_MAX_DIST, LZ_MAX_MATCH, LZ_MIN_MATCH,
                         CorruptedFileError)
 
 #: How many positions are remembered per 3 byte hash key.
-CHAIN_LIMIT = 64
+CHAIN_LIMIT = 16
+
+#: Size of the fixed hash table (a power of two).
+LZ_HASH_BITS = 16
+LZ_HASH_SIZE = 1 << LZ_HASH_BITS
+
+
+def _lz_hash(key: int) -> int:
+    """Fibonacci hashing of a 24 bit key into the fixed hash table."""
+    return ((key * 2654435761) & 0xFFFFFFFF) >> (32 - LZ_HASH_BITS)
 
 
 def lz_encode(data: bytes) -> list[int]:
-    """Tokenise `data` into the LZ77 symbol stream (without the EOF marker)."""
+    """Tokenise `data` into the LZ77 symbol stream (without the EOF marker).
+
+    The matcher uses the classic two array layout: `heads` holds the most
+    recent position per key hash, `prev` links a position to the previous
+    one with the same hash. A fixed size table keeps the working set small
+    and needs no allocation at all, which matters a lot on medical volumes
+    (millions of distinct keys).
+    """
     n = len(data)
     out: list[int] = []
-    table: dict[bytes, list[int]] = {}
+    heads = [-1] * LZ_HASH_SIZE
+    prev = [-1] * (n + 1)
     i = 0
     while i < n:
         advance = 1
         if i + LZ_MIN_MATCH <= n:
-            key = data[i:i + 3]
-            chain = table.get(key)
+            key = data[i] | (data[i + 1] << 8) | (data[i + 2] << 16)
+            cand = heads[_lz_hash(key)]
             best_len = 0
             best_dist = 0
-            if chain:
-                limit = LZ_MAX_MATCH if LZ_MAX_MATCH < n - i else n - i
-                for pos in reversed(chain):
-                    dist = i - pos
-                    if dist > LZ_MAX_DIST:
+            limit = LZ_MAX_MATCH if LZ_MAX_MATCH < n - i else n - i
+            chain = 0
+            while cand >= 0 and chain < CHAIN_LIMIT:
+                dist = i - cand
+                if dist == 0 or dist > LZ_MAX_DIST:
+                    break
+                length = 0
+                while length < limit and data[cand + length] == data[i + length]:
+                    length += 1
+                if length > best_len:
+                    best_len = length
+                    best_dist = dist
+                    if best_len == limit:
                         break
-                    length = 0
-                    while length < limit and data[pos + length] == data[i + length]:
-                        length += 1
-                    if length > best_len:
-                        best_len = length
-                        best_dist = dist
-                        if best_len == limit:
-                            break
+                cand = prev[cand]
+                chain += 1
             if best_len >= LZ_MIN_MATCH:
                 out.append(LZ_TOKEN_MATCH)
                 out.append(best_len - LZ_MIN_MATCH)
@@ -71,14 +90,10 @@ def lz_encode(data: bytes) -> list[int]:
         if stop > n - LZ_MIN_MATCH + 1:
             stop = n - LZ_MIN_MATCH + 1
         for j in range(i, stop):
-            key = data[j:j + 3]
-            chain = table.get(key)
-            if chain is None:
-                table[key] = [j]
-            else:
-                chain.append(j)
-                if len(chain) > CHAIN_LIMIT:
-                    del chain[0]
+            key = data[j] | (data[j + 1] << 8) | (data[j + 2] << 16)
+            h = _lz_hash(key)
+            prev[j] = heads[h]
+            heads[h] = j
         i += advance
     return out
 

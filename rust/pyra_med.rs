@@ -31,7 +31,7 @@ use super::pyra_image::crc32;
 use super::FastBuild;
 use super::RangeDec;
 use super::RangeEnc;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 // ------------------------------------------------------------------ format
 
@@ -79,7 +79,7 @@ const LZ_MAX_DIST: usize = 65536;
 const LZ_TOKEN_MATCH: u32 = 256;
 const LZ_TOKEN_EOF: u32 = 257;
 const LZ_TOKEN_SYMBOLS: usize = 258;
-const LZ_CHAIN_LIMIT: usize = 64;
+const LZ_CHAIN_LIMIT: usize = 16;
 
 const ENTROPY_SYMBOLS_RAW: usize = 256;
 const ENTROPY_SYMBOLS_LZ: usize = LZ_TOKEN_SYMBOLS;
@@ -155,22 +155,13 @@ fn med_format(sample_format: i32) -> Option<MedFormat> {
 
 /// Normalise a value into `[0, m)`.
 ///
-/// The argument must stay inside `(-2m, 3m)`; the two conditional fixes
-/// below cover that range without a hardware division.
+/// The residual modulus is always a power of two (2^bits), so the reduction
+/// is a mask: no division and, more importantly, no data dependent branch —
+/// the sign of a residual is data dependent, and a mispredicted branch costs
+/// more than the whole arithmetic.
 #[inline]
-fn mod_norm(mut r: i64, m: i64) -> i64 {
-    if r < 0 {
-        r += m;
-        if r < 0 {
-            r += m;
-        }
-    } else if r >= m {
-        r -= m;
-        if r >= m {
-            r -= m;
-        }
-    }
-    r
+fn mod_norm(r: i64, m: i64) -> i64 {
+    ((r as u64) & ((m as u64) - 1)) as i64
 }
 
 /// Circular distance of a residual from zero.
@@ -625,11 +616,34 @@ enum LzTok {
 /// Greedy LZ77 matcher with 3 byte hash chains.
 ///
 /// The token sequence is identical to the pure-Python reference: the newest
+/// The hash table of the LZ matcher: a fixed size array of the most recent
+/// position per key hash plus a "previous position with the same hash" array
+/// (the classic zlib layout).
+///
+/// The map used to be a `HashMap` with a heap allocated chain per key: for a
+/// medical volume that is millions of allocations and a table far larger
+/// than the cache. The fixed table has no allocation at all and its working
+/// set stays small.
+///
+/// The chain order and the FIFO eviction are unchanged, so the token stream
+/// is bit-for-bit the same as the one the Python reference produces.
+const LZ_HASH_BITS: u32 = 16;
+const LZ_HASH_SIZE: usize = 1 << LZ_HASH_BITS;
+
+/// Fibonacci hashing of a 24 bit key into the table.
+#[inline]
+fn lz_hash(key: u32) -> usize {
+    (key.wrapping_mul(2654435761) >> (32 - LZ_HASH_BITS)) as usize
+}
+
 /// candidate wins ties, buckets are capped at `LZ_CHAIN_LIMIT` positions
 /// with FIFO eviction and a match must be at least four bytes long.
 struct MedLz<'a> {
     data: &'a [u8],
-    table: HashMap<u32, VecDeque<u32>, FastBuild>,
+    /// most recent position per key hash (-1 = empty)
+    heads: Vec<i32>,
+    /// previous position with the same hash
+    prev: Vec<i32>,
     pos: usize,
 }
 
@@ -637,7 +651,8 @@ impl<'a> MedLz<'a> {
     fn new(data: &'a [u8]) -> Self {
         MedLz {
             data,
-            table: HashMap::with_capacity_and_hasher(data.len() / 8 + 1, FastBuild),
+            heads: vec![-1; LZ_HASH_SIZE],
+            prev: vec![-1; data.len() + 1],
             pos: 0,
         }
     }
@@ -650,14 +665,12 @@ impl<'a> MedLz<'a> {
     }
 
     /// Remember the 3 byte key at `pos` (if a full key fits).
+    #[inline]
     fn add_key(&mut self, pos: usize) {
         if pos + 3 <= self.data.len() {
-            let key = self.key_at(pos);
-            let bucket = self.table.entry(key).or_insert_with(VecDeque::new);
-            bucket.push_back(pos as u32);
-            if bucket.len() > LZ_CHAIN_LIMIT {
-                bucket.pop_front();
-            }
+            let h = lz_hash(self.key_at(pos));
+            self.prev[pos] = self.heads[h];
+            self.heads[h] = pos as i32;
         }
     }
 
@@ -671,23 +684,26 @@ impl<'a> MedLz<'a> {
         let mut best_len = 0usize;
         let mut best_dist = 0usize;
         if i + LZ_MIN_MATCH <= len {
-            let key = self.key_at(i);
-            if let Some(chain) = self.table.get(&key) {
-                let max_len = if LZ_MAX_MATCH < len - i { LZ_MAX_MATCH } else { len - i };
-                for &cand in chain.iter().rev() {
-                    let dist = i - cand as usize;
-                    if dist == 0 || dist > LZ_MAX_DIST {
+            let h = lz_hash(self.key_at(i));
+            let max_len = if LZ_MAX_MATCH < len - i { LZ_MAX_MATCH } else { len - i };
+            let mut cand = self.heads[h];
+            let mut chain = 0usize;
+            while cand >= 0 && chain < LZ_CHAIN_LIMIT {
+                let c = cand as usize;
+                let dist = i - c;
+                if dist == 0 || dist > LZ_MAX_DIST {
+                    break;
+                }
+                let l = super::lz_match_len(self.data, c, i, max_len);
+                if l > best_len {
+                    best_len = l;
+                    best_dist = dist;
+                    if l >= max_len {
                         break;
                     }
-                    let l = super::lz_match_len(self.data, cand as usize, i, max_len);
-                    if l > best_len {
-                        best_len = l;
-                        best_dist = dist;
-                        if l >= max_len {
-                            break;
-                        }
-                    }
                 }
+                cand = self.prev[c];
+                chain += 1;
             }
         }
         if best_len >= LZ_MIN_MATCH {
@@ -1222,7 +1238,6 @@ pub unsafe extern "C" fn pyra_med_encode(
             slice_ctx.as_deref(),
             predictor,
         );
-
         let use_escape = fmt.escape && escape_worth_it(&prep.residuals, &fmt);
         let (packed, symbols, alphabet, extra_flag) = if use_escape {
             // one symbol per sample (zig-zag plus escape)
@@ -1246,7 +1261,6 @@ pub unsafe extern "C" fn pyra_med_encode(
         } else {
             entropy_encode(&symbols, alphabet)
         };
-
         // the LZ candidate; with the automatic method it only gets a byte
         // budget of the raw candidate, because a bigger stream can never win
         let lz_stream = if method == METHOD_RAW {
