@@ -85,6 +85,29 @@ RECOMMENDED_KEYS = (
 #: Maximum length of a DICOM UID.
 MAX_UID_LENGTH = 64
 
+#: Storage SOP class per modality (a sensible default; the value is written
+#: into the file meta information of a DICOM Part 10 file).
+SOP_CLASS_BY_MODALITY = {
+    "CT": "1.2.840.10008.5.1.4.1.1.2",
+    "MR": "1.2.840.10008.5.1.4.1.1.4",
+    "US": "1.2.840.10008.5.1.4.1.1.6.1",
+    "CR": "1.2.840.10008.5.1.4.1.1.1",
+    "DX": "1.2.840.10008.5.1.4.1.1.1.1",
+    "MG": "1.2.840.10008.5.1.4.1.1.1.2",
+    "PT": "1.2.840.10008.5.1.4.1.1.128",
+    "XA": "1.2.840.10008.5.1.4.1.1.12.1",
+    "NM": "1.2.840.10008.5.1.4.1.1.20",
+    "OT": "1.2.840.10008.5.1.4.1.1.7",
+}
+
+#: The default SOP class when the modality is unknown.
+DEFAULT_SOP_CLASS = "1.2.840.10008.5.1.4.1.1.7"
+
+
+def sop_class_for(modality: str) -> str:
+    """The storage SOP class that belongs to a modality."""
+    return SOP_CLASS_BY_MODALITY.get(str(modality).upper(), DEFAULT_SOP_CLASS)
+
 
 def _as_number(value):
     """Return a float for an int/float, else None."""
@@ -128,7 +151,12 @@ def build_dicom_metadata(width: int, height: int, depth: int = 1,
                           rescale_intercept: float = 0.0,
                           window_center: float = 0.0,
                           window_width: float = 0.0,
-                          photometric: str = "") -> dict:
+                          photometric: str = "",
+                          patient_birth_date: str = "", patient_sex: str = "",
+                          study_time: str = "", accession_number: str = "",
+                          referring_physician_name: str = "",
+                          study_id: str = "", series_number: str = "1",
+                          instance_number: str = "1") -> dict:
     """Build a complete, self-consistent DICOM-like metadata block.
 
     The geometry dependent attributes (Rows, Columns, NumberOfFrames,
@@ -149,35 +177,49 @@ def build_dicom_metadata(width: int, height: int, depth: int = 1,
         raise MedicalMetadataError(
             f"{photo} needs exactly one sample per pixel")
 
+    bits_allocated = 8 * SAMPLE_BYTES[sample_format]
+    bits_stored = bits_stored_for(sample_format)
+    # The attribute set below is exactly the one a DICOM Part 10 file
+    # carries, so a metadata block built here survives a round trip through
+    # a real DICOM file unchanged (same keys, same values).
     meta = {
         "PatientID": str(patient_id),
         "PatientName": str(patient_name),
+        "PatientBirthDate": str(patient_birth_date),
+        "PatientSex": str(patient_sex),
         "StudyInstanceUID": str(study_uid),
         "SeriesInstanceUID": str(series_uid),
         "SOPInstanceUID": str(sop_uid),
+        "SOPClassUID": sop_class_for(modality),
         "Modality": str(modality),
         "StudyDate": str(study_date),
+        "StudyTime": str(study_time),
+        "StudyID": str(study_id),
+        "AccessionNumber": str(accession_number),
+        "ReferringPhysicianName": str(referring_physician_name),
+        "SeriesNumber": str(series_number),
+        "InstanceNumber": str(instance_number),
         "RescaleSlope": float(rescale_slope),
         "RescaleIntercept": float(rescale_intercept),
         "PhotometricInterpretation": photo,
-        "BitsAllocated": 8 * SAMPLE_BYTES[sample_format],
-        "BitsStored": bits_stored_for(sample_format),
+        "BitsAllocated": bits_allocated,
+        "BitsStored": bits_stored,
+        "HighBit": bits_stored - 1,
         "PixelRepresentation": pixel_representation_for(sample_format),
         "SamplesPerPixel": channels,
         "Rows": height,
         "Columns": width,
         "NumberOfFrames": depth,
         "TransferSyntaxUID": "1.2.840.10008.1.2.1",  # Explicit VR Little Endian
+        # The display window is always present: a zero width means "no
+        # window given", which is what a DICOM file without a window holds.
+        "WindowCenter": float(window_center),
+        "WindowWidth": float(window_width),
     }
     if slice_thickness is not None:
         meta["SliceThickness"] = float(slice_thickness)
     if pixel_spacing is not None:
         meta["PixelSpacing"] = [float(pixel_spacing[0]), float(pixel_spacing[1])]
-    # The display window is optional: it is only written when a positive
-    # width was given, because a zero width is not a usable window.
-    if window_width and window_width > 0.0:
-        meta["WindowCenter"] = float(window_center)
-        meta["WindowWidth"] = float(window_width)
     return meta
 
 
@@ -261,11 +303,25 @@ def validate_dicom_metadata(meta: dict | None, width: int = 0, height: int = 0,
     if intercept is None and "RescaleIntercept" in meta:
         problems.append("RescaleIntercept is not a number")
     width_value = _first_number(meta.get("WindowWidth"))
-    if width_value is not None and width_value <= 0.0:
-        problems.append("WindowWidth must be positive")
     center = _first_number(meta.get("WindowCenter"))
+    if width_value is not None and width_value < 0.0:
+        problems.append("WindowWidth must not be negative")
     if center is None and "WindowCenter" in meta:
         problems.append("WindowCenter is not a number")
+    # A width of zero means "no display window"; a width of zero together
+    # with a centre is contradictory.
+    if (width_value is not None and center is not None
+            and width_value == 0.0 and center != 0.0):
+        problems.append("WindowWidth is zero but WindowCenter is not")
+    stored = meta.get("BitsStored")
+    if stored is not None and "HighBit" in meta:
+        high = _first_number(meta.get("HighBit"))
+        if high is None:
+            problems.append("HighBit is not a number")
+        elif int(high) != int(stored) - 1:
+            problems.append(
+                f"HighBit ({int(high)}) must be BitsStored - 1 "
+                f"({int(stored) - 1})")
 
     if strict and problems:
         raise MedicalMetadataError("; ".join(problems))

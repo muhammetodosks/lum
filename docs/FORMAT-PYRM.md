@@ -334,6 +334,39 @@ python3 -m pyra med from-dicom volume.dcm volume.pyrm
 A round trip keeps both the pixels (byte for byte) and the clinical
 attributes.
 
+### Metadata fidelity contract
+
+The clinical attributes are not "close enough" - they are **exactly the
+same set**. `build_dicom_metadata()` produces the same attribute set the
+DICOM writer produces, and the DICOM reader returns that set unchanged:
+
+```
+PYRM container  -> metadata      : identical
+PYRM container  -> DICOM file    : pixels identical, attributes identical
+DICOM file      -> PYRM container: pixels identical, attributes identical
+```
+
+The rules that make this hold:
+
+* every attribute the writer emits has a counterpart in the metadata
+  builder, including the ones that carry no pixels: `HighBit`,
+  `SOPClassUID`, `InstanceNumber`, `SeriesNumber`, `StudyID`, `StudyTime`,
+  `PatientBirthDate`, `PatientSex`, `AccessionNumber` and
+  `ReferringPhysicianName`;
+* `HighBit` is always `BitsStored - 1`;
+* the SOP class follows the modality (`CT` -> the CT Image Storage SOP
+  class, and so on);
+* no DICOM element is written twice - a duplicated tag is illegal in
+  DICOM and strict readers reject the file;
+* elements are written in ascending tag order, which is what every DICOM
+  parser expects;
+* `WindowCenter` / `WindowWidth` are always present. The pair `(0, 0)`
+  means "no display window"; a zero width with a non-zero centre is
+  rejected by the validator, because it cannot be rendered.
+
+`validate_dicom_metadata()` checks all of this against the geometry of the
+image and reports *every* problem it finds, not just the first one.
+
 ## Design notes (measured)
 
 Some ideas were implemented, measured and **rejected**. They are listed

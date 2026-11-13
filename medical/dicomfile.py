@@ -29,29 +29,13 @@ import zlib
 from .constants import (SAMPLE_BYTES, SAMPLE_FORMATS, SAMPLE_SIGNED, SFMT_F32,
                         SFMT_I16, SFMT_I32, SFMT_U8, SFMT_U16, SFMT_U32,
                         MedicalError, MedicalMetadataError)
-from .dicom import (MONOCHROME1, MONOCHROME2, RGB, build_dicom_metadata,
-                    is_monochrome1, photometric, rescale, validate_dicom_metadata)
+from .dicom import (DEFAULT_SOP_CLASS, MONOCHROME1, MONOCHROME2, RGB,
+                    SOP_CLASS_BY_MODALITY, build_dicom_metadata,
+                    is_monochrome1, photometric, rescale,
+                    validate_dicom_metadata)
 
 #: The transfer syntax this module reads and writes.
 EXPLICIT_VR_LITTLE_ENDIAN = "1.2.840.10008.1.2.1"
-
-#: Storage SOP class per modality (a sensible default; the value is
-#: written into the file meta information).
-SOP_CLASS_BY_MODALITY = {
-    "CT": "1.2.840.10008.5.1.4.1.1.2",
-    "MR": "1.2.840.10008.5.1.4.1.1.4",
-    "US": "1.2.840.10008.5.1.4.1.1.6.1",
-    "CR": "1.2.840.10008.5.1.4.1.1.1",
-    "DX": "1.2.840.10008.5.1.4.1.1.1.1",
-    "MG": "1.2.840.10008.5.1.4.1.1.1.2",
-    "PT": "1.2.840.10008.5.1.4.1.1.128",
-    "XA": "1.2.840.10008.5.1.4.1.1.12.1",
-    "NM": "1.2.840.10008.5.1.4.1.1.20",
-    "OT": "1.2.840.10008.5.1.4.1.1.7",
-}
-
-#: The default SOP class when the modality is unknown.
-DEFAULT_SOP_CLASS = "1.2.840.10008.5.1.4.1.1.7"
 
 #: Tag of the pixel data element.
 TAG_PIXEL_DATA = (0x7FE0, 0x0010)
@@ -178,12 +162,12 @@ def write_dicom(samples: bytes, width: int, height: int, depth: int = 1,
     ds.text(0x0008, 0x0030, "TM", meta.get("StudyTime", ""))
     ds.text(0x0008, 0x0050, "SH", meta.get("AccessionNumber", ""))
     ds.text(0x0008, 0x0090, "PN", meta.get("ReferringPhysicianName", ""))
+    # series level, in ascending tag order
     ds.text(0x0020, 0x000D, "UI", meta.get("StudyInstanceUID", ""))
+    ds.text(0x0020, 0x000E, "UI", meta.get("SeriesInstanceUID", ""))
     ds.text(0x0020, 0x0010, "SH", meta.get("StudyID", ""))
     ds.text(0x0020, 0x0011, "IS", meta.get("SeriesNumber", "1"))
     ds.text(0x0020, 0x0013, "IS", meta.get("InstanceNumber", "1"))
-    ds.text(0x0020, 0x000E, "UI", meta.get("SeriesInstanceUID", ""))
-    ds.text(0x0020, 0x0011, "IS", meta.get("SeriesNumber", "1"))
     ds.text(0x0008, 0x0060, "CS", modality)
     ds.text(0x0008, 0x0016, "UI", sop_class)
     ds.text(0x0008, 0x0018, "UI", sop_instance)

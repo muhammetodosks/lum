@@ -493,6 +493,97 @@ def test_preview_semantics():
               native == python_inverted and native_plain == calibrated)
 
 
+def _scan_dicom_tags(blob: bytes) -> list[tuple[int, int]]:
+    """List the (group, element) tags of an explicit VR little endian file.
+
+    The scan is deliberately independent of the writer, so a duplicated
+    element is visible instead of being hidden by a dictionary.
+    """
+    import struct as _s
+    long_vr = {b"OB", b"OW", b"OF", b"SQ", b"UT", b"UN"}
+    pos = 132
+    # the file meta information group starts with (0002,0000) UL
+    group_len = _s.unpack_from("<I", blob, pos + 8)[0]
+    pos += 12 + group_len
+    tags = []
+    while pos + 8 <= len(blob):
+        group, element = _s.unpack_from("<HH", blob, pos)
+        if (group, element) == (0x7FE0, 0x0010):
+            break
+        vr = blob[pos + 4:pos + 6]
+        if vr in long_vr:
+            length = _s.unpack_from("<I", blob, pos + 8)[0]
+            pos += 12 + length
+        else:
+            length = _s.unpack_from("<H", blob, pos + 6)[0]
+            pos += 8 + length
+        tags.append((group, element))
+    return tags
+
+
+def test_dicom_metadata_fidelity():
+    """The clinical metadata survives a DICOM round trip unchanged."""
+    from pyra.medical import dicomfile as _dcmfile
+
+    raw = make_samples("smooth", 24, 16, 3, 1, SFMT_U16)
+    meta = _dicom.build_dicom_metadata(
+        24, 16, 3, 1, SFMT_U16, patient_id="ANON-042", patient_name="Doe^Jane",
+        modality="CT", study_uid="1.2.840.113619.2.1",
+        series_uid="1.2.840.113619.2.1.4", sop_uid="1.2.840.113619.2.1.4.9",
+        study_date="20260113", slice_thickness=1.5,
+        pixel_spacing=(0.5, 0.5), rescale_slope=1.0,
+        rescale_intercept=-1024.0, window_center=40.0, window_width=400.0)
+
+    # 1. the container keeps the block byte for byte
+    blob = encode(raw, 24, 16, 3, 1, SFMT_U16, metadata=meta)
+    got, out = decode(blob)
+    check("the container keeps the clinical metadata unchanged",
+          got == meta and out == raw)
+
+    # 2. a real DICOM file carries exactly the same attribute set
+    dic = _dcmfile.write_dicom(raw, 24, 16, 3, 1, SFMT_U16, meta)
+    back, read_meta = _dcmfile.read_dicom(dic)
+    missing = {k: meta[k] for k in meta if k not in read_meta}
+    extra = {k: read_meta[k] for k in read_meta if k not in meta}
+    changed = {k: (meta[k], read_meta[k]) for k in meta
+               if k in read_meta and meta[k] != read_meta[k]}
+    check("the DICOM file carries exactly the same attributes "
+          "(no loss, no invention)", not missing and not extra and not changed)
+    if missing or extra or changed:
+        print(f"        missing: {missing}")
+        print(f"        extra: {extra}")
+        print(f"        changed: {changed}")
+
+    # 3. the clinically important derived attributes are there
+    check("HighBit is BitsStored - 1",
+          meta["HighBit"] == meta["BitsStored"] - 1)
+    check("the SOP class belongs to the modality",
+          meta["SOPClassUID"] == _dicom.sop_class_for("CT"))
+
+    # 4. no element is written twice (DICOM forbids duplicates)
+    tags = _scan_dicom_tags(dic)
+    check("no duplicated DICOM element", len(tags) == len(set(tags)))
+
+    # 5. a wrong HighBit is reported
+    broken = dict(meta)
+    broken["HighBit"] = meta["BitsStored"]
+    problems = _dicom.validate_dicom_metadata(
+        broken, 24, 16, 3, 1, SFMT_U16, strict=False)
+    check("a wrong HighBit is reported",
+          any("HighBit" in p for p in problems))
+
+    # 6. a window of zero is "no window", but not together with a centre
+    problems = _dicom.validate_dicom_metadata(
+        dict(meta, WindowWidth=0.0, WindowCenter=0.0), 24, 16, 3, 1,
+        SFMT_U16, strict=False)
+    check("a zero window without a centre is accepted", not problems)
+    problems = _dicom.validate_dicom_metadata(
+        dict(meta, WindowWidth=0.0, WindowCenter=40.0), 24, 16, 3, 1,
+        SFMT_U16, strict=False)
+    check("a zero window with a centre is reported",
+          any("WindowWidth" in p for p in problems))
+
+
 def test_dicom_file():
     """A container survives a round trip through a real DICOM file."""
     from pyra.medical import dicomfile as _dcmfile
@@ -607,6 +698,7 @@ def main():
     test_verify_command()
     test_med_predictor()
     test_preview_semantics()
+    test_dicom_metadata_fidelity()
     test_dicom_file()
     test_cli_dicom()
     print(f"\n{PASS} passed, {FAIL} failed")
