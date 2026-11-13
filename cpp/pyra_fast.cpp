@@ -307,9 +307,29 @@ int pyra_fast_adaptive_reconstruct(const int32_t* res, int count, int width,
 // `window` is the width of the window, `level` its centre. A window of 0 is
 // treated as 1 (a flat window shows the level itself).
 
+// Window/level preview of one slice of a medical volume.
+//
+// The sample formats are the ones of the PYRM container: U8, U16, U32, I16,
+// I32 and F32 (little endian). Signed samples are shifted into their signed
+// range before the window is applied, which is what a radiologist expects:
+// the level is given in the units of the modality (Hounsfield units for CT,
+// for instance).
+//
+// `window` is the width of the window, `level` its centre. A window of 0 is
+// treated as 1 (a flat window shows the level itself).
+//
+// `slope` and `intercept` are the calibration of the modality
+// (value = slope * stored + intercept); the window is applied in the
+// calibrated domain. `invert` selects the MONOCHROME1 convention, where the
+// low end of the range is white.
+//
+// The output has one byte per *pixel* (the channels are averaged), exactly
+// like the pure-Python reference in pyra/medical/preview.py.
+
 int pyra_med_preview(const uint8_t* samples, size_t len, int width, int height,
                      int depth, int channels, int sample_format, int slice,
-                     double window, double level, uint8_t* out) {
+                     double window, double level, double slope,
+                     double intercept, int invert, uint8_t* out) {
     if (!samples || !out || width <= 0 || height <= 0 || depth <= 0 ||
         channels <= 0 || slice < 0 || slice >= depth) {
         return -1;
@@ -329,30 +349,39 @@ int pyra_med_preview(const uint8_t* samples, size_t len, int width, int height,
 
     double lo = level - window * 0.5;
     double span = window > 0.0 ? window : 1.0;
+    if (slope == 0.0) slope = 1.0;
 
-    for (size_t i = 0; i < slice_samples; i++) {
-        const uint8_t* p = src + i * (size_t)sb;
-        double value;
-        if (sample_format == 5) {
-            float f;
-            std::memcpy(&f, p, 4);
-            value = (double)f;
-        } else {
-            uint64_t raw = 0;
-            for (int b = 0; b < sb; b++) raw |= (uint64_t)p[b] << (8 * b);
-            if (kSigned[sample_format]) {
-                // shift the raw bit pattern into the signed range
-                int64_t sval = (int64_t)(raw << (64 - 8 * sb)) >>
-                               (64 - 8 * sb);
-                value = (double)sval;
+    const size_t pixels = (size_t)width * (size_t)height;
+    for (size_t i = 0; i < pixels; i++) {
+        double sum = 0.0;
+        for (int c = 0; c < channels; c++) {
+            const uint8_t* p = src + (i * (size_t)channels + (size_t)c) * (size_t)sb;
+            double value;
+            if (sample_format == 5) {
+                float f;
+                std::memcpy(&f, p, 4);
+                value = (double)f;
             } else {
-                value = (double)raw;
+                uint64_t raw = 0;
+                for (int b = 0; b < sb; b++) raw |= (uint64_t)p[b] << (8 * b);
+                if (kSigned[sample_format]) {
+                    // shift the raw bit pattern into the signed range
+                    int64_t sval = (int64_t)(raw << (64 - 8 * sb)) >>
+                                   (64 - 8 * sb);
+                    value = (double)sval;
+                } else {
+                    value = (double)raw;
+                }
             }
+            sum += value;
         }
+        double value = (sum / (double)channels) * slope + intercept;
         double scaled = (value - lo) * 255.0 / span;
         if (scaled < 0.0) scaled = 0.0;
         if (scaled > 255.0) scaled = 255.0;
-        out[i] = (uint8_t)(scaled + 0.5);
+        int v = (int)scaled;   // truncation, exactly like the Python reference
+        if (invert) v = 255 - v;
+        out[i] = (uint8_t)v;
     }
     return 0;
 }

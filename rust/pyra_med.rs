@@ -36,7 +36,8 @@ use std::collections::{HashMap, VecDeque};
 // ------------------------------------------------------------------ format
 
 const MED_MAGIC: [u8; 8] = [0x50, 0x59, 0x52, 0x4D, 0x0D, 0x0A, 0x1A, 0x0A];
-const MED_VERSION: u32 = 1;
+const MED_VERSION: u32 = 2;
+const MED_VERSION_V1: u32 = 1;
 const MED_HEADER_SIZE: usize = 144;
 const MED_HEADER_CRC_OFFSET: usize = 72;
 const MED_INDEX_ENTRY_SIZE: usize = 16;
@@ -50,8 +51,10 @@ const SFMT_F32: i32 = 5;
 
 const PRED_NONE: i32 = 0;
 const PRED_SLICE: i32 = 7;
-const CANDIDATES_2D: [i32; 7] = [0, 1, 2, 3, 4, 5, 6];
-const CANDIDATES_3D: [i32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+const PRED_MED: i32 = 8;
+const PRED_COUNT: i32 = 9;
+const CANDIDATES_2D: [i32; 8] = [0, 1, 2, 3, 4, 5, 6, 8];
+const CANDIDATES_3D: [i32; 9] = [0, 1, 2, 3, 4, 5, 6, 8, 7];
 
 const FILTER_BITS_PER_ROW: u32 = 4;
 
@@ -215,7 +218,37 @@ fn med_median(a: i64, b: i64, c: i64) -> i64 {
 /// `slice_val` is the same sample in the previous slice (0 for the first
 /// slice).
 #[inline]
-fn med_predict(pred: i32, left: i64, up: i64, upper_left: i64, slice_val: i64) -> i64 {
+/// Distance of two code values on the modular ring (0 and modulus-1 are
+/// neighbours, so the plain difference is not the distance).
+#[inline]
+fn circular_distance(a: i64, b: i64, modulus: i64) -> i64 {
+    let d = (a - b).abs();
+    if d > modulus - d {
+        modulus - d
+    } else {
+        d
+    }
+}
+
+/// The median edge detector of LOCO-I / JPEG-LS: the neighbour whose
+/// difference to the other two is the smallest wins, so the prediction
+/// follows an edge instead of averaging across it.
+#[inline]
+fn med_edge(left: i64, up: i64, upper_left: i64, modulus: i64) -> i64 {
+    let ma = circular_distance(left, upper_left, modulus);
+    let mb = circular_distance(up, upper_left, modulus);
+    let mc = circular_distance(up, left, modulus);
+    if ma < mb && ma < mc {
+        left
+    } else if mb < mc {
+        up
+    } else {
+        upper_left
+    }
+}
+
+fn med_predict(pred: i32, left: i64, up: i64, upper_left: i64, slice_val: i64,
+               modulus: i64) -> i64 {
     match pred {
         0 => 0,                       // NONE
         1 => left,                    // LEFT
@@ -225,6 +258,7 @@ fn med_predict(pred: i32, left: i64, up: i64, upper_left: i64, slice_val: i64) -
         5 => left + up - upper_left,  // GRADIENT
         6 => med_median(left, up, upper_left),
         7 => slice_val,              // SLICE (volumetric)
+        8 => med_edge(left, up, upper_left, modulus),
         _ => 0,
     }
 }
@@ -241,8 +275,8 @@ fn score_candidates(
     channels: usize,
     modulus: i64,
     candidates: &[i32],
-) -> (i32, [i64; 8]) {
-    let mut scores = [0i64; 8];
+) -> (i32, [i64; 9]) {
+    let mut scores = [0i64; 9];
     let n = row.len();
     let per_pixel = n / channels.max(1);
     let mut x = 0usize;
@@ -269,7 +303,7 @@ fn score_candidates(
             };
             let value = row[i] as i64;
             for (k, &pred) in candidates.iter().enumerate() {
-                let p = mod_norm(med_predict(pred, left, up, upper_left, slice_val), modulus);
+                let p = mod_norm(med_predict(pred, left, up, upper_left, slice_val, modulus), modulus);
                 scores[k] += residual_distance(mod_norm(value - p, modulus), modulus);
             }
             c += 1;
@@ -321,7 +355,7 @@ fn row_residuals(
                 Some(s) => s[i] as i64,
                 None => 0,
             };
-            let p = mod_norm(med_predict(pred, left, up, upper_left, slice_val), modulus);
+            let p = mod_norm(med_predict(pred, left, up, upper_left, slice_val, modulus), modulus);
             out[i] = mod_norm(row[i] as i64 - p, modulus) as u32;
             c += 1;
         }
@@ -933,7 +967,7 @@ fn reconstruct_tile(
                     Some(s) => s[i] as i64,
                     None => 0,
                 };
-                let p = med_predict(pred, left, up, upper_left, slice_val);
+                let p = med_predict(pred, left, up, upper_left, slice_val, fmt.modulus);
                 row_out[i] = mod_norm(row_res[i] as i64 + p, fmt.modulus) as u32;
                 c += 1;
             }
@@ -1107,7 +1141,7 @@ pub unsafe extern "C" fn pyra_med_encode(
     if method != -1 && method != METHOD_RAW && method != METHOD_LZ {
         return E_MED_METHOD;
     }
-    if predictor < -1 || predictor > PRED_SLICE {
+    if predictor < -1 || predictor >= PRED_COUNT {
         return E_MED_METHOD;
     }
     let (width, height, depth, channels) = (
@@ -1346,7 +1380,7 @@ fn parse_header(data: &[u8]) -> Result<MedHeader, isize> {
         return Err(E_MED_HEADER);
     }
     let version = rd_u32(data, 8);
-    if version != MED_VERSION {
+    if version != MED_VERSION && version != MED_VERSION_V1 {
         return Err(E_MED_HEADER);
     }
     let width = rd_u32(data, 16) as usize;

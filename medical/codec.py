@@ -35,12 +35,14 @@ import zlib
 from ..entropy import RangeDecoder, RangeEncoder
 from .constants import (ESCAPE_ALPHABET, ESCAPE_CHUNK_BITS, ESCAPE_SYMBOL,
                         LZ_TOKEN_EOF, LZ_TOKEN_SYMBOLS, METHOD_LZ, METHOD_RAW,
-                        SAMPLE_BYTES, SAMPLE_FORMATS, SAMPLE_SIGNED, SFMT_F32,
+                        PRED_COUNT, SAMPLE_BYTES, SAMPLE_FORMATS,
+                        SAMPLE_SIGNED, SFMT_F32,
                         TILE_FLAG_ADAPTIVE, TILE_FLAG_ESCAPE, TILE_FLAG_SPLIT,
                         VERSION, ZIGZAG_LIMIT,
                         CorruptedFileError, UnsupportedFormatError,
                         sample_domain)
 from . import container as _container
+from . import dicom as _dicom
 from . import native as _native
 from .lz import lz_decode, lz_encode
 from .predictors import (best_row_predictor, candidate_list, merge_planes,
@@ -316,12 +318,18 @@ def _encode_tile(rows: list[list[int]], channels: int, fmt: _Format,
 def encode(samples: bytes, width: int, height: int, depth: int = 1,
            channels: int = 1, sample_format: int = 1,
            metadata: dict | None = None, tile_size: int = 256,
-           predictor: int = -1, method: int = -1) -> bytes:
+           predictor: int = -1, method: int = -1,
+           require_dicom: bool = False) -> bytes:
     """Encode a medical image into a PYRM container.
 
     `samples` holds the raw samples in little-endian order (exactly the
     bytes the decoder returns). `predictor` and `method` accept -1, which
     lets the encoder measure the alternatives and pick the cheapest one.
+
+    With `require_dicom` the metadata block is validated against the image
+    geometry before anything is written: a clinical series that claims a
+    different geometry, an impossible pixel representation or a missing
+    patient/study identifier is refused instead of being stored silently.
     """
     fmt = _Format(sample_format)
     if width <= 0 or height <= 0 or depth <= 0 or channels <= 0:
@@ -333,10 +341,13 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
         raise ValueError("sample buffer too small for the given geometry")
     if method not in (-1, METHOD_RAW, METHOD_LZ):
         raise UnsupportedFormatError(f"unsupported method {method}")
-    if predictor < -1 or predictor > 7:
+    if predictor < -1 or predictor >= PRED_COUNT:
         raise UnsupportedFormatError(f"unsupported predictor {predictor}")
     if fmt.is_float:
         predictor = 0  # float samples are shuffled, not predicted
+    if require_dicom:
+        _dicom.validate_dicom_metadata(metadata, width, height, depth,
+                                        channels, sample_format, strict=True)
 
     grid = list(_tile_grid(width, height, tile_size))
     tiles_per_slice = len(grid)
@@ -501,7 +512,8 @@ def _decode_tile(body: bytes, flags: int, method: int, tw: int, th: int,
             up = prev[i] if prev is not None else 0
             upper_left = prev[i - channels] if (prev is not None and x > 0) else 0
             slice_val = slice_row[i] if slice_row is not None else 0
-            pred = predict_value(pred_ids[r], left, up, upper_left, slice_val)
+            pred = predict_value(pred_ids[r], left, up, upper_left,
+                                slice_val, fmt.modulus)
             row[i] = (row_res[i] + pred) % fmt.modulus
         rows.append(row)
     return rows
@@ -596,4 +608,70 @@ def info(blob: bytes) -> dict:
     }
 
 
-__all__ = ["encode", "decode", "info", "METHOD_RAW", "METHOD_LZ"]
+def verify(blob: bytes) -> dict:
+    """Check every integrity guarantee of a container without decoding it.
+
+    Returns a report dictionary. When the container is intact the report has
+    ``"ok": True``; otherwise the matching check raises
+    :class:`CorruptedFileError` (a damaged container is never reported as
+    healthy).
+
+    The checks are: the magic bytes and the version, the header CRC-32, the
+    tile index size against the tile count, the metadata CRC-32, the CRC-32
+    of every tile body, the CRC-32 of the whole payload and the SHA-256 of
+    the decoded samples.
+    """
+    hdr = _container.unpack_header(blob)
+    fmt = _Format(hdr.sample_format)
+    if hdr.bits != 8 * fmt.sample_bytes:
+        raise CorruptedFileError("bits per sample does not match the format")
+
+    meta_blob = blob[hdr.meta_offset:hdr.meta_offset + hdr.meta_size]
+    metadata = _container.unpack_metadata(meta_blob, hdr.meta_crc)
+
+    index_blob = blob[hdr.index_offset:hdr.index_offset + hdr.index_size]
+    entries = _container.unpack_index(index_blob, hdr.num_tiles)
+
+    grid = list(_tile_grid(hdr.width, hdr.height, hdr.tile_size))
+    tiles_per_slice = len(grid)
+    if hdr.num_tiles != tiles_per_slice * hdr.depth:
+        raise CorruptedFileError("tile count does not match the geometry")
+
+    payload = bytearray()
+    for offset, length, method, flags, _filter_bytes, crc in entries:
+        if offset + length > len(blob):
+            raise CorruptedFileError("tile body outside the container")
+        body = blob[offset:offset + length]
+        if (zlib.crc32(body) & 0xFFFFFFFF) != crc:
+            raise CorruptedFileError("tile CRC mismatch")
+        payload += body
+    if (zlib.crc32(bytes(payload)) & 0xFFFFFFFF) != hdr.payload_crc:
+        raise CorruptedFileError("payload CRC mismatch")
+
+    # the content hash needs the decoded samples
+    samples = decode(blob)[1]
+    if hashlib.sha256(samples).digest() != hdr.sha256:
+        raise CorruptedFileError("content hash mismatch")
+
+    return {
+        "ok": True,
+        "version": hdr.version,
+        "width": hdr.width,
+        "height": hdr.height,
+        "depth": hdr.depth,
+        "channels": hdr.channels,
+        "sample_format": hdr.sample_format,
+        "bits": hdr.bits,
+        "tile_size": hdr.tile_size,
+        "num_tiles": hdr.num_tiles,
+        "payload_bytes": len(payload),
+        "metadata_bytes": hdr.meta_size,
+        "metadata": metadata,
+        "dicom": _dicom.describe(metadata),
+        "dicom_compatible": _dicom.is_dicom_compatible(
+            metadata, hdr.width, hdr.height, hdr.depth, hdr.channels,
+            hdr.sample_format),
+    }
+
+
+__all__ = ["encode", "decode", "info", "verify", "METHOD_RAW", "METHOD_LZ"]

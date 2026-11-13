@@ -52,6 +52,7 @@ def _load():
             ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t, ctypes.c_int,
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
             ctypes.c_int, ctypes.c_double, ctypes.c_double,
+            ctypes.c_double, ctypes.c_double, ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
         ]
         lib.pyra_pnm_read.restype = ctypes.c_int
@@ -165,11 +166,14 @@ def plan(pixels, width, height, channels, bit_depth, color_space,
 
 def medical_preview(samples: bytes, width: int, height: int, depth: int,
                     channels: int, sample_format: int, slice: int,
-                    window: float, level: float):
+                    window: float, level: float, slope: float = 1.0,
+                    intercept: float = 0.0, invert: bool = False):
     """Window/level 8 bit preview of one slice of a medical volume.
 
     The samples are little endian, exactly like in the PYRM container.
-    Returns the preview bytes (one byte per sample) or None."""
+    `slope`/`intercept` apply the calibration of the modality before the
+    window; `invert` selects the MONOCHROME1 convention. Returns one byte
+    per pixel (the channels are averaged) or None."""
     lib = _load()
     if lib is None:
         return None
@@ -179,12 +183,13 @@ def medical_preview(samples: bytes, width: int, height: int, depth: int,
         return None
     src = ctypes.create_string_buffer(bytes(samples), len(samples))
     src_view = ctypes.cast(src, ctypes.POINTER(ctypes.c_uint8))
-    count = width * height * channels
+    count = width * height
     out_buf = bytearray(count)
     out_view = (ctypes.c_uint8 * count).from_buffer(out_buf)
     rc = lib.pyra_med_preview(src_view, len(samples), width, height, depth,
                               channels, sample_format, slice, window, level,
-                              out_view)
+                              float(slope), float(intercept),
+                              1 if invert else 0, out_view)
     if rc != 0:
         return None
     return bytes(out_buf)

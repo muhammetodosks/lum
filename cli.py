@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 import time
 import tempfile
@@ -14,6 +15,7 @@ from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
                         PyraError, CorruptedFileError)
 from .pngbench import encode_png
 from .medical import codec as _med_codec
+from .medical import dicom as _med_dicom
 from .medical import preview as _med_preview_mod
 from .medical.constants import (SFMT_U16, METHOD_LZ as MED_METHOD_LZ,
                                 METHOD_RAW as MED_METHOD_RAW,
@@ -102,12 +104,20 @@ def _build_parser() -> argparse.ArgumentParser:
     mi = med_sub.add_parser("info", help="print container metadata")
     mi.add_argument("input")
 
+    mvf = med_sub.add_parser("verify", help="check every integrity guarantee")
+    mvf.add_argument("input")
+
+    mdu = med_sub.add_parser("dump", help="print the metadata block as JSON")
+    mdu.add_argument("input")
+
     mv = med_sub.add_parser("preview", help="render one slice as an 8-bit PGM")
     mv.add_argument("input")
     mv.add_argument("output")
     mv.add_argument("--slice", type=int, default=0)
-    mv.add_argument("--window", type=float, default=400.0)
-    mv.add_argument("--level", type=float, default=40.0)
+    mv.add_argument("--window", type=float, default=None,
+                    help="display window (default: the WindowWidth of the metadata)")
+    mv.add_argument("--level", type=float, default=None,
+                    help="display level (default: the WindowCenter of the metadata)")
     return p
 
 
@@ -250,6 +260,38 @@ def _med_info(args) -> int:
         print(f"  {key}: {info[key]}")
     print(f"  format: {_MED_FORMAT_NAMES.get(info['sample_format'])}")
     print(f"  file_size: {len(blob)} bytes")
+    metadata = _med_codec.decode(blob)[0]
+    summary = _med_dicom.describe(metadata)
+    if summary:
+        print("  --- clinical attributes ---")
+        for key, value in summary.items():
+            print(f"  {key}: {value}")
+        if _med_dicom.is_dicom_compatible(
+                metadata, info["width"], info["height"], info["depth"],
+                info["channels"], info["sample_format"]):
+            print("  dicom_compatible: yes")
+        else:
+            print("  dicom_compatible: no (see the missing attributes above)")
+    return 0
+
+
+def _med_verify(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    report = _med_codec.verify(blob)
+    print(f"VERIFICATION SUCCESSFUL: {args.input} is valid.")
+    print(f"  payload: {report['payload_bytes']} bytes in "
+          f"{report['num_tiles']} tiles")
+    print(f"  sha256 content hash: verified")
+    print(f"  dicom_compatible: {'yes' if report['dicom_compatible'] else 'no'}")
+    return 0
+
+
+def _med_dump(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    metadata = _med_codec.decode(blob)[0]
+    print(json.dumps(metadata, indent=2, sort_keys=True, default=str))
     return 0
 
 
@@ -257,11 +299,15 @@ def _med_preview(args) -> int:
     with open(args.input, "rb") as f:
         blob = f.read()
     info = _med_codec.info(blob)
-    _metadata, samples = _med_codec.decode(blob)
-    pixels = _med_preview_mod.preview_slice(
+    metadata, samples = _med_codec.decode(blob)
+    # The window, the calibration and the photometric interpretation come
+    # from the metadata; the command line overrides the window.
+    window = args.window if args.window is not None else None
+    level = args.level if args.level is not None else None
+    pixels = _med_preview_mod.preview_from_metadata(
         samples, info["width"], info["height"], info["depth"],
-        info["channels"], info["sample_format"], args.slice,
-        args.window, args.level)
+        info["channels"], info["sample_format"], metadata, args.slice,
+        window, level)
     if pixels is None:
         print("pyra: error: cannot render this slice", file=sys.stderr)
         return 1
@@ -269,8 +315,12 @@ def _med_preview(args) -> int:
     with open(args.output, "wb") as f:
         f.write(header)
         f.write(pixels)
+    meta_center, meta_width = _med_dicom.window(metadata)
+    eff_level = args.level if args.level is not None else meta_center
+    eff_window = args.window if args.window is not None else meta_width
     print(f"Preview {args.input} slice {args.slice} -> {args.output}")
-    print(f"  window: {args.window}, level: {args.level}")
+    print(f"  window: {eff_window}, level: {eff_level}")
+    print(f"  photometric: {_med_dicom.photometric(metadata)}")
     return 0
 
 
@@ -331,6 +381,10 @@ def main(argv=None) -> int:
                 return _med_decode(args)
             if args.med_cmd == "info":
                 return _med_info(args)
+            if args.med_cmd == "verify":
+                return _med_verify(args)
+            if args.med_cmd == "dump":
+                return _med_dump(args)
             if args.med_cmd == "preview":
                 return _med_preview(args)
             print(f"Unknown medical command: {args.med_cmd}", file=sys.stderr)

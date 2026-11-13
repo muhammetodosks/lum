@@ -8,8 +8,8 @@ the previous slice.
 """
 
 from .constants import (FILTER_BITS_PER_ROW, PRED_AVERAGE, PRED_COUNT,
-                        PRED_GRADIENT, PRED_LEFT, PRED_MEDIAN, PRED_NONE,
-                        PRED_PAETH, PRED_SLICE, PRED_UP,
+                        PRED_GRADIENT, PRED_LEFT, PRED_MED, PRED_MEDIAN,
+                        PRED_NONE, PRED_PAETH, PRED_SLICE, PRED_UP,
                         PRED_CANDIDATES_2D, PRED_CANDIDATES_3D)
 
 
@@ -35,13 +35,43 @@ def median(a: int, b: int, c: int) -> int:
     return a + b - c
 
 
+def circular_distance(a: int, b: int, modulus: int) -> int:
+    """Distance of two code values on the modular ring.
+
+    The residual alphabet is modular, so 0 and modulus-1 are neighbours; the
+    plain difference would call them the farthest apart.
+    """
+    d = abs(a - b)
+    if d > modulus - d:
+        d = modulus - d
+    return d
+
+
+def med_predict(left: int, up: int, upper_left: int, modulus: int) -> int:
+    """The median edge detector of LOCO-I / JPEG-LS.
+
+    Of the three neighbours, the one whose difference to the other two is
+    the smallest wins: the prediction then follows the edge of an anatomical
+    structure instead of averaging across it.
+    """
+    ma = circular_distance(left, upper_left, modulus)
+    mb = circular_distance(up, upper_left, modulus)
+    mc = circular_distance(up, left, modulus)
+    if ma < mb and ma < mc:
+        return left
+    if mb < mc:
+        return up
+    return upper_left
+
+
 def predict_value(pred_type: int, left: int, up: int, upper_left: int,
-                  slice_val: int) -> int:
+                  slice_val: int, modulus: int = 0) -> int:
     """Predicted value for one sample.
 
     `left`/`up`/`upper_left` come from the same row/column inside the tile,
     `slice_val` is the same sample in the previous slice (0 for the first
-    slice)."""
+    slice). `modulus` is the size of the residual alphabet; it is needed by
+    the predictors that compare neighbours (the median edge detector)."""
     if pred_type == PRED_NONE:
         return 0
     if pred_type == PRED_LEFT:
@@ -56,6 +86,8 @@ def predict_value(pred_type: int, left: int, up: int, upper_left: int,
         return left + up - upper_left
     if pred_type == PRED_MEDIAN:
         return median(left, up, upper_left)
+    if pred_type == PRED_MED:
+        return med_predict(left, up, upper_left, modulus)
     if pred_type == PRED_SLICE:
         return slice_val
     return 0
@@ -82,7 +114,8 @@ def row_residuals(row: list[int], prev_row: list[int] | None,
         up = prev_row[i] if prev_row is not None else 0
         upper_left = prev_row[i - channels] if (prev_row is not None and x > 0) else 0
         slice_val = slice_row[i] if slice_row is not None else 0
-        pred = predict_value(pred_type, left, up, upper_left, slice_val)
+        pred = predict_value(pred_type, left, up, upper_left, slice_val,
+                             modulus)
         residuals[i] = (row[i] - pred) % modulus
     return residuals
 
@@ -207,7 +240,8 @@ def unpack_residuals(data: bytes, count: int, sample_bytes: int) -> list[int]:
 
 
 __all__ = [
-    "paeth", "median", "predict_value", "candidate_list", "row_residuals",
+    "paeth", "median", "med_predict", "circular_distance", "predict_value",
+    "candidate_list", "row_residuals",
     "residual_score", "best_row_predictor", "pack_filter_bits",
     "unpack_filter_bits", "split_planes", "merge_planes", "pack_residuals",
     "unpack_residuals", "PRED_COUNT",

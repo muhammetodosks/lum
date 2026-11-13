@@ -36,8 +36,8 @@ the tile body.
 import json
 import struct
 import zlib
-from .constants import (MAGIC, VERSION, CorruptedFileError, TILE_FLAG_SPLIT,
-                        TILE_FLAG_ADAPTIVE)
+from .constants import (MAGIC, VERSION, VERSION_V1, CorruptedFileError,
+                        TILE_FLAG_ADAPTIVE, TILE_FLAG_SPLIT)
 
 HEADER_SIZE = 144
 HEADER_CRC_OFFSET = 72
@@ -89,7 +89,7 @@ def unpack_header(data: bytes) -> Header:
         _HDR.unpack(data[:HEADER_SIZE])
     if magic != MAGIC:
         raise CorruptedFileError("not a PYRM container")
-    if version != VERSION:
+    if version not in (VERSION_V1, VERSION):
         raise CorruptedFileError(f"unsupported PYRM version {version}")
     if width == 0 or height == 0 or depth == 0 or channels == 0:
         raise CorruptedFileError("degenerate image geometry")

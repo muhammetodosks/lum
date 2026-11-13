@@ -24,22 +24,30 @@ Example::
 
 from .constants import (MAGIC, METHOD_LZ, METHOD_RAW, PRED_AVERAGE,
                         PRED_CANDIDATES_2D, PRED_CANDIDATES_3D, PRED_GRADIENT,
-                        PRED_LEFT, PRED_MEDIAN, PRED_NONE, PRED_PAETH,
-                        PRED_SLICE, PRED_UP, SAMPLE_BITS, SAMPLE_BYTES,
+                        PRED_LEFT, PRED_MED, PRED_MEDIAN, PRED_NONE,
+                        PRED_PAETH, PRED_SLICE, PRED_UP, SAMPLE_BITS,
+                        SAMPLE_BYTES,
                         SAMPLE_FORMATS, SFMT_F32, SFMT_I16, SFMT_I32, SFMT_U8,
                         SFMT_U16, SFMT_U32, VERSION, CorruptedFileError,
-                        MedicalError, UnsupportedFormatError)
-from .codec import decode, encode, info
-from .preview import preview_slice
+                        MedicalError, MedicalMetadataError,
+                        UnsupportedFormatError)
+from .codec import decode, encode, info, verify
+from .dicom import (MONOCHROME1, MONOCHROME2, RGB, build_dicom_metadata,
+                    describe, is_dicom_compatible, validate_dicom_metadata)
+from .preview import preview_from_metadata, preview_slice
 from . import native
 
 __all__ = [
-    "encode", "decode", "info", "preview_slice", "native", "MAGIC", "VERSION",
+    "encode", "decode", "info", "verify", "preview_slice",
+    "preview_from_metadata", "native", "MAGIC", "VERSION",
+    "build_dicom_metadata", "validate_dicom_metadata", "is_dicom_compatible",
+    "describe", "MONOCHROME1", "MONOCHROME2", "RGB",
+    "MedicalMetadataError",
     "SFMT_U8", "SFMT_U16", "SFMT_U32", "SFMT_I16", "SFMT_I32", "SFMT_F32",
     "SAMPLE_FORMATS", "SAMPLE_BITS", "SAMPLE_BYTES",
     "METHOD_RAW", "METHOD_LZ",
     "PRED_NONE", "PRED_LEFT", "PRED_UP", "PRED_AVERAGE", "PRED_PAETH",
-    "PRED_GRADIENT", "PRED_MEDIAN", "PRED_SLICE",
+    "PRED_GRADIENT", "PRED_MEDIAN", "PRED_SLICE", "PRED_MED",
     "PRED_CANDIDATES_2D", "PRED_CANDIDATES_3D",
     "MedicalError", "CorruptedFileError", "UnsupportedFormatError",
 ]

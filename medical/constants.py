@@ -7,7 +7,8 @@ a SHA-256 content hash of the raw samples).
 """
 
 MAGIC = b"PYRM\r\n\x1A\n"
-VERSION = 1
+VERSION = 2
+VERSION_V1 = 1
 
 # ---------------------------------------------------------------- sample types
 SFMT_U8 = 0    # unsigned 8 bit
@@ -69,13 +70,17 @@ PRED_PAETH = 4
 PRED_GRADIENT = 5
 PRED_MEDIAN = 6
 PRED_SLICE = 7
+#: The median edge detector of LOCO-I / JPEG-LS. It picks the neighbour
+#: whose difference to the two others is the smallest, which follows the
+#: edges of an anatomical structure instead of averaging across them.
+PRED_MED = 8
 
-PRED_COUNT = 8
+PRED_COUNT = 9
 
 #: Candidate order used by the adaptive row filter. The tie-break is
 #: "first candidate wins", so every implementation agrees.
 PRED_CANDIDATES_2D = (PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE,
-                      PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN)
+                      PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN, PRED_MED)
 PRED_CANDIDATES_3D = PRED_CANDIDATES_2D + (PRED_SLICE,)
 
 #: Bits per row in the row filter table.
@@ -121,3 +126,7 @@ class CorruptedFileError(MedicalError):
 
 class UnsupportedFormatError(MedicalError):
     """The container uses a feature this implementation does not know."""
+
+
+class MedicalMetadataError(MedicalError):
+    """The metadata block is incomplete or contradicts the image geometry."""
