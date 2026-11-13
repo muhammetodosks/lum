@@ -367,6 +367,36 @@ The rules that make this hold:
 `validate_dicom_metadata()` checks all of this against the geometry of the
 image and reports *every* problem it finds, not just the first one.
 
+### Clinical consistency contract
+
+A container is only *clinically usable* when its metadata block agrees with
+the image it describes. The compatibility flag
+(`is_dicom_compatible()`, and the `dicom_compatible` field of the verify
+report) is **false** when
+
+* a required attribute is missing (`PatientID`, `Modality`,
+  `StudyInstanceUID`, `SeriesInstanceUID`), **or**
+* the block contradicts the image: `Columns` / `Rows` / `NumberOfFrames` /
+  `SamplesPerPixel` disagree with the geometry, `BitsAllocated` /
+  `BitsStored` / `PixelRepresentation` disagree with the sample format,
+  `PhotometricInterpretation` does not fit the channel count, `HighBit` is
+  not `BitsStored - 1`, `RescaleSlope` is zero, or the display window cannot
+  be rendered.
+
+A contradiction used to be ignored by the compatibility flag, which made a
+container that claimed 999 rows for a 24 row image look usable to a viewer.
+It does not any more, and the verify report names the exact problems in its
+`dicom_problems` list.
+
+The technical identifiers may be generated: `generate_uid(seed)` returns a
+valid DICOM UID in the `2.25` arc (a UUID encoded as a decimal number).
+With a seed the result is reproducible, so a study, a series and its
+instances form a consistent hierarchy; without a seed the entropy source is
+used. The command line generates the missing `StudyInstanceUID`,
+`SeriesInstanceUID` and `SOPInstanceUID` on its own - they carry no patient
+identity. Patient identity is never invented: a missing `PatientID` or
+`Modality` is still an error, and `--require-dicom` refuses the file.
+
 ## Design notes (measured)
 
 Some ideas were implemented, measured and **rejected**. They are listed

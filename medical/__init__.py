@@ -33,7 +33,8 @@ from .constants import (MAGIC, METHOD_LZ, METHOD_RAW, PRED_AVERAGE,
                         UnsupportedFormatError)
 from .codec import decode, encode, info, verify
 from .dicom import (MONOCHROME1, MONOCHROME2, RGB, build_dicom_metadata,
-                    describe, is_dicom_compatible, validate_dicom_metadata)
+                    describe, generate_uid, is_dicom_compatible,
+                    validate_dicom_metadata)
 from .preview import preview_from_metadata, preview_slice
 from . import native
 
@@ -41,6 +42,7 @@ __all__ = [
     "encode", "decode", "info", "verify", "preview_slice",
     "preview_from_metadata", "native", "MAGIC", "VERSION",
     "build_dicom_metadata", "validate_dicom_metadata", "is_dicom_compatible",
+    "generate_uid",
     "describe", "MONOCHROME1", "MONOCHROME2", "RGB",
     "MedicalMetadataError",
     "SFMT_U8", "SFMT_U16", "SFMT_U32", "SFMT_I16", "SFMT_I32", "SFMT_F32",

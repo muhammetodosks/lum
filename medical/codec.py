@@ -653,6 +653,18 @@ def verify(blob: bytes) -> dict:
     if hashlib.sha256(samples).digest() != hdr.sha256:
         raise CorruptedFileError("content hash mismatch")
 
+    # The clinical metadata is checked against the geometry of the
+    # container: a block that contradicts the image (wrong number of rows,
+    # a pixel representation that does not fit the sample format, ...) is
+    # reported with the exact problems, so a reader can see *why* a
+    # container is not clinically usable.
+    try:
+        clinical_problems = _dicom.validate_dicom_metadata(
+            metadata, hdr.width, hdr.height, hdr.depth, hdr.channels,
+            hdr.sample_format, strict=False)
+    except _dicom.MedicalMetadataError:
+        clinical_problems = ["metadata block is missing"]
+
     return {
         "ok": True,
         "version": hdr.version,
@@ -668,6 +680,7 @@ def verify(blob: bytes) -> dict:
         "metadata_bytes": hdr.meta_size,
         "metadata": metadata,
         "dicom": _dicom.describe(metadata),
+        "dicom_problems": clinical_problems,
         "dicom_compatible": _dicom.is_dicom_compatible(
             metadata, hdr.width, hdr.height, hdr.depth, hdr.channels,
             hdr.sample_format),

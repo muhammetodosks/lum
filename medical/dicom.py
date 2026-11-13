@@ -42,6 +42,9 @@ shows a CT scan upside down in brightness, which is exactly the kind of
 silent error this module exists to prevent.
 """
 
+import hashlib
+import os
+
 from .constants import (SAMPLE_BITS, SAMPLE_BYTES, SAMPLE_FORMATS,
                         SAMPLE_SIGNED, SFMT_F32, SFMT_I16, SFMT_I32,
                         SFMT_U8, SFMT_U16, SFMT_U32, MedicalError,
@@ -61,6 +64,34 @@ REQUIRED_KEYS = (
     "StudyInstanceUID",
     "SeriesInstanceUID",
 )
+
+#: The UID root used for generated identifiers: the standard "2.25" arc of
+#: UUID derived identifiers (ISO/IEC 9834-8 / ITU-T X.667).
+UID_ROOT = "2.25."
+
+
+def generate_uid(seed: str = "") -> str:
+    """Generate a valid DICOM unique identifier.
+
+    The identifier is derived from the ``2.25`` arc, which encodes a UUID
+    as a decimal number and is therefore guaranteed to be unique for every
+    distinct seed. With a seed the result is deterministic, so a study, a
+    series and its instances can be generated reproducibly; without one the
+    seed is taken from the system entropy source.
+
+    Patient identity is never part of a generated identifier: only the
+    technical hierarchy (study, series, instance) is.
+    """
+    if seed:
+        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    else:
+        digest = os.urandom(16)
+    number = int.from_bytes(digest[:16], "big")
+    uid = UID_ROOT + str(number)
+    if len(uid) > MAX_UID_LENGTH:
+        # keep the arc valid: 64 characters is the DICOM limit
+        uid = uid[:MAX_UID_LENGTH]
+    return uid
 
 #: Attributes that a study should carry. Their absence is reported as a
 #: warning, not as an error.
@@ -331,14 +362,20 @@ def validate_dicom_metadata(meta: dict | None, width: int = 0, height: int = 0,
 def is_dicom_compatible(meta: dict | None, width: int = 0, height: int = 0,
                          depth: int = 0, channels: int = 0,
                          sample_format: int = -1) -> bool:
-    """True when the metadata block is complete and consistent."""
+    """True when the metadata block is complete *and* consistent.
+
+    A contradiction (a ``Rows`` value that disagrees with the geometry, a
+    pixel representation that contradicts the sample format, a photometric
+    interpretation that does not fit the channel count, ...) makes the
+    block unusable for a clinical viewer, so such a block is *not*
+    compatible even when every required attribute is present.
+    """
     try:
         problems = validate_dicom_metadata(meta, width, height, depth, channels,
                                           sample_format, strict=False)
     except MedicalMetadataError:
         return False
-    required_missing = [p for p in problems if "missing required attribute" in p]
-    return not required_missing
+    return not problems
 
 
 def rescale(meta: dict | None) -> tuple[float, float]:

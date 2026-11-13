@@ -139,8 +139,12 @@ def _build_parser() -> argparse.ArgumentParser:
     mvf = med_sub.add_parser("verify", help="check every integrity guarantee")
     mvf.add_argument("input")
 
-    mdu = med_sub.add_parser("dump", help="print the metadata block as JSON")
+    mdu = med_sub.add_parser("dump",
+                             help="print the container as JSON (geometry, "
+                                  "integrity and metadata)")
     mdu.add_argument("input")
+    mdu.add_argument("--metadata-only", action="store_true",
+                     help="print just the metadata block")
 
     mv = med_sub.add_parser("preview", help="render one slice as an 8-bit PGM")
     mv.add_argument("input")
@@ -255,6 +259,15 @@ def _med_encode(args) -> int:
 
     metadata = _med_meta(args.meta)
     if args.dicom:
+        # The technical identifiers are generated when they are not given:
+        # they carry no patient identity, and a study/series/instance
+        # hierarchy that is consistent by construction is worth far more
+        # than three empty strings. Patient identity is never invented.
+        study_uid = args.study_uid or _med_dicom.generate_uid()
+        series_uid = args.series_uid or _med_dicom.generate_uid(
+            "series:" + study_uid)
+        sop_uid = args.sop_uid or _med_dicom.generate_uid(
+            "instance:" + series_uid)
         # The geometry dependent attributes are derived, so the result is
         # always self consistent; the explicit --meta entries win.
         clinical = _med_dicom.build_dicom_metadata(
@@ -262,9 +275,9 @@ def _med_encode(args) -> int:
             patient_id=args.patient_id or "",
             patient_name=args.patient_name or "",
             modality=args.modality or "",
-            study_uid=args.study_uid or "",
-            series_uid=args.series_uid or "",
-            sop_uid=args.sop_uid or "",
+            study_uid=study_uid,
+            series_uid=series_uid,
+            sop_uid=sop_uid,
             study_date=args.study_date or "",
             slice_thickness=args.slice_thickness,
             rescale_slope=args.rescale_slope,
@@ -399,10 +412,44 @@ def _med_verify(args) -> int:
 
 
 def _med_dump(args) -> int:
+    """Print the container as a JSON document.
+
+    The document holds the geometry, the integrity state and the clinical
+    metadata, so it can be piped into any JSON tool. With
+    `--metadata-only` just the metadata block is printed, which is what
+    `jq` users usually want.
+    """
     with open(args.input, "rb") as f:
         blob = f.read()
     metadata = _med_codec.decode(blob)[0]
-    print(json.dumps(metadata, indent=2, sort_keys=True, default=str))
+    if args.metadata_only:
+        print(json.dumps(metadata, indent=2, sort_keys=True, default=str))
+        return 0
+    info = _med_codec.info(blob)
+    report = _med_codec.verify(blob)
+    document = {
+        "container": {
+            "magic": "PYRM",
+            "version": report.get("version"),
+            "width": info["width"],
+            "height": info["height"],
+            "depth": info["depth"],
+            "channels": info["channels"],
+            "sample_format": info["sample_format"],
+            "bits": info["bits"],
+            "tile_size": info["tile_size"],
+            "num_tiles": info["num_tiles"],
+            "file_bytes": len(blob),
+            "payload_bytes": report.get("payload_bytes"),
+            "metadata_bytes": report.get("metadata_bytes"),
+        },
+        "integrity": {
+            "ok": report.get("ok"),
+            "dicom_compatible": report.get("dicom_compatible"),
+        },
+        "metadata": metadata,
+    }
+    print(json.dumps(document, indent=2, sort_keys=True, default=str))
     return 0
 
 

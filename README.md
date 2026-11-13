@@ -395,6 +395,7 @@ auditability. The full specification lives in
 | Preview | Window/level 8-bit preview of any slice, computed in C++ |
 | DICOM files | Reads and writes real DICOM Part 10 files (explicit VR little endian, uncompressed), so a container can go to a PACS and come back |
 | Metadata fidelity | PYRM → DICOM → PYRM keeps the clinical attributes **exactly** the same set - no loss, no invention, no duplicated DICOM tag |
+| Clinical consistency | A container whose metadata contradicts the image is reported as **not** clinically usable, with the exact problems listed |
 | Speed | One entropy symbol per *sample* (not per byte): the centred residual is zig-zag coded and only rare outliers escape into a few extra symbols |
 
 The decoder never returns unverified data: every integrity check runs before
@@ -422,7 +423,8 @@ python3 -m pyra med encode ct.raw --width 512 --height 512 --depth 64 \
         --format u16 --meta scanner=Siemens --meta patient=anon ct.pyrm
 
 python3 -m pyra med info ct.pyrm          # header + clinical attributes
-python3 -m pyra med dump ct.pyrm          # the metadata block as JSON
+python3 -m pyra med dump ct.pyrm          # geometry + integrity + metadata as JSON
+python3 -m pyra med dump --metadata-only ct.pyrm   # just the metadata block
 python3 -m pyra med verify ct.pyrm        # every integrity guarantee
 python3 -m pyra med preview ct.pyrm s30.pgm --slice 30
 

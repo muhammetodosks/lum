@@ -6,11 +6,15 @@
 # always be rejected with an exception - it must never decode into wrong
 # data.
 
+import io
+import json
 import os
 import random
 import struct
 import sys
+import tempfile
 import zlib
+from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -682,6 +686,150 @@ def test_cli_dicom():
               rc != 0 and not os.path.exists(dst))
 
 
+def test_cli_dump():
+    """`med dump` prints a complete JSON document about the container."""
+    import io
+    import json
+    import tempfile
+    from contextlib import redirect_stdout
+    from pyra import cli as _cli
+
+    raw = make_samples("smooth", 20, 12, 2, 1, SFMT_U16)
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "vol.raw")
+        dst = os.path.join(tmp, "vol.pyrm")
+        with open(src, "wb") as f:
+            f.write(raw)
+        with redirect_stdout(io.StringIO()):
+            rc = _cli.main([
+                "med", "encode", src, dst,
+                "--width", "20", "--height", "12", "--depth", "2",
+                "--format", "u16",
+            ])
+        ok = rc == 0 and os.path.exists(dst)
+        if ok:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = _cli.main(["med", "dump", dst])
+            ok = rc == 0
+            try:
+                document = json.loads(buf.getvalue())
+            except ValueError:
+                document = None
+            ok = ok and isinstance(document, dict)
+            if ok:
+                # the geometry must be in the document, not only in the
+                # metadata: a container without a metadata block still has
+                # to be inspectable
+                ok = (document["container"]["width"] == 20
+                      and document["container"]["height"] == 12
+                      and document["container"]["depth"] == 2
+                      and document["container"]["num_tiles"] == 2
+                      and document["integrity"]["ok"] is True
+                      and "metadata" in document)
+    check("the CLI dumps the container as a complete JSON document", ok)
+
+    # --metadata-only prints just the metadata block
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "vol.raw")
+        dst = os.path.join(tmp, "vol.pyrm")
+        with open(src, "wb") as f:
+            f.write(raw)
+        with redirect_stdout(io.StringIO()):
+            _cli.main(["med", "encode", src, dst, "--width", "20",
+                       "--height", "12", "--depth", "2", "--format", "u16"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = _cli.main(["med", "dump", "--metadata-only", dst])
+        try:
+            only = json.loads(buf.getvalue())
+        except ValueError:
+            only = None
+    check("the CLI can dump just the metadata block",
+          rc == 0 and isinstance(only, dict) and "container" not in only)
+
+
+def test_clinical_consistency():
+    """A container whose metadata contradicts it is not clinically usable.
+
+    The compatibility flag used to ignore contradictions and only look at
+    the missing attributes, so a container that claimed 999 rows for a
+    24 row image was still reported as DICOM compatible. That would let a
+    viewer trust a geometry it must not trust.
+    """
+    w, h, d = 24, 16, 2
+    raw = make_samples("smooth", w, h, d, 1, SFMT_U16)
+    meta = build_dicom_metadata(
+        w, h, d, 1, SFMT_U16, patient_id="ANON-009", modality="CT",
+        study_uid="1.2.840.113619.2.9", series_uid="1.2.840.113619.2.9.1",
+        sop_uid="1.2.840.113619.2.9.1.1")
+    check("a consistent block is compatible",
+          is_dicom_compatible(meta, w, h, d, 1, SFMT_U16))
+
+    # 1. a geometry that contradicts the container
+    bad = dict(meta)
+    bad["Rows"] = h + 100
+    check("a contradictory geometry is not compatible",
+          not is_dicom_compatible(bad, w, h, d, 1, SFMT_U16))
+
+    # 2. a pixel representation that contradicts the sample format
+    bad = dict(meta)
+    bad["PixelRepresentation"] = 1
+    check("a contradictory pixel representation is not compatible",
+          not is_dicom_compatible(bad, w, h, d, 1, SFMT_U16))
+
+    # 3. a photometric interpretation that does not fit the channel count
+    bad = dict(meta)
+    bad["PhotometricInterpretation"] = "RGB"
+    check("a contradictory photometric interpretation is not compatible",
+          not is_dicom_compatible(bad, w, h, d, 1, SFMT_U16))
+
+    # 4. the report of a broken container names the problem
+    blob = encode(raw, w, h, d, 1, SFMT_U16, metadata=bad)
+    report = verify(blob)
+    check("the report lists the clinical problems",
+          not report["dicom_compatible"]
+          and any("PhotometricInterpretation" in p
+                  for p in report["dicom_problems"]))
+
+    # 5. a clean container reports no problems at all
+    blob = encode(raw, w, h, d, 1, SFMT_U16, metadata=meta)
+    report = verify(blob)
+    check("a clean container reports no clinical problems",
+          report["dicom_compatible"] and report["dicom_problems"] == [])
+
+    # 6. generated identifiers are valid and reproducible
+    uid_a = _dicom.generate_uid("study:1")
+    uid_b = _dicom.generate_uid("study:1")
+    uid_c = _dicom.generate_uid("study:2")
+    check("generated identifiers are valid and reproducible",
+          uid_a == uid_b and uid_a != uid_c and len(uid_a) <= 64
+          and uid_a.startswith("2.25."))
+
+    # 7. the command line generates the technical identifiers on its own
+    from pyra import cli as _cli
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "vol.raw")
+        dst = os.path.join(tmp, "vol.pyrm")
+        with open(src, "wb") as f:
+            f.write(raw)
+        rc = _cli.main(["med", "encode", src, dst,
+                        "--width", str(w), "--height", str(h),
+                        "--depth", str(d), "--format", "u16",
+                        "--dicom", "--patient-id", "ANON-010",
+                        "--modality", "CT"])
+        ok = rc == 0 and os.path.exists(dst)
+        if ok:
+            with open(dst, "rb") as f:
+                blob = f.read()
+            metadata, samples = decode(blob)
+            ok = (samples == raw and is_dicom_compatible(metadata)
+                  and metadata["StudyInstanceUID"].startswith("2.25.")
+                  and metadata["SeriesInstanceUID"].startswith("2.25.")
+                  and metadata["SOPInstanceUID"].startswith("2.25."))
+    check("the command line generates the technical identifiers", ok)
+
+
 def main():
     print("=== PYRM medical format test suite ===")
     test_roundtrip_matrix()
@@ -701,6 +849,8 @@ def main():
     test_dicom_metadata_fidelity()
     test_dicom_file()
     test_cli_dicom()
+    test_cli_dump()
+    test_clinical_consistency()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")
