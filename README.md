@@ -33,7 +33,8 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | 16-bit depth | ✅ | Full-pixel domain covered |
 | Animation container | ✅ | Frame count + fps header |
 | CLI | ✅ | encode/decode/inspect/verify/benchmark |
-| Medical container PYRM | ✅ | `test_medical.py` 40 checks, 864 native/pure parity trials |
+| Medical container PYRM | ✅ | `test_medical.py` 49 checks, 864 native/pure parity trials |
+| DICOM Part 10 files | ✅ | Real DICOM in and out, explicit VR little endian, uncompressed |
 | 3D volume support | ✅ | Slice-local tiles, `slice` predictor for volumetric data |
 | SHA-256 content hash | ✅ | Every container carries the hash of the raw samples |
 | DICOM compatible metadata | ✅ | Calibration, photometric interpretation, display window, sample description |
@@ -392,6 +393,7 @@ auditability. The full specification lives in
 | Sample formats | u8, u16, u32, i16, i32, f32 (floats are shuffled into byte planes before coding) |
 | Metadata | UTF-8 JSON block with DICOM keywords (patient ids, scanner, protocol, calibration, window, photometric interpretation) with its own CRC |
 | Preview | Window/level 8-bit preview of any slice, computed in C++ |
+| DICOM files | Reads and writes real DICOM Part 10 files (explicit VR little endian, uncompressed), so a container can go to a PACS and come back |
 | Speed | One entropy symbol per *sample* (not per byte): the centred residual is zig-zag coded and only rare outliers escape into a few extra symbols |
 
 The decoder never returns unverified data: every integrity check runs before
@@ -422,6 +424,9 @@ python3 -m pyra med info ct.pyrm          # header + clinical attributes
 python3 -m pyra med dump ct.pyrm          # the metadata block as JSON
 python3 -m pyra med verify ct.pyrm        # every integrity guarantee
 python3 -m pyra med preview ct.pyrm s30.pgm --slice 30
+
+python3 -m pyra med to-dicom   ct.pyrm ct.dcm    # DICOM Part 10
+python3 -m pyra med from-dicom ct.dcm ct.pyrm
 ```
 
 The preview takes the display window from the metadata (the command line
@@ -496,10 +501,10 @@ pyra/
 ├── tile.py            split / assemble
 ├── security.py        limits + typed errors
 ├── pngbench.py        stdlib-only PNG reader/writer (benchmark reference + write/read loop test)
-├── medical/           PYRM medical container (constants, container, predictors, lz, codec, preview, native)
+├── medical/           PYRM medical container (constants, container, predictors, lz, codec, preview, dicom, dicomfile, native)
 ├── rust/pyra_med.rs   native PYRM encoder/decoder (SHA-256, parallel tiles)
 ├── docs/FORMAT-PYRM.md    the PYRM format specification
-└── tests/             test_lossless.py (246 checks) + test_medical.py (20 checks)
+└── tests/             test_lossless.py (246 checks) + test_medical.py (49 checks)
 ```
 
 ## Running Tests

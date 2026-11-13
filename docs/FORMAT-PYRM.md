@@ -287,6 +287,53 @@ zero rescale slope or a non-positive window width aborts the encoding with
 a non-zero exit code and no file. `--meta KEY=VALUE` entries override the
 derived values, so a free form attribute can always be added.
 
+## DICOM interoperability
+
+A clinical system has to speak DICOM: a scanner writes DICOM, a PACS
+stores DICOM, a radiologist looks at DICOM. The `medical.dicomfile` module
+therefore reads and writes real **DICOM Part 10** files (the `DICM`
+wrapper) with the *Explicit VR Little Endian* transfer syntax and
+**uncompressed** pixel data - the safest possible choice for medical data,
+because no lossy step is ever involved.
+
+```python
+from pyra.medical.dicomfile import read_dicom, write_dicom
+
+# a PYRM container into a DICOM file
+blob = write_dicom(samples, 512, 512, depth=64, sample_format=SFMT_U16,
+                   metadata=metadata)
+
+# and back
+samples, metadata = read_dicom(blob)
+```
+
+What is supported:
+
+* explicit VR little endian data sets, the transfer syntax every modern
+  system understands;
+* uncompressed pixel data with 8, 16 or 32 bits per sample, which covers
+  CT, MR, ultrasound, mammography and the rest;
+* single frame and multi frame data sets (a volume is one file with
+  `NumberOfFrames`);
+* the attributes that carry the clinical meaning: patient, study, series,
+  instance, the geometry, the calibration (`RescaleSlope` /
+  `RescaleIntercept`), the display window (`WindowCenter` / `WindowWidth`),
+  the photometric interpretation and the SOP class.
+
+Float samples have no DICOM equivalent and are refused. A file with a
+different transfer syntax (compressed, implicit VR, ...) is refused as
+well rather than misread.
+
+The command line converts between the two formats:
+
+```bash
+python3 -m pyra med to-dicom   volume.pyrm volume.dcm
+python3 -m pyra med from-dicom volume.dcm volume.pyrm
+```
+
+A round trip keeps both the pixels (byte for byte) and the clinical
+attributes.
+
 ## Error classes
 
 * `MedicalError` — base class of the format errors.

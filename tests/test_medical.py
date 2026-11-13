@@ -493,6 +493,58 @@ def test_preview_semantics():
               native == python_inverted and native_plain == calibrated)
 
 
+def test_dicom_file():
+    """A container survives a round trip through a real DICOM file."""
+    from pyra.medical import dicomfile as _dcmfile
+
+    for sf in (SFMT_U8, SFMT_U16, SFMT_U32, SFMT_I16, SFMT_I32):
+        raw = make_samples("smooth", 20, 14, 3, 1, sf)
+        meta = _dicom.build_dicom_metadata(
+            20, 14, 3, 1, sf, patient_id="ANON-042", patient_name="Doe^Jane",
+            modality="CT", study_uid="1.2.840.113619.2.1",
+            series_uid="1.2.840.113619.2.1.4", sop_uid="1.2.840.113619.2.1.4.9",
+            study_date="20260113", slice_thickness=1.5,
+            rescale_slope=1.0, rescale_intercept=-1024.0,
+            window_center=40.0, window_width=400.0)
+        blob = _dcmfile.write_dicom(raw, 20, 14, 3, 1, sf, meta)
+        if blob[128:132] != b"DICM":
+            check(f"DICOM file signature (format {FORMAT_NAMES[sf]})", False)
+            continue
+        back, read_meta = _dcmfile.read_dicom(blob)
+        ok = back == raw
+        ok = ok and read_meta["PatientID"] == "ANON-042"
+        ok = ok and read_meta["PatientName"] == "Doe^Jane"
+        ok = ok and read_meta["Modality"] == "CT"
+        ok = ok and read_meta["StudyInstanceUID"] == "1.2.840.113619.2.1"
+        ok = ok and read_meta["SeriesInstanceUID"] == "1.2.840.113619.2.1.4"
+        ok = ok and read_meta["SOPInstanceUID"] == "1.2.840.113619.2.1.4.9"
+        ok = ok and int(read_meta["Rows"]) == 14
+        ok = ok and int(read_meta["Columns"]) == 20
+        ok = ok and int(read_meta["NumberOfFrames"]) == 3
+        ok = ok and abs(float(read_meta["WindowWidth"]) - 400.0) < 1e-9
+        ok = ok and abs(float(read_meta["RescaleIntercept"]) + 1024.0) < 1e-9
+        check(f"DICOM round trip (format {FORMAT_NAMES[sf]})", ok)
+
+    # a file that is not DICOM must be refused
+    try:
+        _dcmfile.read_dicom(b"not a dicom file" * 20)
+        check("a non-DICOM file is refused", False)
+    except MedicalError:
+        check("a non-DICOM file is refused", True)
+
+    # a truncated file must be refused
+    raw = make_samples("smooth", 8, 6, 1, 1, SFMT_U16)
+    meta = _dicom.build_dicom_metadata(
+        8, 6, 1, 1, SFMT_U16, patient_id="A", modality="CT",
+        study_uid="1.2", series_uid="1.2.3", sop_uid="1.2.3.4")
+    blob = _dcmfile.write_dicom(raw, 8, 6, 1, 1, SFMT_U16, meta)
+    try:
+        _dcmfile.read_dicom(blob[:len(blob) // 2])
+        check("a truncated DICOM file is refused", False)
+    except MedicalError:
+        check("a truncated DICOM file is refused", True)
+
+
 def test_cli_dicom():
     """The command line can build a clinically valid container."""
     import tempfile
@@ -555,6 +607,7 @@ def main():
     test_verify_command()
     test_med_predictor()
     test_preview_semantics()
+    test_dicom_file()
     test_cli_dicom()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:

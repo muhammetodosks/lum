@@ -16,6 +16,7 @@ from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
 from .pngbench import encode_png
 from .medical import codec as _med_codec
 from .medical import dicom as _med_dicom
+from .medical import dicomfile as _med_dicomfile
 from .medical import preview as _med_preview_mod
 from .medical.constants import (SFMT_U16, METHOD_LZ as MED_METHOD_LZ,
                                 METHOD_RAW as MED_METHOD_RAW,
@@ -123,6 +124,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     mi = med_sub.add_parser("info", help="print container metadata")
     mi.add_argument("input")
+
+    mdc = med_sub.add_parser("to-dicom",
+                             help="convert a .pyrm container into a DICOM file")
+    mdc.add_argument("input")
+    mdc.add_argument("output")
+
+    mdf = med_sub.add_parser("from-dicom",
+                             help="convert a DICOM file into a .pyrm container")
+    mdf.add_argument("input")
+    mdf.add_argument("output")
+    mdf.add_argument("--tile", type=int, default=256)
 
     mvf = med_sub.add_parser("verify", help="check every integrity guarantee")
     mvf.add_argument("input")
@@ -332,6 +344,48 @@ def _med_info(args) -> int:
     return 0
 
 
+def _med_to_dicom(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    metadata, samples = _med_codec.decode(blob)
+    info = _med_codec.info(blob)
+    if not metadata.get("SOPInstanceUID"):
+        raise MedicalError(
+            "the container has no SOPInstanceUID; a DICOM file needs one "
+            "(use the CLI options of 'med encode --dicom')")
+    out = _med_dicomfile.write_dicom(
+        samples, info["width"], info["height"], info["depth"],
+        info["channels"], info["sample_format"], metadata)
+    with open(args.output, "wb") as f:
+        f.write(out)
+    print(f"Converted {args.input} -> {args.output}")
+    print(f"  transfer syntax: {_med_dicomfile.EXPLICIT_VR_LITTLE_ENDIAN}")
+    print(f"  size: {len(out)} bytes")
+    return 0
+
+
+def _med_from_dicom(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    samples, metadata = _med_dicomfile.read_dicom(blob)
+    width = int(metadata.get("Columns", 0))
+    height = int(metadata.get("Rows", 0))
+    depth = int(metadata.get("NumberOfFrames", 1))
+    channels = int(metadata.get("SamplesPerPixel", 1))
+    signed = int(metadata.get("PixelRepresentation", 0)) == 1
+    bits = int(metadata.get("BitsAllocated", 16))
+    sample_format = {8: 0, 16: 3 if signed else 1, 32: 4 if signed else 2}[bits]
+    out = _med_codec.encode(samples, width, height, depth, channels,
+                             sample_format, metadata=metadata,
+                             tile_size=args.tile)
+    with open(args.output, "wb") as f:
+        f.write(out)
+    print(f"Converted {args.input} -> {args.output}")
+    print(f"  geometry: {width}x{height}x{depth} ch={channels}")
+    print(f"  size: {len(out)} bytes")
+    return 0
+
+
 def _med_verify(args) -> int:
     with open(args.input, "rb") as f:
         blob = f.read()
@@ -440,6 +494,10 @@ def main(argv=None) -> int:
                 return _med_info(args)
             if args.med_cmd == "verify":
                 return _med_verify(args)
+            if args.med_cmd == "to-dicom":
+                return _med_to_dicom(args)
+            if args.med_cmd == "from-dicom":
+                return _med_from_dicom(args)
             if args.med_cmd == "dump":
                 return _med_dump(args)
             if args.med_cmd == "preview":
