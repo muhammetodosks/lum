@@ -14,13 +14,17 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from pyra.medical import (METHOD_LZ, METHOD_RAW, PRED_NONE, PRED_PAETH,
-                          PRED_SLICE, SFMT_F32, SFMT_I16, SFMT_I32, SFMT_U8,
-                          SFMT_U16, SFMT_U32, CorruptedFileError, MedicalError,
-                          decode, encode)
+from pyra.medical import (METHOD_LZ, METHOD_RAW, PRED_MED, PRED_NONE,
+                          PRED_PAETH, PRED_SLICE, SFMT_F32, SFMT_I16, SFMT_I32,
+                          SFMT_U8, SFMT_U16, SFMT_U32, CorruptedFileError,
+                          MedicalError, MedicalMetadataError, build_dicom_metadata,
+                          decode, encode, is_dicom_compatible, verify)
 from pyra.medical import codec as _codec
 from pyra.medical import container as _container
+from pyra.medical import dicom as _dicom
 from pyra.medical import native as _native
+from pyra.medical import preview as _preview
+from pyra import fast as _fast
 
 PASS = 0
 FAIL = 0
@@ -239,7 +243,10 @@ def test_truncated():
 def test_native_parity():
     """The native core and the pure-Python reference agree byte for byte."""
     if not _native.available():
-        check("native medical backend present", False)
+        # The backend may be switched off on purpose (the fallback run).
+        disabled = bool(os.environ.get("PYRA_DISABLE_NATIVE")) or \
+            os.environ.get("PYRA_NATIVE") == "0"
+        check("native medical backend present", disabled)
         return
     check("native medical backend present", True)
     diffs = []
@@ -323,6 +330,169 @@ def test_compression():
     check("smooth volume compresses below the raw size", len(blob) < len(raw))
 
 
+
+
+# ------------------------------------------------------- clinical metadata
+
+def test_dicom_metadata():
+    """The DICOM-like metadata is built, validated and cross-checked."""
+    w, h, d = 20, 12, 3
+    meta = build_dicom_metadata(
+        w, h, d, 1, SFMT_U16,
+        patient_id="ANON-001", modality="CT",
+        study_uid="1.2.840.113619.2.1", series_uid="1.2.840.113619.2.1.3",
+        sop_uid="1.2.840.113619.2.1.3.7", study_date="20261113",
+        slice_thickness=1.25, pixel_spacing=(0.7, 0.7),
+        rescale_slope=1.0, rescale_intercept=-1024.0,
+        window_center=40.0, window_width=400.0)
+    check("dicom metadata passes validation",
+          _dicom.validate_dicom_metadata(meta, w, h, d, 1, SFMT_U16,
+                                         strict=True) == [])
+    check("dicom metadata is reported as compatible",
+          is_dicom_compatible(meta, w, h, d, 1, SFMT_U16))
+    check("geometry attributes are derived",
+          meta["Rows"] == h and meta["Columns"] == w
+          and meta["NumberOfFrames"] == d and meta["SamplesPerPixel"] == 1
+          and meta["BitsAllocated"] == 16 and meta["BitsStored"] == 16
+          and meta["PixelRepresentation"] == 0)
+    check("the calibration is readable",
+          _dicom.rescale(meta) == (1.0, -1024.0)
+          and _dicom.window(meta) == (40.0, 400.0))
+    check("the photometric interpretation defaults to MONOCHROME2",
+          _dicom.photometric(meta) == _dicom.MONOCHROME2
+          and not _dicom.is_monochrome1(meta))
+
+    # a contradiction must be refused
+    broken = dict(meta)
+    broken["Columns"] = w + 1
+    try:
+        _dicom.validate_dicom_metadata(broken, w, h, d, 1, SFMT_U16, strict=True)
+        ok = False
+    except MedicalMetadataError:
+        ok = True
+    check("a contradicting geometry is refused", ok)
+
+    broken = dict(meta)
+    broken["PixelRepresentation"] = 1  # signed, but the samples are unsigned
+    try:
+        _dicom.validate_dicom_metadata(broken, w, h, d, 1, SFMT_U16, strict=True)
+        ok = False
+    except MedicalMetadataError:
+        ok = True
+    check("a contradicting pixel representation is refused", ok)
+
+    broken = dict(meta)
+    broken["PhotometricInterpretation"] = "MONOCHROME3"
+    try:
+        _dicom.validate_dicom_metadata(broken, w, h, d, 1, SFMT_U16, strict=True)
+        ok = False
+    except MedicalMetadataError:
+        ok = True
+    check("an unknown photometric interpretation is refused", ok)
+
+    broken = dict(meta)
+    del broken["PatientID"]
+    try:
+        _dicom.validate_dicom_metadata(broken, w, h, d, 1, SFMT_U16, strict=True)
+        ok = False
+    except MedicalMetadataError:
+        ok = True
+    check("a missing patient identifier is refused", ok)
+
+    # the encoder refuses to store clinically invalid metadata
+    raw = make_samples("smooth", w, h, d, 1, SFMT_U16)
+    try:
+        encode(raw, w, h, d, 1, SFMT_U16, metadata=broken, require_dicom=True)
+        ok = False
+    except MedicalMetadataError:
+        ok = True
+    check("the encoder refuses invalid clinical metadata", ok)
+
+    blob = encode(raw, w, h, d, 1, SFMT_U16, metadata=meta, require_dicom=True)
+    got, out = decode(blob)
+    check("the clinical metadata survives the round trip",
+          got == meta and out == raw)
+
+
+def test_verify_command():
+    """The verify entry point checks every guarantee."""
+    raw = make_samples("smooth", 18, 12, 2, 1, SFMT_U16)
+    blob = encode(raw, 18, 12, 2, 1, SFMT_U16)
+    report = verify(blob)
+    check("verify accepts an intact container",
+          report["ok"] and report["num_tiles"] == 2
+          and report["payload_bytes"] > 0)
+
+    hdr = _container.unpack_header(blob)
+    damaged = bytearray(blob)
+    damaged[hdr.index_offset + hdr.index_size + 1] ^= 0x08
+    try:
+        verify(bytes(damaged))
+        ok = False
+    except MedicalError:
+        ok = True
+    check("verify rejects a damaged payload", ok)
+
+    damaged = bytearray(blob)
+    damaged[20] ^= 0x40  # the height field
+    try:
+        verify(bytes(damaged))
+        ok = False
+    except MedicalError:
+        ok = True
+    check("verify rejects a damaged header", ok)
+
+
+def test_med_predictor():
+    """The LOCO-I median edge detector round-trips."""
+    raw = make_samples("smooth", 24, 16, 2, 1, SFMT_U16)
+    blob = encode(raw, 24, 16, 2, 1, SFMT_U16, predictor=PRED_MED)
+    _, out = decode(blob)
+    check("the MED predictor round-trips", out == raw)
+
+    # the predictor id is stored in the tile table, so a forced MED file
+    # differs from a forced PAETH file
+    other = encode(raw, 24, 16, 2, 1, SFMT_U16, predictor=PRED_PAETH)
+    check("MED and PAETH produce different streams", blob != other)
+
+
+def test_preview_semantics():
+    """The preview applies the calibration and the photometric flag."""
+    raw = make_samples("smooth", 12, 9, 1, 1, SFMT_U16)
+    plain = _preview.preview_slice(raw, 12, 9, 1, 1, SFMT_U16, 0, 400.0, 40.0)
+    inverted = _preview.preview_slice(raw, 12, 9, 1, 1, SFMT_U16, 0, 400.0,
+                                       40.0, 1.0, 0.0, True)
+    check("MONOCHROME1 inverts the preview",
+          plain is not None and inverted is not None
+          and plain != inverted
+          and all(plain[i] + inverted[i] == 255 for i in range(len(plain))))
+
+    calibrated = _preview.preview_slice(raw, 12, 9, 1, 1, SFMT_U16, 0,
+                                        400.0, 40.0, 2.0, -1024.0)
+    check("the rescale changes the preview", calibrated is not None
+          and calibrated != plain)
+
+    meta = build_dicom_metadata(12, 9, 1, 1, SFMT_U16, patient_id="A",
+                                modality="CT", study_uid="1", series_uid="2",
+                                window_center=40.0, window_width=400.0,
+                                rescale_slope=2.0, rescale_intercept=-1024.0)
+    from_meta = _preview.preview_from_metadata(raw, 12, 9, 1, 1, SFMT_U16,
+                                                meta, 0)
+    check("the metadata drives the preview", from_meta == calibrated)
+
+    # the C++ helper and the Python fallback must agree byte for byte
+    if _fast.available():
+        native = _fast.medical_preview(raw, 12, 9, 1, 1, SFMT_U16, 0, 400.0,
+                                        40.0, 2.0, -1024.0, 1)
+        python_inverted = _preview.preview_slice(raw, 12, 9, 1, 1, SFMT_U16, 0,
+                                                  400.0, 40.0, 2.0, -1024.0,
+                                                  True)
+        native_plain = _fast.medical_preview(raw, 12, 9, 1, 1, SFMT_U16, 0,
+                                              400.0, 40.0, 2.0, -1024.0, 0)
+        check("the C++ and the Python preview agree",
+              native == python_inverted and native_plain == calibrated)
+
+
 def main():
     print("=== PYRM medical format test suite ===")
     test_roundtrip_matrix()
@@ -335,6 +505,10 @@ def main():
     test_edge_cases()
     test_info()
     test_compression()
+    test_dicom_metadata()
+    test_verify_command()
+    test_med_predictor()
+    test_preview_semantics()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

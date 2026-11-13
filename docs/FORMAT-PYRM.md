@@ -37,7 +37,7 @@ requirements that matter in a clinical setting:
 | offset | size | field | meaning |
 |-------:|-----:|-------|---------|
 | 0   | 8  | magic | `PYRM\r\n\x1a\n` |
-| 8   | 4  | version | 1 |
+| 8   | 4  | version | 2 (1 is still readable) |
 | 12  | 4  | flags | reserved, 0 |
 | 16  | 4  | width | samples per row |
 | 20  | 4  | height | rows per slice |
@@ -141,6 +141,7 @@ records which of the two layouts was used.
 | 5 | gradient | `left + up - upper_left` |
 | 6 | median | JPEG-LS / LOCO-I median predictor |
 | 7 | slice | the same sample in the previous slice (3D only) |
+| 8 | med | the median edge detector of LOCO-I / JPEG-LS |
 
 The prediction context is **tile local**: a tile never borrows a sample from
 a neighbouring tile, so every tile can be decoded independently (and the
@@ -153,6 +154,45 @@ predictor: the candidate set is scored with the *circular* distance of the
 residuals from zero (`min(r, modulus - r)`, because the residual alphabet is
 modular) and the cheapest candidate wins. Ties keep the first candidate, so
 the choice is deterministic across implementations.
+
+## Clinical semantics (DICOM compatible)
+
+A lossless container is not enough for clinical data: the *meaning* of the
+stored numbers has to travel with them. The metadata block is a UTF-8 JSON
+object whose keys are the DICOM keywords, so it can be mapped onto a real
+DICOM data set without renaming anything.
+
+| attribute | meaning |
+|-----------|---------|
+| `PatientID`, `PatientName` | the (anonymised) patient |
+| `StudyInstanceUID`, `SeriesInstanceUID`, `SOPInstanceUID` | the identity of the study, the series and the instance |
+| `Modality`, `StudyDate` | the acquisition method and the date |
+| `SliceThickness`, `PixelSpacing` | the geometry of the acquisition |
+| `RescaleSlope`, `RescaleIntercept` | the calibration: `value = slope * stored + intercept` |
+| `WindowCenter`, `WindowWidth` | the display window, in the calibrated domain |
+| `PhotometricInterpretation` | `MONOCHROME1`, `MONOCHROME2` or `RGB` |
+| `BitsStored`, `BitsAllocated`, `PixelRepresentation` | the sample description (0 = unsigned, 1 = signed) |
+| `SamplesPerPixel`, `Rows`, `Columns`, `NumberOfFrames` | the geometry, mirrored from the header |
+| `TransferSyntaxUID` | the transfer syntax the data set claims |
+
+Two of these deserve a warning:
+
+* **MONOCHROME1** maps the *lowest* value to white. It is the inverted
+  convention used by some modalities, and a preview that ignores the flag
+  shows a study with the wrong brightness. The preview helper honours it.
+* **RescaleSlope / RescaleIntercept** are not decoration: without them the
+  stored numbers are meaningless (a CT stores Hounsfield units shifted by
+  -1024, for instance). The display window is defined in the calibrated
+  domain, so the calibration is applied *before* the window.
+
+`pyra.medical.build_dicom_metadata()` builds a complete and consistent
+block (the geometry dependent attributes are derived), and
+`pyra.medical.validate_dicom_metadata()` checks a block against the image
+geometry: a contradicting `Columns`, an impossible `PixelRepresentation`,
+an unknown photometric interpretation, a missing patient identifier or a
+non-positive `WindowWidth` are all refused. The encoder takes the same
+check with `require_dicom=True`, so a clinical series with inconsistent
+metadata is rejected instead of being stored silently.
 
 ## Entropy coding
 
@@ -188,38 +228,58 @@ decoded or unverified data.
 ## Python API
 
 ```python
-from pyra.medical import encode, decode, info, preview_slice
+from pyra.medical import (encode, decode, info, verify, build_dicom_metadata,
+                          preview_from_metadata)
 
-blob = encode(samples, width, height, depth=1, channels=1,
-              sample_format=1,          # 1 = u16
-              metadata={"study": "..."}, tile_size=256,
+meta = build_dicom_metadata(512, 512, 64, 1, 1,      # u16
+                            patient_id="ANON-1", modality="CT",
+                            study_uid="1.2.3", series_uid="1.2.3.4",
+                            slice_thickness=1.0,
+                            rescale_slope=1.0, rescale_intercept=-1024.0,
+                            window_center=40.0, window_width=400.0)
+
+blob = encode(samples, 512, 512, 64, 1, 1,
+              metadata=meta, require_dicom=True,
               predictor=-1, method=-1)  # -1 = choose automatically
 
 metadata, samples_back = decode(blob)
 print(info(blob))
-png_bytes = preview_slice(samples_back, width, height, depth,
-                           channels, sample_format,
-                           slice=0, window=400, level=40)
+print(verify(blob))            # every integrity check, without trusting it
+png_bytes = preview_from_metadata(samples_back, 512, 512, 64, 1, 1,
+                                   metadata, slice=30)
 ```
 
 ## Command line
 
 ```bash
 python3 -m pyra med encode raw.bin volume.pyrm --width 512 --height 512 \
-        --depth 64 --format u16 --meta patient=anon
-python3 -m pyra med info volume.pyrm
+        --depth 64 --format u16 --meta patient=anon --meta modality=CT
+python3 -m pyra med info volume.pyrm        # header + clinical attributes
+python3 -m pyra med dump volume.pyrm        # the metadata block as JSON
+python3 -m pyra med verify volume.pyrm      # every integrity guarantee
 python3 -m pyra med decode volume.pyrm out.bin
-python3 -m pyra med preview volume.pyrm slice.pgm --slice 12 --window 400 --level 40
+python3 -m pyra med preview volume.pyrm slice.pgm --slice 12
 ```
+
+`--window` and `--level` are optional for the preview: without them the
+window of the metadata is used.
 
 ## Error classes
 
 * `MedicalError` — base class of the format errors.
 * `CorruptedFileError` — the file is damaged or not a PYRM container.
 * `UnsupportedFormatError` — unknown sample format, method or predictor.
+* `MedicalMetadataError` — the metadata block is incomplete or contradicts
+  the image geometry.
 
 ## Version history
 
+* **v2** — the DICOM compatible clinical metadata layer (calibration,
+  photometric interpretation, display window, sample description) and the
+  LOCO-I median edge detector as an eighth predictor.
 * **v1** — first release: 144 byte header, tile index, metadata block,
   adaptive per-row predictors, byte-plane split for wide samples, RAW/LZ
   entropy methods, CRC-32 everywhere plus a SHA-256 content hash.
+
+A v1 container still decodes: the version byte selects the accepted
+predictor ids, the header layout is identical.

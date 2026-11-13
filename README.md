@@ -33,9 +33,13 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | 16-bit depth | ✅ | Full-pixel domain covered |
 | Animation container | ✅ | Frame count + fps header |
 | CLI | ✅ | encode/decode/inspect/verify/benchmark |
-| Medical container PYRM | ✅ | `test_medical.py` 20 checks, 648 native/pure parity trials |
+| Medical container PYRM | ✅ | `test_medical.py` 40 checks, 864 native/pure parity trials |
 | 3D volume support | ✅ | Slice-local tiles, `slice` predictor for volumetric data |
 | SHA-256 content hash | ✅ | Every container carries the hash of the raw samples |
+| DICOM compatible metadata | ✅ | Calibration, photometric interpretation, display window, sample description |
+| Clinical metadata validation | ✅ | A contradictory or incomplete metadata block is refused |
+| LOCO-I / JPEG-LS predictor | ✅ | The median edge detector as an eighth predictor |
+| `med verify` command | ✅ | Every integrity guarantee checked without decoding |
 
 ## The Pipeline
 
@@ -382,9 +386,11 @@ auditability. The full specification lives in
 |----------|---------------|
 | Lossless | The decoded samples are bit-identical to the input; the container stores the SHA-256 of the raw samples |
 | Corruption detection | Header CRC-32, metadata CRC-32, per-tile CRC-32, payload CRC-32 and the SHA-256 content hash are all verified on decode |
+| Clinical semantics | DICOM keyword metadata: rescale slope/intercept, photometric interpretation (MONOCHROME1/2, RGB), window centre/width, bits stored/allocated, pixel representation |
+| Metadata validation | `build_dicom_metadata()` derives a consistent block, `validate_dicom_metadata()` refuses a contradictory one, `require_dicom=True` makes the encoder enforce it |
 | Volumes | `depth` slices, tile-local coding so slices and tiles decode in parallel, plus a `slice` predictor that reads the previous slice |
 | Sample formats | u8, u16, u32, i16, i32, f32 (floats are shuffled into byte planes before coding) |
-| Metadata | UTF-8 JSON block (patient ids, scanner, protocol) with its own CRC |
+| Metadata | UTF-8 JSON block with DICOM keywords (patient ids, scanner, protocol, calibration, window, photometric interpretation) with its own CRC |
 | Preview | Window/level 8-bit preview of any slice, computed in C++ |
 | Speed | One entropy symbol per *sample* (not per byte): the centred residual is zig-zag coded and only rare outliers escape into a few extra symbols |
 
@@ -401,10 +407,17 @@ meta, samples_back = decode(blob)
 
 ```bash
 python3 -m pyra med encode ct.raw --width 512 --height 512 --depth 64 \
-        --format u16 --meta scanner=Siemens --meta patient=anon -o ct.pyrm
-python3 -m pyra med info ct.pyrm
-python3 -m pyra med preview ct.pyrm --slice 30 --window 400 --level 40 -o s30.pgm
+        --format u16 --meta scanner=Siemens --meta patient=anon ct.pyrm
+python3 -m pyra med info ct.pyrm          # header + clinical attributes
+python3 -m pyra med dump ct.pyrm          # the metadata block as JSON
+python3 -m pyra med verify ct.pyrm        # every integrity guarantee
+python3 -m pyra med preview ct.pyrm s30.pgm --slice 30
 ```
+
+The preview takes the display window from the metadata (the command line
+can override it), applies the calibration of the modality before the window
+and honours the photometric interpretation — a `MONOCHROME1` study is shown
+inverted, as it must be.
 
 ### PYRM speed
 
