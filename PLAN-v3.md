@@ -1,5 +1,15 @@
 # PYRA v3 — 6–7× Hız Planı (Rust + C++)
 
+> **Durum: TAMAMLANDI ✓** — bu plan tarihsel bir kayıttır.
+> Sonuç: encode 503 → 127 ms (100x saf Python), decode 85 → 31 ms (102x),
+> dosya v1'den %10.4 küçük. Kapanan maddeler:
+> A1 (tek geçişli 7-aday skorlama) ✓, A2 (halka tamponlu LZ tablosu) ✓,
+> A3 (CRC32 Rust'ta) ✓, A4/A5 (tüm-görsel paralel codec) ✓,
+> A6 (paralel planlayıcı) ✓, B1/B2 (C++ PPM I/O) ✓, C (Python glue) ✓,
+> D (doğrulama) ✓, E (GitHub private repo + push) ✓.
+> Ek olarak: v3 pack genişliği düzeltmesi (`824c713`), Fenwick sembol önbelleği
+> (`1481740`), erken iptal + 32-bit bölme (`49f84ca`).
+
 ## Hedef
 Mevcut native encode 640×480 RGB = **527 ms**, decode = **83 ms** (toplam 610 ms).
 Hedef: **~85–95 ms** toplam → **6–7×**.

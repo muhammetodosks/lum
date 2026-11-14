@@ -4,6 +4,15 @@
 
 The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature followed by control characters (`\r\n` line ending, `\x1A` EOF char, trailing `\n`). This borrows PNG's corruption-protection scheme: the suffix survives text-mode line-ending translation and pipes through naive byte-damaging tools as clear text garbage rather than silently passing.
 
+## Documentation
+
+| Document | Content |
+|----------|---------|
+| [`README.md`](README.md) | This file — features, ratios, speed, CLI |
+| [`PYRA-DOCUMENTATION.md`](PYRA-DOCUMENTATION.md) | The complete technical documentation of both formats (26 sections) |
+| [`docs/FORMAT-PYRM.md`](docs/FORMAT-PYRM.md) | The PYRM medical container specification |
+| [`CHANGELOG.md`](CHANGELOG.md) | Version history with the measured results |
+
 ## Design Goals
 
 - **Lossless by construction** — the encoder runs the full inverse pipeline on the encoder side too, so `decoded == original` is guaranteed, not tested into existence.

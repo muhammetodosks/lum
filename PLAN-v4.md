@@ -1,5 +1,14 @@
 # PYRM v4 — "Devasa güncelleme" planı
 
+> **Durum: TAMAMLANDI ✓** — bu plan tarihsel bir kayıttır.
+> Kategori 1 (tıp/sağlık uyumu) ✓, Kategori 2 (MED predictor) ✓,
+> Kategori 3 (hız: 7.5x encode / 3.1x decode) ✓, Kategori 4 (eksiklerin
+> kapatılması) ✓, Kategori 5 (test + dokümantasyon + commit/push) ✓.
+> Kapanan commit'ler: `540f656`, `764e835`, `dc35aff`, `287fafb`, `141e4d9`,
+> `f8952a7`, `ed41cfe`, `61a6bca`.
+> Kalan (bilinçli erteleme): JPEG-LS context modeling, range coder byte-refill,
+> DICOM transfer syntax desteği, çoklu dilimli DICOM doğrulaması.
+
 Hedef: sadece hız değil — **kalite, hız, sıkıştırma, tıp/sağlık uyumu** ve
 **tüm hata/eksiklerin kalıcı kapatılması**.
 
