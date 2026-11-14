@@ -132,6 +132,10 @@ def _build_parser() -> argparse.ArgumentParser:
     md.add_argument("--verify-key", default=None, metavar="FILE",
                     help="verify the HMAC-SHA256 signature with the key in "
                          "FILE (raw bytes); a wrong key is refused")
+    md.add_argument("--region", default=None, metavar="X,Y,Z,W,H,D",
+                    help="decode only this region of the volume "
+                         "(column,row,slice,width,height,depth); the tiles "
+                         "outside are never touched")
 
     mi = med_sub.add_parser("info", help="print container metadata")
     mi.add_argument("input")
@@ -346,13 +350,31 @@ def _med_decode(args) -> int:
     with open(args.input, "rb") as f:
         blob = f.read()
     key = _med_key(args.verify_key) if args.verify_key else None
-    metadata, samples = _med_codec.decode(blob, verify_key=key)
+    info = _med_codec.info(blob)
+    if args.region:
+        try:
+            parts = [int(p) for p in args.region.split(",")]
+        except ValueError:
+            print("pyra: error: --region needs six integers "
+                  "X,Y,Z,W,H,D", file=sys.stderr)
+            return 1
+        if len(parts) != 6:
+            print("pyra: error: --region needs six integers "
+                  "X,Y,Z,W,H,D", file=sys.stderr)
+            return 1
+        rx, ry, rz, rw, rh, rd = parts
+        metadata, samples = _med_codec.decode_region(
+            blob, rx, ry, rz, rw, rh, rd, verify_key=key)
+        print(f"Decoded region of {args.input} -> {args.output}")
+        print(f"  region: {rw}x{rh}x{rd} at ({rx}, {ry}, {rz})")
+    else:
+        metadata, samples = _med_codec.decode(blob, verify_key=key)
+        print(f"Decoded {args.input} -> {args.output}")
+        print(f"  geometry: {info['width']}x{info['height']}x{info['depth']} "
+              f"ch={info['channels']} "
+              f"{_MED_FORMAT_NAMES.get(info['sample_format'])}")
     with open(args.output, "wb") as f:
         f.write(samples)
-    info = _med_codec.info(blob)
-    print(f"Decoded {args.input} -> {args.output}")
-    print(f"  geometry: {info['width']}x{info['height']}x{info['depth']} "
-          f"ch={info['channels']} {_MED_FORMAT_NAMES.get(info['sample_format'])}")
     print(f"  samples: {len(samples)} bytes")
     if metadata:
         print(f"  metadata: {metadata}")

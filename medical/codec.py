@@ -36,7 +36,8 @@ from ..entropy import (ContextRangeDecoder, ContextRangeEncoder, RangeDecoder,
                        RangeEncoder)
 from .constants import (ESCAPE_ALPHABET, ESCAPE_CHUNK_BITS, ESCAPE_SYMBOL,
                         LZ_TOKEN_EOF, LZ_TOKEN_SYMBOLS, METHOD_LZ, METHOD_RAW,
-                        PRED_COUNT, SAMPLE_BYTES, SAMPLE_FORMATS,
+                        PRED_COUNT, PRED_SLICE, SAMPLE_BYTES,
+                        SAMPLE_FORMATS,
                         SAMPLE_SIGNED, SFMT_F32, TILE_FLAG_ADAPTIVE,
                         TILE_FLAG_CONTEXT, TILE_FLAG_ESCAPE, TILE_FLAG_SPLIT,
                         VERSION, ZIGZAG_LIMIT,
@@ -698,6 +699,116 @@ def decode(blob: bytes, verify_key: bytes | None = None) -> tuple[dict, bytes]:
         raise CorruptedFileError("payload CRC mismatch")
     if hashlib.sha256(bytes(out)).digest() != hdr.sha256:
         raise CorruptedFileError("content hash mismatch")
+    return metadata, bytes(out)
+
+
+def _peek_pred_ids(body: bytes, flags: int, th: int, predictor: int) -> list[int]:
+    """The predictor id of every row of a tile, without decoding it."""
+    if flags & TILE_FLAG_ADAPTIVE:
+        nbytes = (th + 1) // 2
+        if len(body) < nbytes:
+            raise CorruptedFileError("tile truncated before row filter table")
+        return unpack_filter_bits(body[:nbytes], th)
+    return [predictor] * th
+
+
+def decode_region(blob: bytes, x: int, y: int, z: int, width: int,
+                  height: int, depth: int = 1,
+                  verify_key: bytes | None = None) -> tuple[dict, bytes]:
+    """Decode only a rectangular region of a container.
+
+    The region is given in samples: ``x``/``y`` are the first column and
+    row of the first slice, ``z`` the first slice, and ``width``/``height``
+    /``depth`` the size of the region. Only the tiles that touch the region
+    are decoded, so a small window of a large volume costs a small window.
+
+    The result is the tight region: slice by slice, row by row, and only
+    the requested columns - exactly what a viewer needs to paint the
+    window.
+
+    Every check that does not need the complete sample set is performed:
+    the magic bytes, the version, the header CRC, the metadata CRC, the
+    tile index, the CRC of every tile that is touched, and the signature.
+    The whole-payload CRC and the SHA-256 content hash are **not**
+    checked, because they need every sample of the container - which is
+    precisely what this call avoids decoding. Use :func:`decode` when the
+    full verification matters.
+    """
+    hdr = _container.unpack_header(blob)
+    fmt = _Format(hdr.sample_format)
+    if hdr.bits != 8 * fmt.sample_bytes:
+        raise CorruptedFileError("bits per sample does not match the format")
+    # the signature covers the whole container, so a region read still
+    # proves that the file was not tampered with
+    _signature.status(blob, verify_key)
+
+    meta_blob = blob[hdr.meta_offset:hdr.meta_offset + hdr.meta_size]
+    metadata = _container.unpack_metadata(meta_blob, hdr.meta_crc)
+
+    index_blob = blob[hdr.index_offset:hdr.index_offset + hdr.index_size]
+    entries = _container.unpack_index(index_blob, hdr.num_tiles)
+
+    if width <= 0 or height <= 0 or depth <= 0:
+        raise ValueError("the region size must be positive")
+    if x < 0 or y < 0 or z < 0:
+        raise ValueError("the region origin must not be negative")
+    if x + width > hdr.width or y + height > hdr.height:
+        raise ValueError("the region does not fit into the slice")
+    if z + depth > hdr.depth:
+        raise ValueError("the region does not fit into the volume")
+
+    grid = list(_tile_grid(hdr.width, hdr.height, hdr.tile_size))
+    tiles_per_slice = len(grid)
+    if hdr.num_tiles != tiles_per_slice * hdr.depth:
+        raise CorruptedFileError("tile count does not match the geometry")
+
+    cache: dict[tuple[int, int], list[list[int]]] = {}
+
+    def tile_rows(zz: int, t: int) -> list[list[int]]:
+        """The canonical rows of one tile, with the slice context if needed."""
+        hit = cache.get((zz, t))
+        if hit is not None:
+            return hit
+        tx, ty, tw, th = grid[t]
+        offset, length, method, flags, _filter_bytes, crc = entries[
+            zz * tiles_per_slice + t]
+        if offset + length > len(blob):
+            raise CorruptedFileError("tile body outside the container")
+        body = blob[offset:offset + length]
+        if (zlib.crc32(body) & 0xFFFFFFFF) != crc:
+            raise CorruptedFileError("tile CRC mismatch")
+        # the volumetric predictor reads the previous slice, so the context
+        # tile is only decoded when the row table actually asks for it
+        need_ctx = False
+        if zz > 0:
+            for pred_id in _peek_pred_ids(body, flags, th, hdr.predictor):
+                if pred_id == PRED_SLICE:
+                    need_ctx = True
+                    break
+        ctx = tile_rows(zz - 1, t) if need_ctx else None
+        rows = _decode_tile(body, flags, method, tw, th, hdr.channels, fmt,
+                            ctx, hdr.predictor)
+        cache[(zz, t)] = rows
+        return rows
+
+    vps = fmt.values_per_sample
+    grid_index = {geom: i for i, geom in enumerate(grid)}
+    out = bytearray()
+    # the region is laid out slice by slice and row by row, exactly like
+    # the tight crop of the full decode
+    for zz in range(z, z + depth):
+        for r in range(y, y + height):
+            for (tx, ty, tw, th) in grid:
+                if not (ty <= r < ty + th):
+                    continue
+                c0 = max(x, tx)
+                c1 = min(x + width, tx + tw)
+                if c0 >= c1:
+                    continue
+                rows = tile_rows(zz, grid_index[(tx, ty, tw, th)])
+                lo = (c0 - tx) * hdr.channels * vps
+                hi = (c1 - tx) * hdr.channels * vps
+                out += _decode_row(rows[r - ty][lo:hi], fmt)
     return metadata, bytes(out)
 
 

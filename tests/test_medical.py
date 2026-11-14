@@ -1106,6 +1106,112 @@ def test_audit_block():
           native_blob == pure_blob)
 
 
+def test_region_decode():
+    """A region decode must be the exact crop of the full decode."""
+    import tempfile
+    from pyra.medical import decode_region
+
+    bad = []
+    for sf in (SFMT_U8, SFMT_U16, SFMT_I16, SFMT_U32, SFMT_F32):
+        w, h, d, ch = 40, 30, 3, 1
+        raw = make_samples("smooth", w, h, d, ch, sf)
+        blob = encode(raw, w, h, d, ch, sf)
+        _, full = decode(blob)
+        sb = _codec._Format(sf).sample_bytes
+        regions = [
+            (0, 0, 0, w, h, d),          # everything
+            (5, 7, 1, 10, 8, 2),         # a middle box over two slices
+            (w - 3, h - 2, d - 1, 3, 2, 1),
+            (0, 0, 0, 1, 1, 1),          # a single sample
+            (12, 3, 0, w - 12, h - 3, 1),
+            (0, 5, 0, w, 1, d),
+        ]
+        for (rx, ry, rz, rw, rh, rd) in regions:
+            _, part = decode_region(blob, rx, ry, rz, rw, rh, rd)
+            # the crop of the full decode
+            expect = bytearray()
+            row_bytes = w * ch * sb
+            for z in range(rz, rz + rd):
+                for row in range(ry, ry + rh):
+                    start = (z * h + row) * row_bytes + rx * ch * sb
+                    expect += full[start:start + rw * ch * sb]
+            if part != bytes(expect):
+                bad.append(f"{FORMAT_NAMES[sf]} {rx},{ry},{rz} {rw}x{rh}x{rd}")
+    check("a region decode is the exact crop of the full decode", not bad)
+    for line in bad[:8]:
+        print("       ", line)
+
+    # a region that leaves the volume is refused
+    raw = make_samples("smooth", 20, 16, 2, 1, SFMT_U16)
+    blob = encode(raw, 20, 16, 2, 1, SFMT_U16)
+    for (args_) in [(18, 0, 0, 5, 5, 1), (0, 0, 1, 5, 5, 3),
+                    (-1, 0, 0, 5, 5, 1), (0, 0, 0, 0, 5, 1)]:
+        try:
+            decode_region(blob, *args_)
+            bad.append(f"region {args_} was accepted")
+        except ValueError:
+            pass
+    check("a region outside the volume is refused", not bad)
+
+    # a signed container must still refuse a wrong key in a region decode
+    key = b"region-key"
+    signed = encode(raw, 20, 16, 2, 1, SFMT_U16, sign_key=key)
+    try:
+        decode_region(signed, 2, 2, 0, 4, 4, 1, verify_key=b"wrong")
+        bad.append("a wrong key was accepted")
+    except MedicalError:
+        pass
+    _, part = decode_region(signed, 2, 2, 0, 4, 4, 1, verify_key=key)
+    check("a region decode honours the signature", not bad)
+
+
+def test_cli_decode_writes_the_file():
+    """The command line must actually write the decoded samples.
+
+    A missing write in the handler looks like a successful run on the
+    console, so it is checked explicitly.
+    """
+    from pyra import cli as _cli
+
+    tmp = tempfile.mkdtemp(prefix="pyra-cli-")
+    raw = make_samples("smooth", 12, 9, 2, 1, SFMT_U16)
+    src = os.path.join(tmp, "vol.raw")
+    with open(src, "wb") as f:
+        f.write(raw)
+    container = os.path.join(tmp, "vol.pyrm")
+    out = os.path.join(tmp, "vol.out")
+    region_out = os.path.join(tmp, "vol.region")
+
+    import io
+    from contextlib import redirect_stdout
+    with redirect_stdout(io.StringIO()):
+        rc = _cli.main(["med", "encode", src, container,
+                        "--width", "12", "--height", "9", "--depth", "2",
+                        "--channels", "1", "--format", "u16"])
+    check("the command line encodes a volume", rc == 0)
+    with redirect_stdout(io.StringIO()):
+        rc = _cli.main(["med", "decode", container, out])
+    check("the command line decodes a volume", rc == 0)
+    check("the command line writes the decoded samples",
+          os.path.exists(out)
+          and open(out, "rb").read() == raw)
+
+    with redirect_stdout(io.StringIO()):
+        rc = _cli.main(["med", "decode", container, region_out,
+                        "--region", "2,1,0,5,4,1"])
+    check("the command line decodes a region", rc == 0)
+    if os.path.exists(region_out):
+        row = 12 * 2
+        expect = b""
+        for r in range(1, 5):
+            off = r * row + 2 * 2
+            expect += raw[off:off + 5 * 2]
+        check("the region file holds the region only",
+              open(region_out, "rb").read() == expect)
+    else:
+        check("the region file holds the region only", False)
+
+
 def main():
     print("=== PYRM medical format test suite ===")
     test_roundtrip_matrix()
@@ -1128,6 +1234,8 @@ def main():
     test_cli_dump()
     test_clinical_consistency()
     test_dicom_conformance()
+    test_region_decode()
+    test_cli_decode_writes_the_file()
     test_signature()
     test_audit_block()
     print(f"\n{PASS} passed, {FAIL} failed")

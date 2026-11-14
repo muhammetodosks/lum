@@ -31,7 +31,7 @@ from .constants import (MAGIC, METHOD_LZ, METHOD_RAW, PRED_AVERAGE,
                         SFMT_U16, SFMT_U32, VERSION, CorruptedFileError,
                         MedicalError, MedicalMetadataError,
                         UnsupportedFormatError)
-from .codec import decode, encode, info, verify
+from .codec import decode, decode_region, encode, info, verify
 from .signature import compute as signature_compute
 from .signature import sign, status as signature_status
 from .dicom import (MONOCHROME1, MONOCHROME2, RGB, build_dicom_metadata,
@@ -41,7 +41,7 @@ from .preview import preview_from_metadata, preview_slice
 from . import native
 
 __all__ = [
-    "encode", "decode", "info", "verify", "preview_slice",
+    "encode", "decode", "decode_region", "info", "verify", "preview_slice",
     "sign", "signature_status", "signature_compute",
     "preview_from_metadata", "native", "MAGIC", "VERSION",
     "build_dicom_metadata", "validate_dicom_metadata", "is_dicom_compatible",

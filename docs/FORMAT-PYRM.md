@@ -359,6 +359,27 @@ per-plane models; the decoder reads the planes in the same order, so the
 stream stays self-describing. A tile that uses the LZ method is never
 context coded and never carries the flag.
 
+### Region decoding
+
+`decode_region(blob, x, y, z, width, height, depth)` decodes only a box of
+the volume: the tiles that the box touches are decoded, the tiles outside
+are never even read. This matters for the volumes that radiology actually
+uses - a 512x512x300 CT series is 150 MB, and a viewer that only needs the
+last slice should not pay for the other 299.
+
+What is **still verified** for a region: the magic bytes and the version,
+the header CRC-32, the metadata CRC-32, the tile index, the CRC-32 of every
+tile the region touches and the HMAC signature (when a key is supplied).
+
+What is **not** verified for a region: the payload CRC-32 and the SHA-256
+content hash. Both are defined over the *whole* payload, so proving them
+would require decoding everything - which is exactly what a region decode
+exists to avoid. A region is therefore a verified *subset*: every byte
+handed out belongs to a tile whose own CRC-32 matched.
+
+The output is the tight crop of the full decode: slice by slice, row by
+row, the requested columns.
+
 ### Signing and provenance
 
 The reserved area at the end of the header (offset 112..144, 32 bytes)
@@ -488,6 +509,15 @@ here because the negative result is worth as much as the positive one.
 | A branchless Fenwick tree | **decode 170 ms -> 178 ms** | The real data has a well behaved branch pattern, so the branchless variant only adds work. |
 
 The numbers above are from the 256×256×32 u16 CT volume.
+
+- **Three-dimensional context modelling** (the magnitude of the previous
+  slice's residual as the context of the current symbol): measured on a
+  128x128x16 CT volume, it is worth **1.04 %** at best (order-0 264 174 B,
+  with an eight class signed context 261 418 B). Consecutive slices of a CT
+  series are nearly independent - the residuals are noise dominated - so the
+  previous slice carries almost no information about the current one. The
+  format was left alone; a one percent gain does not justify a format
+  change and a second implementation of the context rule.
 
 ## Error classes
 

@@ -8,6 +8,28 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.6.0 — region decoding (PYRM v3)
+
+### Added
+- **`medical.decode_region(blob, x, y, z, width, height, depth)`**: decodes
+  only the box of the volume that is asked for; the tiles outside are never
+  read. The header, metadata, index, per-tile CRC-32 and the HMAC signature
+  are still verified; the payload CRC-32 and the SHA-256 content hash are
+  not, because both cover the whole payload and proving them would mean
+  decoding everything.
+- **CLI `med decode --region X,Y,Z,W,H,D`**: writes the samples of the
+  requested box.
+
+### Fixed
+- **`med decode` did not write its output file.** The handler reported the
+  sample count but never wrote the samples, so the command looked
+  successful while producing nothing. The regression is covered by a test.
+
+### Measured and rejected
+- **Three-dimensional context modelling**: worth 1.04 % on a CT volume, not
+  the 10-20 % that was expected - consecutive slices are nearly
+  independent. The format was left alone.
+
 ## v0.5.0 — signed containers and provenance (PYRM v3)
 
 ### Added
