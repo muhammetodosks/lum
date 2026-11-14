@@ -22,7 +22,8 @@ from pyra.medical import (METHOD_LZ, METHOD_RAW, PRED_MED, PRED_NONE,
                           PRED_PAETH, PRED_SLICE, SFMT_F32, SFMT_I16, SFMT_I32,
                           SFMT_U8, SFMT_U16, SFMT_U32, CorruptedFileError,
                           MedicalError, MedicalMetadataError, build_dicom_metadata,
-                          decode, encode, is_dicom_compatible, verify)
+                          decode, encode, is_dicom_compatible, sign,
+                          signature_status, verify)
 from pyra.medical import codec as _codec
 from pyra.medical import container as _container
 from pyra.medical import dicom as _dicom
@@ -972,6 +973,139 @@ def _conf_volume(w, h, d, fmt, seed=3):
     return bytes(out)
 
 
+def test_signature():
+    """A signed container must prove who produced it and stay unchanged."""
+    from pyra.medical import signature as _sig
+
+    raw = _conf_volume(24, 18, 2, SFMT_U16, seed=11)
+    key = b"clinical-signing-key"
+    wrong = b"another-key"
+
+    signed = encode(raw, 24, 18, 2, 1, SFMT_U16, sign_key=key)
+    check("the signed container reports the signature",
+          signature_status(signed, key) == "verified")
+    check("the signed container without a key is unverified, not broken",
+          signature_status(signed) == "unverified")
+    check("the unsigned container is unsigned",
+          signature_status(encode(raw, 24, 18, 2, 1, SFMT_U16)) == "unsigned")
+
+    try:
+        signature_status(signed, wrong)
+        check("a wrong key is rejected", False)
+    except MedicalError:
+        check("a wrong key is rejected", True)
+
+    meta, out = decode(signed, verify_key=key)
+    check("a signed container decodes with the right key", out == raw)
+    meta, out = decode(signed)
+    check("a signed container still decodes without a key", out == raw)
+
+    try:
+        decode(signed, verify_key=wrong)
+        check("decoding with a wrong key fails", False)
+    except MedicalError:
+        check("decoding with a wrong key fails", True)
+
+    # tampering with the payload must break the signature
+    body = bytearray(signed)
+    body[-3] ^= 0x40
+    try:
+        decode(bytes(body), verify_key=key)
+        check("a tampered payload breaks the signature", False)
+    except MedicalError:
+        check("a tampered payload breaks the signature", True)
+
+    # tampering with the metadata must break the signature too
+    body = bytearray(signed)
+    hdr = _container.unpack_header(signed)
+    body[hdr.meta_offset] ^= 0x02
+    try:
+        decode(bytes(body), verify_key=key)
+        check("tampered metadata breaks the signature", False)
+    except MedicalError:
+        check("tampered metadata breaks the signature", True)
+
+    # the signature covers the header, so a changed geometry breaks it too
+    body = bytearray(signed)
+    body[16] ^= 0x01
+    try:
+        decode(bytes(body), verify_key=key)
+        check("a changed header field breaks the signature", False)
+    except MedicalError:
+        check("a changed header field breaks the signature", True)
+
+    # the verify report carries the signature state
+    check("the verify report names the signature state",
+          verify(signed, key)["signature"] == "verified"
+          and verify(signed)["signature"] == "unverified"
+          and verify(encode(raw, 24, 18, 2, 1, SFMT_U16))["signature"]
+          == "unsigned")
+
+    # an empty key is refused
+    try:
+        encode(raw, 24, 18, 2, 1, SFMT_U16, sign_key=b"")
+        check("an empty signing key is refused", False)
+    except ValueError:
+        check("an empty signing key is refused", True)
+
+    # the signature region excludes the signature field itself
+    check("the signed region skips the signature field",
+          len(_sig.signed_region(signed)) == len(signed) - 32)
+
+
+def test_audit_block():
+    """The provenance block describes what was encoded, deterministically."""
+    raw = _conf_volume(16, 12, 1, SFMT_U16, seed=12)
+    blob = encode(raw, 16, 12, 1, 1, SFMT_U16, audit=True)
+    meta, out = decode(blob)
+    audit = meta.get("Audit")
+    check("the audit block survives the round trip", out == raw and bool(audit))
+    if audit:
+        check("the audit block describes the geometry",
+              audit.get("Columns") == 16 and audit.get("Rows") == 12
+              and audit.get("NumberOfFrames") == 1
+              and audit.get("SamplesPerPixel") == 1
+              and audit.get("BytesPerSample") == 2)
+        check("the audit block names the encoder and the codec",
+              str(audit.get("Encoder", "")).startswith("pyra/")
+              and str(audit.get("Codec", "")).startswith("PYRM-v"))
+        import hashlib
+        check("the audit block carries the source hash",
+              audit.get("SourceSHA256")
+              == hashlib.sha256(raw).hexdigest())
+        check("the audit block has no timestamp unless one was asked for",
+              "Timestamp" not in audit)
+
+    # deterministic: the same input gives the same bytes
+    again = encode(raw, 16, 12, 1, 1, SFMT_U16, audit=True)
+    check("the audit block keeps the encoding deterministic", again == blob)
+
+    # a timestamp is opt-in
+    stamped = encode(raw, 16, 12, 1, 1, SFMT_U16, audit=True,
+                     audit_timestamp="2026-11-14T12:00:00Z")
+    meta2, _ = decode(stamped)
+    check("an explicit timestamp is kept",
+          meta2.get("Audit", {}).get("Timestamp") == "2026-11-14T12:00:00Z")
+
+    # the native and the pure-Python backend agree on the signed container
+    def pure(fn, *args, **kwargs):
+        old = os.environ.get("PYRA_DISABLE_NATIVE")
+        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if old is None:
+                os.environ.pop("PYRA_DISABLE_NATIVE", None)
+            else:
+                os.environ["PYRA_DISABLE_NATIVE"] = old
+    native_blob = encode(raw, 16, 12, 1, 1, SFMT_U16, sign_key=b"k",
+                         audit=True)
+    pure_blob = pure(encode, raw, 16, 12, 1, 1, SFMT_U16, sign_key=b"k",
+                     audit=True)
+    check("the native and the pure-Python signed containers are identical",
+          native_blob == pure_blob)
+
+
 def main():
     print("=== PYRM medical format test suite ===")
     test_roundtrip_matrix()
@@ -994,6 +1128,8 @@ def main():
     test_cli_dump()
     test_clinical_consistency()
     test_dicom_conformance()
+    test_signature()
+    test_audit_block()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

@@ -98,6 +98,11 @@ TILE_FLAG_ADAPTIVE = 0x02  # the body starts with a row filter table
 TILE_FLAG_ESCAPE = 0x04  # residuals use the zigzag + escape coding
 TILE_FLAG_CONTEXT = 0x08  # the residual stream uses the context model
 
+# Container level flags (the header field at offset 12).
+#: The container carries an HMAC-SHA256 signature in the reserved header
+#: bytes (112..144). The signature covers everything else in the file.
+FLAG_SIGNED = 0x01
+
 
 
 # ------------------------------------------------------- escape coding

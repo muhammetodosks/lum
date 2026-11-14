@@ -404,6 +404,7 @@ auditability. The full specification lives in
 | Preview | Window/level 8-bit preview of any slice, computed in C++ |
 | DICOM files | Reads and writes real DICOM Part 10 files (explicit VR little endian, uncompressed), so a container can go to a PACS and come back |
 | Context modelling (v3) | ✅ | One adaptive model per byte plane, 6-18 % smaller on textured volumes |
+| Signed containers (HMAC-SHA256) | ✅ | A keyed MAC over the whole file, in the reserved header bytes |
 | Third-party DICOM conformance | ✅ | pydicom parses our files and we parse pydicom's, both byte-exact |
 | Metadata fidelity | PYRM → DICOM → PYRM keeps the clinical attributes **exactly** the same set - no loss, no invention, no duplicated DICOM tag |
 | Clinical consistency | A container whose metadata contradicts the image is reported as **not** clinically usable, with the exact problems listed |
@@ -442,6 +443,28 @@ python3 -m pyra med preview ct.pyrm s30.pgm --slice 30
 python3 -m pyra med to-dicom   ct.pyrm ct.dcm    # DICOM Part 10
 python3 -m pyra med from-dicom ct.dcm ct.pyrm
 ```
+
+### Signed containers
+
+A clinical archive must be able to tell an untouched file from a modified
+one. `PYRM` signs the container with **HMAC-SHA256**; the 32 byte signature
+lives in the reserved header bytes, and the metadata can carry a
+provenance block (encoder, geometry, the hash of the source samples and an
+optional timestamp).
+
+```bash
+# sign the container and record where it came from
+python3 -m pyra med encode ct.raw --width 512 --height 512 --depth 64 \
+        --format u16 --dicom --require-dicom --patient-id ANON-001 \
+        --modality CT --sign-key site.key --audit ct.pyrm
+
+python3 -m pyra med verify --key site.key ct.pyrm   # signature: verified
+python3 -m pyra med decode --verify-key site.key ct.pyrm out.raw
+```
+
+Reading a signed container without a key is allowed but reported as
+`unverified`; reading it with the **wrong** key is refused, and so is a
+container whose payload, metadata or header was modified after signing.
 
 The preview takes the display window from the metadata (the command line
 can override it), applies the calibration of the modality before the window

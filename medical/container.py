@@ -44,7 +44,7 @@ HEADER_SIZE = 144
 HEADER_CRC_OFFSET = 72
 INDEX_ENTRY_SIZE = 16
 
-_HDR = struct.Struct("<8s" + "I" * 18 + "32s32x")
+_HDR = struct.Struct("<8s" + "I" * 18 + "32s32s")
 assert _HDR.size == HEADER_SIZE, _HDR.size
 
 _IDX = struct.Struct("<IIBBHI")
@@ -57,7 +57,7 @@ class Header:
                  "sample_format", "bits", "tile_size", "num_tiles",
                  "index_offset", "index_size", "meta_offset", "meta_size",
                  "meta_crc", "payload_crc", "header_crc", "predictor",
-                 "sha256")
+                 "sha256", "signature")
 
     def __init__(self, **kw):
         for name in self.__slots__:
@@ -68,14 +68,23 @@ class Header:
 
 
 def pack_header(hdr: Header, sha256: bytes) -> bytes:
-    """Serialise the fixed header (CRC fields included)."""
+    """Serialise the fixed header (CRC fields included).
+
+    `hdr.signature` holds the optional HMAC-SHA256 signature (32 bytes);
+    it is written into the reserved area at offset 112 and is *not* part
+    of the header CRC (which covers bytes 0..72).
+    """
     if len(sha256) != 32:
         raise ValueError("sha256 must be 32 bytes")
+    signature = hdr.signature if hdr.signature else b"\x00" * 32
+    if len(signature) != 32:
+        raise ValueError("signature must be 32 bytes")
     body = _HDR.pack(
         MAGIC, hdr.version, hdr.flags, hdr.width, hdr.height, hdr.depth,
         hdr.channels, hdr.sample_format, hdr.bits, hdr.tile_size,
         hdr.num_tiles, hdr.index_offset, hdr.index_size, hdr.meta_offset,
-        hdr.meta_size, hdr.meta_crc, hdr.payload_crc, 0, hdr.predictor, sha256)
+        hdr.meta_size, hdr.meta_crc, hdr.payload_crc, 0, hdr.predictor, sha256,
+        signature)
     crc = zlib.crc32(body[:HEADER_CRC_OFFSET]) & 0xFFFFFFFF
     return body[:HEADER_CRC_OFFSET] + struct.pack("<I", crc) + body[76:]
 
@@ -86,8 +95,8 @@ def unpack_header(data: bytes) -> Header:
         raise CorruptedFileError("truncated PYRM header")
     (magic, version, flags, width, height, depth, channels, sample_format,
      bits, tile_size, num_tiles, index_offset, index_size, meta_offset,
-     meta_size, meta_crc, payload_crc, header_crc, predictor, sha256) = \
-        _HDR.unpack(data[:HEADER_SIZE])
+     meta_size, meta_crc, payload_crc, header_crc, predictor, sha256,
+     signature) = _HDR.unpack(data[:HEADER_SIZE])
     if magic != MAGIC:
         raise CorruptedFileError("not a PYRM container")
     if version not in (VERSION_V1, VERSION_V2, VERSION):
@@ -107,7 +116,8 @@ def unpack_header(data: bytes) -> Header:
                   index_offset=index_offset, index_size=index_size,
                   meta_offset=meta_offset, meta_size=meta_size,
                   meta_crc=meta_crc, payload_crc=payload_crc,
-                  header_crc=header_crc, predictor=predictor, sha256=sha256)
+                  header_crc=header_crc, predictor=predictor, sha256=sha256,
+                  signature=signature)
 
 
 def pack_metadata(meta: dict | None) -> tuple[bytes, int]:

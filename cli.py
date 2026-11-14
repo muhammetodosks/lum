@@ -117,10 +117,21 @@ def _build_parser() -> argparse.ArgumentParser:
     me.add_argument("--require-dicom", action="store_true",
                     help="refuse to write a container whose metadata does not "
                          "pass the clinical validation")
+    me.add_argument("--sign-key", default=None, metavar="FILE",
+                    help="sign the container with the HMAC-SHA256 key in FILE "
+                         "(raw bytes)")
+    me.add_argument("--audit", action="store_true",
+                    help="add a deterministic provenance block to the metadata")
+    me.add_argument("--audit-timestamp", default=None, metavar="ISO8601",
+                    help="timestamp for the provenance block (breaks the "
+                         "byte-exact reproducibility)")
 
     md = med_sub.add_parser("decode", help="decode a .pyrm file into raw samples")
     md.add_argument("input")
     md.add_argument("output")
+    md.add_argument("--verify-key", default=None, metavar="FILE",
+                    help="verify the HMAC-SHA256 signature with the key in "
+                         "FILE (raw bytes); a wrong key is refused")
 
     mi = med_sub.add_parser("info", help="print container metadata")
     mi.add_argument("input")
@@ -138,6 +149,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     mvf = med_sub.add_parser("verify", help="check every integrity guarantee")
     mvf.add_argument("input")
+    mvf.add_argument("--key", default=None, metavar="FILE",
+                     help="also verify the HMAC-SHA256 signature with the key "
+                          "in FILE (raw bytes)")
 
     mdu = med_sub.add_parser("dump",
                              help="print the container as JSON (geometry, "
@@ -250,12 +264,22 @@ def _med_meta(pairs: list[str]) -> dict:
     return meta
 
 
+def _med_key(path):
+    """Read a signing key from a file (raw bytes)."""
+    with open(path, "rb") as f:
+        key = f.read()
+    if not key:
+        raise ValueError(f"the key file {path} is empty")
+    return key
+
+
 def _med_encode(args) -> int:
     with open(args.input, "rb") as f:
         samples = f.read()
     fmt = _MED_FORMAT_BY_NAME[args.format]
     predictor = _MED_PRED_BY_NAME.get(args.predictor, -1)
     method = _MED_METHOD_BY_NAME.get(args.method, -1)
+    sign_key = _med_key(args.sign_key) if args.sign_key else None
 
     metadata = _med_meta(args.meta)
     if args.dicom:
@@ -302,7 +326,9 @@ def _med_encode(args) -> int:
                               args.channels, fmt, metadata=metadata,
                               tile_size=args.tile, predictor=predictor,
                               method=method,
-                              require_dicom=args.require_dicom)
+                              require_dicom=args.require_dicom,
+                              sign_key=sign_key, audit=args.audit,
+                              audit_timestamp=args.audit_timestamp)
     with open(args.output, "wb") as f:
         f.write(blob)
     info = _med_codec.info(blob)
@@ -319,7 +345,8 @@ def _med_encode(args) -> int:
 def _med_decode(args) -> int:
     with open(args.input, "rb") as f:
         blob = f.read()
-    metadata, samples = _med_codec.decode(blob)
+    key = _med_key(args.verify_key) if args.verify_key else None
+    metadata, samples = _med_codec.decode(blob, verify_key=key)
     with open(args.output, "wb") as f:
         f.write(samples)
     info = _med_codec.info(blob)
@@ -402,11 +429,13 @@ def _med_from_dicom(args) -> int:
 def _med_verify(args) -> int:
     with open(args.input, "rb") as f:
         blob = f.read()
-    report = _med_codec.verify(blob)
+    key = _med_key(args.key) if args.key else None
+    report = _med_codec.verify(blob, key)
     print(f"VERIFICATION SUCCESSFUL: {args.input} is valid.")
     print(f"  payload: {report['payload_bytes']} bytes in "
           f"{report['num_tiles']} tiles")
     print(f"  sha256 content hash: verified")
+    print(f"  signature: {report['signature']}")
     print(f"  dicom_compatible: {'yes' if report['dicom_compatible'] else 'no'}")
     return 0
 

@@ -8,6 +8,37 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.5.0 — signed containers and provenance (PYRM v3)
+
+### Added
+- **Optional HMAC-SHA256 signature** (`medical/signature.py`). The 32 byte
+  reserved area of the header (offset 112..144) now holds a keyed MAC that
+  covers everything else in the file: the header fields, the metadata
+  block, the tile index and the payload. A CRC or a plain hash proves that
+  a file was not damaged; a keyed signature proves that the holder of the
+  secret key produced it and that nobody touched it afterwards.
+  `encode(..., sign_key=...)` signs a container, `decode(blob,
+  verify_key=...)` refuses a container whose signature does not match, and
+  `verify(blob, key)` reports the state (`unsigned`, `unverified`,
+  `verified`). Unsigned containers keep working unchanged.
+- **Provenance audit block** (`encode(..., audit=True)`): the metadata
+  gains an `Audit` object with the encoder, the codec, the geometry and
+  the SHA-256 of the source samples. It carries no timestamp unless one is
+  asked for (`audit_timestamp=`), so the encoding stays byte-for-byte
+  reproducible and the native and the pure-Python backend still agree.
+- **CLI**: `med encode --sign-key FILE --audit [--audit-timestamp ISO]`,
+  `med decode --verify-key FILE`, `med verify --key FILE`.
+
+### Measured
+- The signed and audited container is byte-identical between the native
+  Rust core and the pure-Python reference (verified for three sample
+  formats, two geometries and two data kinds).
+- The signature costs nothing at decode time when no key is supplied: the
+  file is simply reported as `unverified`.
+
+### Fixed
+- An empty signing key was silently ignored instead of being refused.
+
 ## v0.4.0 — context modelling (PYRM v3)
 
 ### Added

@@ -32,6 +32,8 @@ from .constants import (MAGIC, METHOD_LZ, METHOD_RAW, PRED_AVERAGE,
                         MedicalError, MedicalMetadataError,
                         UnsupportedFormatError)
 from .codec import decode, encode, info, verify
+from .signature import compute as signature_compute
+from .signature import sign, status as signature_status
 from .dicom import (MONOCHROME1, MONOCHROME2, RGB, build_dicom_metadata,
                     describe, generate_uid, is_dicom_compatible,
                     validate_dicom_metadata)
@@ -40,6 +42,7 @@ from . import native
 
 __all__ = [
     "encode", "decode", "info", "verify", "preview_slice",
+    "sign", "signature_status", "signature_compute",
     "preview_from_metadata", "native", "MAGIC", "VERSION",
     "build_dicom_metadata", "validate_dicom_metadata", "is_dicom_compatible",
     "generate_uid",

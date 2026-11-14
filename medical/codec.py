@@ -45,6 +45,7 @@ from .constants import (ESCAPE_ALPHABET, ESCAPE_CHUNK_BITS, ESCAPE_SYMBOL,
 from . import container as _container
 from . import dicom as _dicom
 from . import native as _native
+from . import signature as _signature
 from .lz import lz_decode, lz_encode
 from .predictors import (best_row_predictor, candidate_list, merge_planes,
                          pack_filter_bits, pack_residuals, predict_value,
@@ -366,6 +367,49 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
            channels: int = 1, sample_format: int = 1,
            metadata: dict | None = None, tile_size: int = 256,
            predictor: int = -1, method: int = -1,
+           require_dicom: bool = False, sign_key: bytes | None = None,
+           audit: bool = False, audit_timestamp: str | None = None) -> bytes:
+    """Encode a medical image into a PYRM container.
+
+    `samples` holds the raw samples in little-endian order (exactly the
+    bytes the decoder returns). `predictor` and `method` accept -1, which
+    lets the encoder measure the alternatives and pick the cheapest one.
+
+    With `require_dicom` the metadata block is validated against the image
+    geometry before anything is written: a clinical series that claims a
+    different geometry, an impossible pixel representation or a missing
+    patient/study identifier is refused instead of being stored silently.
+
+    With `sign_key` the container is signed with HMAC-SHA256; the
+    signature proves that the holder of the key produced the file and that
+    nobody modified it afterwards. See :mod:`pyra.medical.signature`.
+
+    With `audit` a deterministic provenance block is added to the metadata
+    (encoder, codec, geometry and the SHA-256 of the source samples). The
+    block carries no timestamp unless `audit_timestamp` is given, because a
+    timestamp would make every encoding of the same data different.
+    """
+    if audit:
+        from .. import __version__
+        metadata = dict(metadata or {})
+        _fmt = _Format(sample_format)
+        _n = width * height * depth * channels * _fmt.sample_bytes
+        metadata["Audit"] = _signature.audit_block(
+            samples[:_n], width, height, depth, channels, sample_format,
+            encoder=f"pyra/{__version__}", codec=f"PYRM-v{VERSION}",
+            timestamp=audit_timestamp)
+    blob = _encode_core(samples, width, height, depth, channels,
+                        sample_format, metadata, tile_size, predictor, method,
+                        require_dicom)
+    if sign_key is not None:
+        blob = _signature.sign(blob, sign_key)
+    return blob
+
+
+def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
+           channels: int = 1, sample_format: int = 1,
+           metadata: dict | None = None, tile_size: int = 256,
+           predictor: int = -1, method: int = -1,
            require_dicom: bool = False) -> bytes:
     """Encode a medical image into a PYRM container.
 
@@ -574,14 +618,22 @@ def _decode_tile(body: bytes, flags: int, method: int, tw: int, th: int,
     return rows
 
 
-def decode(blob: bytes) -> tuple[dict, bytes]:
+def decode(blob: bytes, verify_key: bytes | None = None) -> tuple[dict, bytes]:
     """Decode a PYRM container.
 
     Returns (metadata, raw samples). Every integrity check is performed:
     header CRC, metadata CRC, per tile CRC, payload CRC and the SHA-256
     content hash of the decoded samples.
+
+    When the container is signed, `verify_key` is used to check the
+    HMAC-SHA256 signature: a key that does not match raises
+    :class:`CorruptedFileError` instead of returning the data. Without a
+    key a signed container still decodes (the signature is reported as
+    "unverified" by :func:`verify`), because an unsigned consumer must be
+    able to read a signed file.
     """
     hdr = _container.unpack_header(blob)
+    _signature.status(blob, verify_key)
     fmt = _Format(hdr.sample_format)
     if hdr.bits != 8 * fmt.sample_bytes:
         raise CorruptedFileError("bits per sample does not match the format")
@@ -663,7 +715,7 @@ def info(blob: bytes) -> dict:
     }
 
 
-def verify(blob: bytes) -> dict:
+def verify(blob: bytes, key: bytes | None = None) -> dict:
     """Check every integrity guarantee of a container without decoding it.
 
     Returns a report dictionary. When the container is intact the report has
@@ -675,8 +727,12 @@ def verify(blob: bytes) -> dict:
     tile index size against the tile count, the metadata CRC-32, the CRC-32
     of every tile body, the CRC-32 of the whole payload and the SHA-256 of
     the decoded samples.
+
+    With `key` the HMAC-SHA256 signature of a signed container is verified
+    as well; the report carries the signature state in ``"signature"``.
     """
     hdr = _container.unpack_header(blob)
+    signature_state = _signature.status(blob, key)
     fmt = _Format(hdr.sample_format)
     if hdr.bits != 8 * fmt.sample_bytes:
         raise CorruptedFileError("bits per sample does not match the format")
@@ -739,6 +795,7 @@ def verify(blob: bytes) -> dict:
         "dicom_compatible": _dicom.is_dicom_compatible(
             metadata, hdr.width, hdr.height, hdr.depth, hdr.channels,
             hdr.sample_format),
+        "signature": signature_state,
     }
 
 

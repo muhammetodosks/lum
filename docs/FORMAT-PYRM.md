@@ -359,6 +359,41 @@ per-plane models; the decoder reads the planes in the same order, so the
 stream stays self-describing. A tile that uses the LZ method is never
 context coded and never carries the flag.
 
+### Signing and provenance
+
+The reserved area at the end of the header (offset 112..144, 32 bytes)
+carries an optional **HMAC-SHA256 signature**.
+
+The signature covers every byte of the file except the signature field
+itself:
+
+```
+HMAC-SHA256(key, header[0..112] || metadata || tile index || payload)
+```
+
+The container level flag `FLAG_SIGNED` (bit 0 of the header flags at
+offset 12) marks a signed container. Because the flag and the header CRC
+live inside the signed region, the encoder sets the flag and recomputes
+the header CRC *before* it computes the MAC.
+
+A CRC-32 or a plain SHA-256 proves that a file was not damaged. A keyed
+signature proves more: that the holder of the secret key produced the file
+and that nobody modified it afterwards. Use it when the archive has to
+reject a file that was forged or tampered with, not merely a file that was
+damaged by a disk error.
+
+| situation | result |
+|-----------|--------|
+| signed container, correct key | `verified` |
+| signed container, no key | `unverified` (the data still decodes) |
+| signed container, wrong key | `CorruptedFileError` |
+| unsigned container | `unsigned` |
+
+The metadata may additionally carry an `Audit` object that describes what
+was encoded: the encoder and the codec, the geometry and the SHA-256 of the
+source samples. It has no timestamp unless one is supplied explicitly, so
+the encoding stays reproducible.
+
 ### Third-party conformance
 
 The DICOM reader and writer are checked against an **independent toolkit**
