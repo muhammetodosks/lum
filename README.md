@@ -403,6 +403,7 @@ auditability. The full specification lives in
 | Metadata | UTF-8 JSON block with DICOM keywords (patient ids, scanner, protocol, calibration, window, photometric interpretation) with its own CRC |
 | Preview | Window/level 8-bit preview of any slice, computed in C++ |
 | DICOM files | Reads and writes real DICOM Part 10 files (explicit VR little endian, uncompressed), so a container can go to a PACS and come back |
+| Third-party DICOM conformance | ✅ | pydicom parses our files and we parse pydicom's, both byte-exact |
 | Metadata fidelity | PYRM → DICOM → PYRM keeps the clinical attributes **exactly** the same set - no loss, no invention, no duplicated DICOM tag |
 | Clinical consistency | A container whose metadata contradicts the image is reported as **not** clinically usable, with the exact problems listed |
 | Speed | One entropy symbol per *sample* (not per byte): the centred residual is zig-zag coded and only rare outliers escape into a few extra symbols |

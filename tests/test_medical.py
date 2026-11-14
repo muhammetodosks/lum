@@ -830,6 +830,148 @@ def test_clinical_consistency():
     check("the command line generates the technical identifiers", ok)
 
 
+def test_dicom_conformance():
+    """An independent DICOM toolkit must read our files and vice versa.
+
+    This is the only honest way to claim "a real viewer can open it": our
+    own writer reading our own files proves nothing about interoperability.
+    The test is skipped when pydicom is not installed.
+    """
+    try:
+        import pydicom
+    except ImportError:
+        print("  SKIP third-party DICOM conformance (pydicom not installed)")
+        return
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian
+    from pyra.medical import dicomfile as _dcmfile
+
+    tmp = tempfile.mkdtemp(prefix="pyra-conf-")
+    cases = [
+        ("u8", SFMT_U8, 24, 18, 1),
+        ("u16", SFMT_U16, 24, 18, 1),
+        ("i16", SFMT_I16, 24, 18, 1),
+        ("u32", SFMT_U32, 16, 12, 1),
+        ("i32", SFMT_I32, 16, 12, 1),
+        ("multi-frame", SFMT_U16, 20, 14, 3),
+    ]
+
+    for (label, fmt, w, h, d) in cases:
+        raw = _conf_volume(w, h, d, fmt)
+        meta = build_dicom_metadata(
+            width=w, height=h, depth=d, channels=1, sample_format=fmt,
+            patient_id="ANON-CONF-1", patient_name="Conformance^Test",
+            modality="CT", study_uid=_dicom.generate_uid("study"),
+            series_uid=_dicom.generate_uid("series"),
+            sop_uid=_dicom.generate_uid("sop"),
+            study_date="20261114", study_time="120000",
+            rescale_slope=1.0, rescale_intercept=-1024.0,
+            window_center=40.0, window_width=400.0)
+        blob = _dcmfile.write_dicom(raw, w, h, d, 1, fmt, metadata=meta)
+        path = os.path.join(tmp, "conf_%s.dcm" % label.replace(" ", "_"))
+        with open(path, "wb") as f:
+            f.write(blob)
+
+        try:
+            dcm = pydicom.dcmread(path)
+            parsed = True
+        except Exception as exc:  # noqa: BLE001
+            dcm = None
+            parsed = False
+            print(f"       {label}: {type(exc).__name__}: {exc}")
+        check(f"pydicom reads our {label} file", parsed)
+        if not parsed:
+            continue
+        check(f"pydicom sees the geometry of the {label} file",
+              dcm.Rows == h and dcm.Columns == w
+              and int(dcm.get("NumberOfFrames", 1)) == d)
+        check(f"pydicom sees the clinical attributes of the {label} file",
+              str(dcm.PatientID) == "ANON-CONF-1"
+              and str(dcm.Modality) == "CT"
+              and str(dcm.PhotometricInterpretation) == "MONOCHROME2"
+              and str(dcm.SOPClassUID) == str(meta["SOPClassUID"]))
+        check(f"pydicom sees the pixel data of the {label} file",
+              bytes(dcm.PixelData) == raw)
+        check(f"the transfer syntax of the {label} file is explicit VR LE",
+              str(dcm.file_meta.TransferSyntaxUID) == str(ExplicitVRLittleEndian))
+
+        samples, back = _dcmfile.read_dicom(blob)
+        check(f"PYRM reads back its own {label} DICOM",
+              samples == raw and str(back.get("PatientID")) == "ANON-CONF-1")
+
+    # a file written by pydicom itself
+    ds = Dataset()
+    ds.PatientID = "ANON-EXTERNAL"
+    ds.PatientName = "External^Source"
+    ds.Modality = "MR"
+    ds.StudyInstanceUID = _dicom.generate_uid("ext-study")
+    ds.SeriesInstanceUID = _dicom.generate_uid("ext-series")
+    ds.SOPInstanceUID = _dicom.generate_uid("ext-sop")
+    ds.SOPClassUID = "1.2.840.10008.5.1.4.1.1.4"
+    ds.Rows, ds.Columns, ds.NumberOfFrames = 17, 23, 3
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.BitsAllocated = ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 0
+    ds.WindowCenter, ds.WindowWidth = 40, 400
+    ds.RescaleSlope, ds.RescaleIntercept = 1, 0
+    ds.PixelSpacing = [0.5, 0.5]
+    ds.SliceThickness = 3.0
+    ds.ImagePositionPatient = [0.0, 0.0, 0.0]
+    ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+    ds.SpacingBetweenSlices = 3.0
+    ext_raw = _conf_volume(23, 17, 3, SFMT_U16, seed=99)
+    ds.PixelData = ext_raw
+    fm = FileMetaDataset()
+    fm.MediaStorageSOPClassUID = ds.SOPClassUID
+    fm.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+    fm.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta = fm
+    ds.preamble = b"\x00" * 128
+    ext_path = os.path.join(tmp, "external.dcm")
+    ds.save_as(ext_path, enforce_file_format=True)
+
+    blob = open(ext_path, "rb").read()
+    try:
+        samples, meta = _dcmfile.read_dicom(blob)
+        ok = True
+    except Exception as exc:  # noqa: BLE001
+        samples, meta = None, {}
+        ok = False
+        print(f"       external: {type(exc).__name__}: {exc}")
+    check("PYRM reads a file written by pydicom itself", ok)
+    if ok:
+        check("the external pixels are identical", samples == ext_raw)
+        check("the external attributes are read",
+              str(meta.get("PatientID")) == "ANON-EXTERNAL"
+              and int(meta.get("Rows", 0)) == 17
+              and int(meta.get("Columns", 0)) == 23
+              and int(meta.get("NumberOfFrames", 1)) == 3
+              and str(meta.get("Modality")) == "MR")
+        problems = _dicom.validate_dicom_metadata(
+            meta, 23, 17, 3, 1, SFMT_U16, strict=False)
+        check("the external metadata passes the clinical consistency rules",
+              not problems)
+
+
+def _conf_volume(w, h, d, fmt, seed=3):
+    """A small pseudo-medical volume in the raw little-endian sample order."""
+    rnd = random.Random(seed)
+    sb = {SFMT_U8: 1, SFMT_U16: 2, SFMT_U32: 4, SFMT_I16: 2, SFMT_I32: 4}[fmt]
+    signed = fmt in (SFMT_I16, SFMT_I32)
+    out = bytearray()
+    for z in range(d):
+        for y in range(h):
+            for x in range(w):
+                v = ((x * 13 + y * 7 + z * 29) % (1 << (8 * sb)) + rnd.randint(0, 3))
+                v &= (1 << (8 * sb)) - 1
+                if signed:
+                    v = v - (1 << (8 * sb - 1))
+                out += (v & ((1 << (8 * sb)) - 1)).to_bytes(sb, "little")
+    return bytes(out)
+
+
 def main():
     print("=== PYRM medical format test suite ===")
     test_roundtrip_matrix()
@@ -851,6 +993,7 @@ def main():
     test_cli_dicom()
     test_cli_dump()
     test_clinical_consistency()
+    test_dicom_conformance()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

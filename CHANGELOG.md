@@ -23,6 +23,12 @@ pure-Python reference: both produce byte-identical containers.
   instead of being misread.
 - **`medical.verify(blob)`**: checks every integrity guarantee and reports the
   clinical problems of the metadata block (`dicom_problems`).
+- **Third-party DICOM conformance**: the DICOM files are checked against
+  pydicom in both directions - pydicom parses every file PYRM writes (five
+  sample formats plus a multi-frame series, byte-identical pixel data and
+  clinical attributes) and PYRM parses the files pydicom writes from scratch.
+  The check lives in `tests/test_medical.py` and is skipped when pydicom is
+  not installed.
 - **`medical.generate_uid(seed)`**: standards-compliant `2.25.` UIDs; deterministic
   with a seed, unique without one.
 - **LOCO-I / JPEG-LS MED predictor** (`PRED_MED = 8`), added to the adaptive row

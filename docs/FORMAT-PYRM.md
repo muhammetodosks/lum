@@ -334,6 +334,23 @@ python3 -m pyra med from-dicom volume.dcm volume.pyrm
 A round trip keeps both the pixels (byte for byte) and the clinical
 attributes.
 
+### Third-party conformance
+
+The DICOM reader and writer are checked against an **independent toolkit**
+(pydicom), in both directions:
+
+* pydicom parses every file PYRM writes (five sample formats plus a
+  multi-frame series) and sees the same rows, columns, frame count, pixel
+  representation, photometric interpretation, window, rescale values, SOP
+  class and **byte-identical pixel data**;
+* PYRM parses the files pydicom writes from scratch and reproduces the
+  pixels and the attributes exactly;
+* the attributes of such an external file pass the clinical consistency
+  rules.
+
+Run it with `python3 -m pyra.tests.test_medical` on an interpreter that has
+pydicom installed; the check is skipped when it is not.
+
 ### Metadata fidelity contract
 
 The clinical attributes are not "close enough" - they are **exactly the
