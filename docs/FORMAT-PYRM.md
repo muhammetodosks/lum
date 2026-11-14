@@ -334,6 +334,31 @@ python3 -m pyra med from-dicom volume.dcm volume.pyrm
 A round trip keeps both the pixels (byte for byte) and the clinical
 attributes.
 
+### Context modelling: one model per byte plane
+
+Version 3 adds a second way to code the residual bytes of a tile. The
+byte planes of a wide sample are not equally noisy: the low plane carries
+the information, the high planes are long runs of zero bytes. With **one
+adaptive model per plane** the high planes become almost free, while a
+single shared model would have to spend its adaptation on the noisy low
+plane.
+
+Measured on 16-bit volumes (the encoder picks the layout that fits the
+data):
+
+| data | before | after |
+|------|-------:|------:|
+| CT-like, tiny residuals | 1 539 620 B | 1 539 620 B (the escape coding already wins) |
+| 16-bit, textured | 2 887 268 B | **2 709 400 B (-6.2 %)** |
+| 64x64x8, textured | 50 900 B | **44 556 B (-12.5 %)** |
+| 32-bit, textured | 67 376 B | **55 524 B (-17.6 %)** |
+| random noise | 66 508 B | 66 532 B (+0.04 %, unchanged) |
+
+The tile flag `0x08` marks a tile whose residual stream is coded with the
+per-plane models; the decoder reads the planes in the same order, so the
+stream stays self-describing. A tile that uses the LZ method is never
+context coded and never carries the flag.
+
 ### Third-party conformance
 
 The DICOM reader and writer are checked against an **independent toolkit**

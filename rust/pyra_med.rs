@@ -28,6 +28,7 @@
 //!   the modular arithmetic avoids the hardware division.
 
 use super::pyra_image::crc32;
+use super::{CtxRangeDec, CtxRangeEnc};
 use super::FastBuild;
 use super::RangeDec;
 use super::RangeEnc;
@@ -36,7 +37,8 @@ use std::collections::HashMap;
 // ------------------------------------------------------------------ format
 
 const MED_MAGIC: [u8; 8] = [0x50, 0x59, 0x52, 0x4D, 0x0D, 0x0A, 0x1A, 0x0A];
-const MED_VERSION: u32 = 2;
+const MED_VERSION: u32 = 3;
+const MED_VERSION_V2: u32 = 2;
 const MED_VERSION_V1: u32 = 1;
 const MED_HEADER_SIZE: usize = 144;
 const MED_HEADER_CRC_OFFSET: usize = 72;
@@ -64,6 +66,7 @@ const METHOD_LZ: i32 = 1;
 const TILE_FLAG_SPLIT: u8 = 0x01;
 const TILE_FLAG_ADAPTIVE: u8 = 0x02;
 const TILE_FLAG_ESCAPE: u8 = 0x04;
+const TILE_FLAG_CONTEXT: u8 = 0x08;
 
 /// Wide samples are coded with one symbol per sample: the centred residual
 /// is zig-zag encoded into 0..127 and the rare large residuals escape into
@@ -596,6 +599,39 @@ fn entropy_encode(symbols: &[u32], n_symbols: usize) -> Vec<u8> {
 
 /// Decode `count` symbols into bytes (the raw method only ever produces
 /// byte sized symbols).
+/// Code a byte stream with one adaptive model per byte plane.
+///
+/// The high planes of a wide sample are long runs of zero bytes; a separate
+/// model per plane learns that immediately. The decoder knows the plane
+/// boundaries, so the stream stays self-describing.
+fn entropy_encode_planes(data: &[u8], n_symbols: usize, n_planes: usize) -> Vec<u8> {
+    let planes = if n_planes < 1 { 1 } else { n_planes };
+    let per_plane = data.len() / planes;
+    let mut enc = CtxRangeEnc::new(n_symbols, planes, data.len() * 8);
+    for p in 0..planes {
+        let start = p * per_plane;
+        for &b in &data[start..start + per_plane] {
+            enc.push(b as usize, p);
+        }
+    }
+    enc.finish()
+}
+
+/// Inverse of [`entropy_encode_planes`].
+fn entropy_decode_planes(
+    data: &[u8], n_symbols: usize, n_planes: usize, count: usize,
+) -> Vec<u8> {
+    let planes = if n_planes < 1 { 1 } else { n_planes };
+    let mut dec = CtxRangeDec::new(data, n_symbols, planes);
+    let mut out = Vec::with_capacity(count * planes);
+    for p in 0..planes {
+        for _ in 0..count {
+            out.push(dec.decode_symbol(p) as u8);
+        }
+    }
+    out
+}
+
 fn entropy_decode_bytes(data: &[u8], n_symbols: usize, count: usize) -> Vec<u8> {
     let mut dec = RangeDec::new(data, n_symbols);
     let mut out = Vec::with_capacity(count);
@@ -1239,48 +1275,81 @@ pub unsafe extern "C" fn pyra_med_encode(
             predictor,
         );
         let use_escape = fmt.escape && escape_worth_it(&prep.residuals, &fmt);
-        let (packed, symbols, alphabet, extra_flag) = if use_escape {
-            // one symbol per sample (zig-zag plus escape)
-            let syms = escape_symbols(&prep.residuals, &fmt);
-            let bytes: Vec<u8> = syms.iter().map(|&s| s as u8).collect();
-            (bytes, syms, ESCAPE_ALPHABET, TILE_FLAG_ESCAPE as u32)
-        } else if fmt.value_bytes > 1 {
-            let b = split_planes(&prep.residuals, fmt.value_bytes);
-            let s: Vec<u32> = b.iter().map(|&x| x as u32).collect();
-            (b, s, ENTROPY_SYMBOLS_RAW, TILE_FLAG_SPLIT as u32)
-        } else {
-            let b: Vec<u8> = prep.residuals.iter().map(|&r| (r & 0xFF) as u8).collect();
-            let s: Vec<u32> = b.iter().map(|&x| x as u32).collect();
-            (b, s, ENTROPY_SYMBOLS_RAW, 0)
-        };
-        let flags = prep.flags | extra_flag;
+        // the escape candidate: one symbol per sample (zig-zag plus escape)
+        let mut escape_syms: Vec<u32> = Vec::new();
+        let mut escape_bytes: Vec<u8> = Vec::new();
+        if use_escape {
+            escape_syms = escape_symbols(&prep.residuals, &fmt);
+            escape_bytes = escape_syms.iter().map(|&s| s as u8).collect();
+        }
+        // the byte plane candidate (only needed when the escape coding is
+        // not used)
+        let mut plane_bytes: Vec<u8> = Vec::new();
+        let mut plane_flags: u32 = 0;
+        if !use_escape {
+            if fmt.value_bytes > 1 {
+                plane_bytes = split_planes(&prep.residuals, fmt.value_bytes);
+                plane_flags = TILE_FLAG_SPLIT as u32;
+            } else {
+                plane_bytes = prep
+                    .residuals
+                    .iter()
+                    .map(|&r| (r & 0xFF) as u8)
+                    .collect();
+            }
+        }
 
-        // the raw candidate
-        let raw_stream = if method == METHOD_LZ {
-            Vec::new()
+        // The raw candidate: the escape coding when the residuals are
+        // concentrated around zero, the byte planes with one model per
+        // plane otherwise.
+        let mut raw_stream: Vec<u8> = Vec::new();
+        let mut raw_flags: u32 = 0;
+        if method != METHOD_LZ {
+            if use_escape {
+                raw_stream = entropy_encode(&escape_syms, ESCAPE_ALPHABET);
+                raw_flags = TILE_FLAG_ESCAPE as u32;
+            } else {
+                raw_stream = entropy_encode_planes(
+                    &plane_bytes,
+                    ENTROPY_SYMBOLS_RAW,
+                    fmt.value_bytes,
+                );
+                raw_flags = plane_flags | TILE_FLAG_CONTEXT as u32;
+            }
+        }
+
+        // the bytes the LZ candidate compresses
+        let lz_source: Vec<u8> = if use_escape {
+            escape_bytes
         } else {
-            entropy_encode(&symbols, alphabet)
+            plane_bytes
+        };
+        let lz_flags: u32 = if use_escape {
+            TILE_FLAG_ESCAPE as u32
+        } else {
+            plane_flags
         };
         // the LZ candidate; with the automatic method it only gets a byte
         // budget of the raw candidate, because a bigger stream can never win
-        let lz_stream = if method == METHOD_RAW {
+        let lz_stream: Option<Vec<u8>> = if method == METHOD_RAW {
             None
         } else if method == METHOD_LZ {
-            encode_lz_capped(&packed, usize::MAX)
+            encode_lz_capped(&lz_source, usize::MAX)
         } else {
-            encode_lz_capped(&packed, raw_stream.len().saturating_mul(8))
+            encode_lz_capped(&lz_source, raw_stream.len().saturating_mul(8))
         };
 
-        let (stream, used_method) = if method == METHOD_LZ {
-            (lz_stream.unwrap_or_default(), METHOD_LZ)
+        let (stream, used_method, extra_flag) = if method == METHOD_LZ {
+            (lz_stream.unwrap_or_default(), METHOD_LZ, lz_flags)
         } else if method == METHOD_RAW {
-            (raw_stream, METHOD_RAW)
+            (raw_stream, METHOD_RAW, raw_flags)
         } else {
             match lz_stream {
-                Some(lz) if lz.len() < raw_stream.len() => (lz, METHOD_LZ),
-                _ => (raw_stream, METHOD_RAW),
+                Some(lz) if lz.len() < raw_stream.len() => (lz, METHOD_LZ, lz_flags),
+                _ => (raw_stream, METHOD_RAW, raw_flags),
             }
         };
+        let flags = prep.flags | extra_flag;
 
         let mut body = prep.table;
         body.extend_from_slice(&stream);
@@ -1394,7 +1463,7 @@ fn parse_header(data: &[u8]) -> Result<MedHeader, isize> {
         return Err(E_MED_HEADER);
     }
     let version = rd_u32(data, 8);
-    if version != MED_VERSION && version != MED_VERSION_V1 {
+    if version != MED_VERSION && version != MED_VERSION_V2 && version != MED_VERSION_V1 {
         return Err(E_MED_HEADER);
     }
     let width = rd_u32(data, 16) as usize;
@@ -1568,6 +1637,13 @@ pub unsafe extern "C" fn pyra_med_decode(
                     Ok(v) => v,
                     Err(e) => return Err(e),
                 }
+            } else if flags & TILE_FLAG_CONTEXT as u32 != 0 {
+                entropy_decode_planes(
+                    stream,
+                    ENTROPY_SYMBOLS_RAW,
+                    fmt.value_bytes,
+                    count,
+                )
             } else {
                 entropy_decode_bytes(stream, ENTROPY_SYMBOLS_RAW, count * fmt.value_bytes)
             };

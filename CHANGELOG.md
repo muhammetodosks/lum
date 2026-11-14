@@ -8,6 +8,27 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.4.0 — context modelling (PYRM v3)
+
+### Added
+- **One adaptive model per byte plane** in the PYRM container (version 3,
+  tile flag `0x08`). The high planes of a wide sample are long runs of zero
+  bytes; a separate model per plane learns that immediately instead of
+  sharing one model with the noisy low plane. The Python reference and the
+  Rust core implement the same coder and produce byte-identical files.
+
+### Measured
+- 16-bit textured volume: 2 887 268 -> 2 709 400 bytes (**-6.2 %**).
+- 64x64x8 textured volume: 50 900 -> 44 556 bytes (**-12.5 %**) for 16-bit
+  and 67 376 -> 55 524 bytes (**-17.6 %**) for 32-bit.
+- CT-like volumes with tiny residuals: unchanged (the escape coding already
+  wins there), random noise: unchanged (+0.04 %).
+
+### Fixed
+- The LZ method no longer claims the context flag it does not use.
+
+---
+
 ## v0.3.0 — the clinical update (PYRM v2)
 
 ### Added

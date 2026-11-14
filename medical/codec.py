@@ -32,12 +32,13 @@ the entropy coder sees smooth bytes instead of random float bit patterns.
 import hashlib
 import zlib
 
-from ..entropy import RangeDecoder, RangeEncoder
+from ..entropy import (ContextRangeDecoder, ContextRangeEncoder, RangeDecoder,
+                       RangeEncoder)
 from .constants import (ESCAPE_ALPHABET, ESCAPE_CHUNK_BITS, ESCAPE_SYMBOL,
                         LZ_TOKEN_EOF, LZ_TOKEN_SYMBOLS, METHOD_LZ, METHOD_RAW,
                         PRED_COUNT, SAMPLE_BYTES, SAMPLE_FORMATS,
-                        SAMPLE_SIGNED, SFMT_F32,
-                        TILE_FLAG_ADAPTIVE, TILE_FLAG_ESCAPE, TILE_FLAG_SPLIT,
+                        SAMPLE_SIGNED, SFMT_F32, TILE_FLAG_ADAPTIVE,
+                        TILE_FLAG_CONTEXT, TILE_FLAG_ESCAPE, TILE_FLAG_SPLIT,
                         VERSION, ZIGZAG_LIMIT,
                         CorruptedFileError, UnsupportedFormatError,
                         sample_domain)
@@ -254,6 +255,37 @@ def _symbol_stream(coder: RangeDecoder):
         yield coder.decode_symbol()
 
 
+def _entropy_encode_planes(symbols: list[int], n_symbols: int,
+                           n_planes: int) -> bytes:
+    """Code a byte stream with one adaptive model per byte plane.
+
+    The high planes of a wide sample are long runs of zero bytes, and a
+    separate model per plane learns that immediately, while a single shared
+    model has to spend its adaptation on the noisy low plane. The decoder
+    knows the plane boundaries, so the stream stays self-describing.
+    """
+    coder = ContextRangeEncoder(n_symbols, n_planes)
+    if n_planes < 1:
+        n_planes = 1
+    per_plane = len(symbols) // n_planes
+    for plane in range(n_planes):
+        start = plane * per_plane
+        for sym in symbols[start:start + per_plane]:
+            coder.encode_symbol(sym, plane)
+    return coder.flush()
+
+
+def _entropy_decode_planes(data: bytes, n_symbols: int, n_planes: int,
+                           count: int) -> list[int]:
+    """Inverse of :func:`_entropy_encode_planes`."""
+    coder = ContextRangeDecoder(data, n_symbols, n_planes)
+    out: list[int] = []
+    for plane in range(n_planes):
+        for _ in range(count):
+            out.append(coder.decode_symbol(plane))
+    return out
+
+
 def _entropy_decode(data: bytes, n_symbols: int, count: int) -> list[int]:
     coder = RangeDecoder(data, n_symbols)
     return [coder.decode_symbol() for _ in range(count)]
@@ -288,31 +320,46 @@ def _encode_tile(rows: list[list[int]], channels: int, fmt: _Format,
         table = pack_filter_bits(pred_ids)
         flags |= TILE_FLAG_ADAPTIVE
 
-    if fmt.escape and _escape_worth_it(residuals, fmt):
-        # Wide samples: one symbol per sample (zig-zag plus escape).
+    # Two candidate layouts for the residual stream:
+    #
+    #   * the escape coding - one symbol per sample, with a zig-zag map and
+    #     a marker for the rare large residuals;
+    #   * the byte planes - the residual bytes split into planes, each with
+    #     its own adaptive model.
+    #
+    # Which one is smaller depends on the data: the escape coding wins when
+    # the residuals are small and concentrated (the normal case for real
+    # medical data), the planes win when they are wide or noisy. The
+    # encoder measures both and keeps the smaller one, so the format never
+    # has to guess. The tile flags tell the decoder which layout was used.
+    escape_ok = fmt.escape and _escape_worth_it(residuals, fmt)
+    if escape_ok:
         symbols = _escape_symbols(residuals, fmt)
-        flags |= TILE_FLAG_ESCAPE
         if method == METHOD_LZ:
             tokens = lz_encode(bytes(symbols))
             tokens.append(LZ_TOKEN_EOF)
             stream = _entropy_encode(tokens, _ENTROPY_SYMBOLS_LZ)
         else:
             stream = _entropy_encode(symbols, ESCAPE_ALPHABET)
-        return table + stream, method, flags
+        return table + stream, method, flags | TILE_FLAG_ESCAPE
 
     if fmt.value_bytes > 1:
-        packed = split_planes(residuals, fmt.value_bytes)
-        flags |= TILE_FLAG_SPLIT
+        plane_bytes = split_planes(residuals, fmt.value_bytes)
+        plane_flags = TILE_FLAG_SPLIT
     else:
-        packed = pack_residuals(residuals, 1)
+        plane_bytes = pack_residuals(residuals, 1)
+        plane_flags = 0
 
     if method == METHOD_LZ:
-        tokens = lz_encode(packed)
+        # The LZ stream is not context coded, so it carries no context flag.
+        tokens = lz_encode(plane_bytes)
         tokens.append(LZ_TOKEN_EOF)
         stream = _entropy_encode(tokens, _ENTROPY_SYMBOLS_LZ)
-    else:
-        stream = _entropy_encode(list(packed), _ENTROPY_SYMBOLS_RAW)
-    return table + stream, method, flags
+        return table + stream, method, flags | plane_flags
+    # One adaptive model per byte plane.
+    stream = _entropy_encode_planes(list(plane_bytes), _ENTROPY_SYMBOLS_RAW,
+                                    fmt.value_bytes)
+    return table + stream, method, flags | plane_flags | TILE_FLAG_CONTEXT
 
 
 def encode(samples: bytes, width: int, height: int, depth: int = 1,
@@ -475,6 +522,11 @@ def _decode_tile(body: bytes, flags: int, method: int, tw: int, th: int,
                     raise CorruptedFileError("LZ token stream exceeds length limit")
             packed = lz_decode(tokens, None, count * 4 + 64)
             residuals = _escape_residuals(packed, count, fmt)
+        elif flags & TILE_FLAG_CONTEXT:
+            coder = ContextRangeDecoder(stream, ESCAPE_ALPHABET,
+                                        CONTEXT_CLASSES)
+            residuals = _escape_residuals(_symbol_stream_context(coder),
+                                          count, fmt)
         else:
             coder = RangeDecoder(stream, ESCAPE_ALPHABET)
             residuals = _escape_residuals(_symbol_stream(coder), count, fmt)
@@ -491,6 +543,9 @@ def _decode_tile(body: bytes, flags: int, method: int, tw: int, th: int,
                 if len(tokens) > limit:
                     raise CorruptedFileError("LZ token stream exceeds length limit")
             packed = lz_decode(tokens, count * fmt.value_bytes)
+        elif flags & TILE_FLAG_CONTEXT:
+            packed = _entropy_decode_planes(stream, _ENTROPY_SYMBOLS_RAW,
+                                            fmt.value_bytes, count)
         else:
             packed = _entropy_decode(stream, _ENTROPY_SYMBOLS_RAW,
                                      count * fmt.value_bytes)

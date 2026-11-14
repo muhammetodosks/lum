@@ -7,8 +7,9 @@ a SHA-256 content hash of the raw samples).
 """
 
 MAGIC = b"PYRM\r\n\x1A\n"
-VERSION = 2
+VERSION = 3
 VERSION_V1 = 1
+VERSION_V2 = 2
 
 # ---------------------------------------------------------------- sample types
 SFMT_U8 = 0    # unsigned 8 bit
@@ -95,6 +96,9 @@ METHOD_COUNT = 2
 TILE_FLAG_SPLIT = 0x01   # residual bytes were split into byte planes
 TILE_FLAG_ADAPTIVE = 0x02  # the body starts with a row filter table
 TILE_FLAG_ESCAPE = 0x04  # residuals use the zigzag + escape coding
+TILE_FLAG_CONTEXT = 0x08  # the residual stream uses the context model
+
+
 
 # ------------------------------------------------------- escape coding
 # Wide samples are coded with one symbol per sample instead of one symbol

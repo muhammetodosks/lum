@@ -194,6 +194,57 @@ class RangeEncoder:
         return bytes(self.out)
 
 
+class ContextRangeEncoder:
+    """Arithmetic encoder with one adaptive model per context.
+
+    The bit stream is shared by all models; only the frequency model
+    depends on the context. The caller supplies the context of every
+    symbol, which the decoder must be able to derive from the already
+    decoded data (that is what makes the stream self-describing).
+
+    This is the "context modelling" step of the format: instead of one
+    probability distribution for the whole stream, the distribution of a
+    symbol depends on where it appears. Medical residuals are strongly
+    correlated with their predecessor, so the gain is large.
+    """
+
+    def __init__(self, n_symbols: int, n_contexts: int):
+        if n_symbols < 1:
+            raise PyraError("model needs at least 1 symbol")
+        if n_contexts < 1:
+            raise PyraError("needs at least one context")
+        self.models = [AdaptiveModel(n_symbols) for _ in range(n_contexts)]
+        self.out = bytearray()
+        self.acc = 0
+        self.nbits = 0
+        self.pending = 0
+        self.low = 0
+        self.high = (1 << 32) - 1  # inclusive
+
+    def encode_symbol(self, symbol: int, context: int):
+        model = self.models[context]
+        cdf = model.cdf
+        cum, f = cdf.cum(symbol), cdf.freq[symbol]
+        total = cdf.total
+        span = self.high - self.low + 1
+        r = span // total
+        if r < 1:
+            r = 1
+        cum_high = cum + f
+        new_low = self.low + r * cum
+        new_high = self.low + r * cum_high - 1
+        if new_high < new_low:
+            new_high = new_low
+        self.low = new_low
+        self.high = new_high
+        self._renormalize()
+        model.update(symbol)
+
+    _renormalize = RangeEncoder._renormalize
+    _put = RangeEncoder._put
+    flush = RangeEncoder.flush
+
+
 class RangeDecoder:
     def __init__(self, data: bytes, n_symbols: int):
         self.model = AdaptiveModel(n_symbols)
@@ -251,3 +302,52 @@ class RangeDecoder:
                 self.value = ((self.value - quarter) << 1) | self._next_bit()
             else:
                 break
+
+
+class ContextRangeDecoder:
+    """Inverse of :class:`ContextRangeEncoder`."""
+
+    def __init__(self, data: bytes, n_symbols: int, n_contexts: int):
+        if n_symbols < 1:
+            raise PyraError("model needs at least 1 symbol")
+        if n_contexts < 1:
+            raise PyraError("needs at least one context")
+        self.models = [AdaptiveModel(n_symbols) for _ in range(n_contexts)]
+        self.data = data
+        self.pos = 0      # bit position
+        self.low = 0
+        self.high = (1 << 32) - 1
+        self.value = 0
+        for _ in range(32):
+            self.value = (self.value << 1) | self._next_bit()
+
+    def _next_bit(self) -> int:
+        idx = self.pos
+        self.pos += 1
+        byte_i = idx >> 3
+        if byte_i >= len(self.data):
+            return 0
+        bit_i = idx & 7
+        return (self.data[byte_i] >> (7 - bit_i)) & 1
+
+    def decode_symbol(self, context: int) -> int:
+        model = self.models[context]
+        cdf = model.cdf
+        total = cdf.total
+        span = self.high - self.low + 1
+        r = span // total
+        if r < 1:
+            r = 1
+        target = (self.value - self.low) // r
+        if target < 0:
+            target = 0
+        if target >= total:
+            target = total - 1
+        sym, cum, f = cdf.find(target)
+        self.low = self.low + r * cum
+        self.high = self.low + r * f - 1
+        self._renormalize()
+        model.update(sym)
+        return sym
+
+    _renormalize = RangeDecoder._renormalize

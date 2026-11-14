@@ -1319,6 +1319,187 @@ impl<'a> RangeDec<'a> {
     }
 }
 
+/// Range encoder with one adaptive model per context.
+///
+/// The bit stream is shared by all models; only the frequency model depends
+/// on the context. The medical container uses one model per byte plane: the
+/// high planes of a wide sample are long runs of zero bytes, and a separate
+/// model learns that immediately, while one shared model would have to
+/// spend its adaptation on the noisy low plane.
+struct CtxRangeEnc {
+    models: Vec<Fenwick>,
+    low: i64,
+    high: i64,
+    out: Vec<u8>,
+    acc: u32,
+    nbits: u32,
+    pending: i64,
+}
+
+impl CtxRangeEnc {
+    fn new(n_symbols: usize, n_contexts: usize, cap_hint: usize) -> Self {
+        CtxRangeEnc {
+            models: (0..n_contexts).map(|_| Fenwick::new(n_symbols)).collect(),
+            low: 0,
+            high: (1i64 << 32) - 1, // inclusive
+            out: Vec::with_capacity(cap_hint / 8 + 16),
+            acc: 0,
+            nbits: 0,
+            pending: 0,
+        }
+    }
+
+    /// Append one bit (MSB first).
+    #[inline]
+    fn put_bit(&mut self, bit: u8) {
+        self.acc = (self.acc << 1) | (bit as u32 & 1);
+        self.nbits += 1;
+        if self.nbits == 8 {
+            self.out.push(self.acc as u8);
+            self.acc = 0;
+            self.nbits = 0;
+        }
+    }
+
+    /// Append `n` copies of the same bit.
+    #[inline]
+    fn put_bits(&mut self, bit: u8, n: i64) {
+        for _ in 0..n {
+            self.put_bit(bit);
+        }
+    }
+
+    /// Renormalisation with the E1/E2/E3 cases picked by masks.
+    #[inline]
+    fn renorm(&mut self) {
+        loop {
+            let e1 = (self.high < HALF) as i64;
+            let e2 = ((self.low >= HALF) & (e1 == 0)) as i64;
+            let e3 = ((self.low >= QUARTER) & (self.high < THREE_QUARTERS)
+                & (e1 == 0) & (e2 == 0)) as i64;
+            if (e1 | e2 | e3) == 0 {
+                break;
+            }
+            let n = (e1 | e2) * (self.pending + 1);
+            if n > 0 {
+                self.put_bit(e2 as u8);
+                self.put_bits(e1 as u8, n - 1);
+            }
+            self.pending = e3 * (self.pending + 1);
+            let off = e2 * HALF + e3 * QUARTER;
+            self.low = (self.low - off) << 1;
+            self.high = ((self.high - off) << 1) | 1;
+        }
+    }
+
+    /// Code one symbol with the model of `context`.
+    #[inline]
+    fn push(&mut self, symbol: usize, context: usize) {
+        let (cum, f, total) = {
+            let m = &mut self.models[context];
+            let cum = m.cum(symbol);
+            let f = m.freq_of(symbol);
+            (cum, f, m.total)
+        };
+        let span = self.high - self.low + 1;
+        let mut r = div_span(span, total);
+        if r < 1 {
+            r = 1;
+        }
+        let cum_high = cum + f;
+        let new_low = self.low + r * cum;
+        let mut new_high = self.low + r * cum_high - 1;
+        if new_high < new_low {
+            new_high = new_low;
+        }
+        self.low = new_low;
+        self.high = new_high;
+        self.renorm();
+        self.models[context].add(symbol);
+    }
+
+    /// WNC flush plus the zero padded last byte.
+    fn finish(mut self) -> Vec<u8> {
+        self.pending += 1;
+        if self.low < QUARTER {
+            self.put_bit(0);
+            self.put_bits(1, self.pending);
+        } else {
+            self.put_bit(1);
+            self.put_bits(0, self.pending);
+        }
+        if self.nbits > 0 {
+            self.out.push((self.acc << (8 - self.nbits)) as u8);
+            self.acc = 0;
+            self.nbits = 0;
+        }
+        self.out
+    }
+}
+
+/// Range decoder with one adaptive model per context.
+struct CtxRangeDec<'a> {
+    models: Vec<Fenwick>,
+    data: &'a [u8],
+    pos: usize,
+    low: i64,
+    high: i64,
+    value: i64,
+}
+
+impl<'a> CtxRangeDec<'a> {
+    fn new(data: &'a [u8], n_symbols: usize, n_contexts: usize) -> Self {
+        let mut d = CtxRangeDec {
+            models: (0..n_contexts).map(|_| Fenwick::new(n_symbols)).collect(),
+            data,
+            pos: 0,
+            low: 0,
+            high: (1i64 << 32) - 1,
+            value: 0,
+        };
+        for _ in 0..32 {
+            d.value = (d.value << 1) | next_bit(d.data, &mut d.pos);
+        }
+        d
+    }
+
+    /// Decode one symbol with the model of `context`.
+    fn decode_symbol(&mut self, context: usize) -> usize {
+        let total = self.models[context].total;
+        let span = self.high - self.low + 1;
+        let mut r = div_span(span, total);
+        if r < 1 {
+            r = 1;
+        }
+        let mut target = div_span(self.value - self.low, r);
+        if target < 0 {
+            target = 0;
+        }
+        if target >= total {
+            target = total - 1;
+        }
+        let (sym, cumlow, f) = self.models[context].find(target);
+        self.low += r * cumlow;
+        self.high = self.low + r * f - 1;
+        loop {
+            let e1 = (self.high < HALF) as i64;
+            let e2 = ((self.low >= HALF) & (e1 == 0)) as i64;
+            let e3 = ((self.low >= QUARTER) & (self.high < THREE_QUARTERS)
+                & (e1 == 0) & (e2 == 0)) as i64;
+            if (e1 | e2 | e3) == 0 {
+                break;
+            }
+            let off = e2 * HALF + e3 * QUARTER;
+            self.low = (self.low - off) << 1;
+            self.high = ((self.high - off) << 1) | 1;
+            self.value =
+                ((self.value - off) << 1) | next_bit(self.data, &mut self.pos);
+        }
+        self.models[context].add(sym);
+        sym
+    }
+}
+
 /// Decode exactly `count` symbols, byte-identical to the RangeDecoder
 /// reference (zeros beyond the stream end, same clamping policy).
 #[no_mangle]
