@@ -42,6 +42,7 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | 16-bit depth | ✅ | Full-pixel domain covered |
 | Animation container | ✅ | Frame count + fps header |
 | CLI | ✅ | encode/decode/inspect/verify/benchmark |
+| Cloud container PYRC | ✅ | `test_cloud.py` 10 checks, Rust-only codec |
 | Medical container PYRM | ✅ | `test_medical.py` 49 checks, 864 native/pure parity trials |
 | DICOM Part 10 files | ✅ | Real DICOM in and out, explicit VR little endian, uncompressed |
 | 3D volume support | ✅ | Slice-local tiles, `slice` predictor for volumetric data |
@@ -514,6 +515,35 @@ touching a single output bit:
 
 The Python reference implements the same matcher, so both paths still
 produce byte-identical containers.
+
+## Cloud and earth observation (PYRC)
+
+`PYRC` is the third container of the project, written for satellite, radar
+and other multi-band observations. It is implemented **in Rust only** — the
+Python package is a thin `ctypes` binding, so there is exactly one codec and
+no pure-Python fallback to keep in sync.
+
+| Property | How it is met |
+|----------|---------------|
+| Multi-band, multi-scene | A cube of `scene × band × row × column` samples with per-band and per-scene tables |
+| Band metadata | Name, wavelength, type, units, scale, offset and the valid range of every band |
+| Scene metadata | Timestamp, geographic origin and the pixel size of every scene |
+| Volumetric prediction | The `TIME` predictor reads the previous scene, the `BAND` predictor the previous band |
+| Lossless | The decoded cube is byte-identical to the input and the header carries its SHA-256 |
+| Speed | Tiles are coded in parallel; a single band can be read without decoding the rest of the cube |
+
+```python
+from pyra.cloud import encode, decode, read_band
+
+blob = encode(samples, width=4096, height=4096, bands=12, scenes=8,
+              sample_format=1,                    # u16
+              band_meta=[{"name": "B01", "wavelength_nm": 443.0}],
+              scene_meta=[{"timestamp": 1700000000}])
+meta, cube = decode(blob)
+one_band = read_band(blob, scene=0, band=3)      # only that band is decoded
+```
+
+---
 
 ## Architecture
 

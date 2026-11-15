@@ -23,6 +23,7 @@
 use std::collections::{HashMap, VecDeque};
 
 mod pyra_image;
+mod pyra_cloud;
 mod pyra_med;
 
 pub const TOKEN_MATCH: u32 = 256;

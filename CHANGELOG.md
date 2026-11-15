@@ -8,6 +8,42 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.7.0 — PYRC: the cloud container (Rust only)
+
+A new container format for earth observation data: multi-band, multi-scene
+cubes with per-band radiometric metadata and per-scene georeferencing.
+The codec is implemented **in Rust only** (`rust/pyra_cloud.rs`); the Python
+package is a thin ctypes binding (`pyra/cloud.py`) with no pure-Python
+fallback, so there is exactly one implementation and no parity risk.
+
+**Added**
+
+* `PYRC` container: 192 byte header, band table (48 B/entry: name, wavelength,
+  type, units, scale, offset, valid range), scene table (40 B/entry: timestamp,
+  origin, pixel size), tile index (24 B/entry) and a SHA-256 content hash.
+* Nine predictors, including two that cross the tile borders: `TIME` (the same
+  band of the previous scene) and `BAND` (the same pixel of the previous band).
+* Two entropy paths: a zig-zag escape code (one symbol per sample) for wide
+  integers and byte planes with one adaptive model per plane otherwise.
+* `pyra cloud` Python binding: `encode`, `decode`, `info`, `read_band`
+  (a single band without touching the rest of the cube).
+* `pyra/tests/test_cloud.py`: round trip over every sample format, geometry,
+  method and predictor, band reads against the full decode, determinism,
+  bit-flip fuzzing and the input guards.
+
+**Fixed** (all found by the new test suite)
+
+* `raw_of` always wrote four bytes per sample, so a 16 bit plane was twice as
+  long as it should be and every sample after the first was shifted.
+* Signed samples were written back in the canonical domain instead of their
+  two's complement form (an offset of 32768 resp. 2^31).
+* The LZ match distance was read back with its bytes swapped.
+* The fixed predictor id was never written into the header, so a container
+  that used the volumetric `TIME` predictor could not be decoded.
+* The index entries carried wrong scene/band/tile labels.
+
+---
+
 ## v0.6.0 — region decoding (PYRM v3)
 
 ### Added
