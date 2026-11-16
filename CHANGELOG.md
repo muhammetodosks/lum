@@ -8,6 +8,53 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.8.0 — the cloud working set: C++ tools, command line, checksummed index
+
+The `PYRC` container of v0.7.0 is now a complete working set: the codec was
+there, but there was no way to look at the data. This release adds the tools
+around it.
+
+**Added**
+
+* `cpp/pyra_cloud.cpp`: a C++20 working-set layer for cloud cubes.
+  * The `PYRX` raw cube format (32 byte header, band planar samples) with
+    `pyra_cloud_raw_write` / `pyra_cloud_raw_read`.
+  * `pyra_cloud_band_stats`: minimum, maximum, mean, standard deviation and a
+    256 bin histogram per band (Welford algorithm, canonical samples).
+  * `pyra_cloud_render_rgb`: false-colour composite of three bands with a
+    window and a level per band.
+  * `pyra_cloud_interleave` / `pyra_cloud_deinterleave`: band planar ↔ pixel
+    interleaved conversion.
+  * A built-in self test (`-DPYRA_CLOUD_SELFTEST`, 17 checks).
+* `pyra cloud` command group: `encode`, `info`, `stats`, `render`, `decode`
+  (the whole cube or a single band with `--scene` and `--band`).
+* `pyra/cloud.py`: the C++ bindings for the working-set operations.
+* `docs/FORMAT-PYRC.md`: the full format specification.
+* `rust/pyra_cloud.rs`: a `#[cfg(test)]` unit test module (9 checks: CRC and
+  SHA-256 reference vectors, the round trip, every predictor, every sample
+  format, the damage and truncation rejections).
+* `scripts/run_tests.sh`: runs every suite — the native Python suites, the
+  pure-Python fallback suites and, with `PYRA_BUILD_TESTS=1`, the Rust unit
+  tests and the C++ self test.
+
+**Changed**
+
+* The tile index of the container now has its own CRC-32 (header offset 108).
+  Until now the header CRC only covered bytes 0..88 and the index — which
+  holds the tile offsets, lengths, methods and per tile checksums — had no
+  checksum of its own. Every structure of the container now has one.
+* `read_band` no longer decodes the whole cube twice: it decodes only the
+  planes it needs, following the `TIME` / `BAND` context chain.
+* `pyra.cloud` is exported from the package root (`from pyra import cloud`).
+
+**Fixed**
+
+* `pyra_cloud_deinterleave` wrote its output in the interleaved order it was
+  reading instead of the band planar order the contract promises; the output
+  was a copy of the input.
+
+---
+
 ## v0.7.0 — PYRC: the cloud container (Rust only)
 
 A new container format for earth observation data: multi-band, multi-scene

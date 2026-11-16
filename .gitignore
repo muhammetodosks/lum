@@ -3,3 +3,4 @@ __pycache__/
 .pyra
 _libpyra_core.so
 _libpyra_fast.so
+_libpyra_cloud.so

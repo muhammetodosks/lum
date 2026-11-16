@@ -28,6 +28,8 @@
 //! alphabet counts as small. Wide samples are coded with a zig-zag escape
 //! scheme, narrow ones with one adaptive model per byte plane.
 
+use std::collections::HashMap;
+
 use super::pyra_image::crc32;
 use super::pyra_med::sha256;
 use super::{CtxRangeDec, CtxRangeEnc, LzMatcher, LzTok, RangeDec, RangeEnc};
@@ -1255,6 +1257,9 @@ pub unsafe extern "C" fn pyra_cloud_encode(
     header[100..104].copy_from_slice(&(payload_offset as u32).to_le_bytes());
     // The fixed predictor id (used by tiles without a row filter table).
     header[104..108].copy_from_slice(&(predictor.max(0) as u32).to_le_bytes());
+    // A checksum of the tile index, so that a damaged index cannot make
+    // the decoder read the wrong tiles.
+    header[108..112].copy_from_slice(&crc32(&index).to_le_bytes());
     header[112..144].copy_from_slice(&digest);
     let hdr_crc = crc32(&header[0..HEADER_CRC_OFFSET]);
     header[88..92].copy_from_slice(&hdr_crc.to_le_bytes());
@@ -1306,6 +1311,7 @@ struct CloudHeader {
     index_size: usize,
     payload_offset: usize,
     predictor: i32,
+    index_crc: u32,
     sha256: [u8; 32],
 }
 
@@ -1350,6 +1356,7 @@ fn parse_header(data: &[u8]) -> Result<CloudHeader, isize> {
     let index_size = rd_u32(data, 96) as usize;
     let payload_offset = rd_u32(data, 100) as usize;
     let predictor = rd_u32(data, 104) as i32;
+    let index_crc = rd_u32(data, 108);
     if width == 0 || height == 0 || bands == 0 || scenes == 0 || tile_size == 0 {
         return Err(E_CLOUD_HEADER);
     }
@@ -1386,6 +1393,7 @@ fn parse_header(data: &[u8]) -> Result<CloudHeader, isize> {
         index_size,
         payload_offset,
         predictor,
+        index_crc,
         sha256: sha,
     })
 }
@@ -1428,6 +1436,9 @@ pub unsafe extern "C" fn pyra_cloud_decode(
         return E_CLOUD_TRUNC;
     }
     let index = &data[hdr.index_offset..hdr.index_offset + hdr.index_size];
+    if crc32(index) != hdr.index_crc {
+        return E_CLOUD_CRC;
+    }
 
     let plane_bytes = hdr.width * hdr.height * fmt.sample_bytes;
     let total_bytes = plane_bytes * hdr.bands * hdr.scenes;
@@ -1623,6 +1634,130 @@ pub unsafe extern "C" fn pyra_cloud_info(
 ///
 /// Only the tiles that touch the band are decoded, so reading a single band
 /// of a large cube is cheap.
+/// Decode one band plane of one scene into raw sample bytes.
+///
+/// `time_ctx` is the previous scene of the same band and `band_ctx` the
+/// previous band of the same scene; both hold raw sample bytes and both are
+/// only needed by the volumetric predictors.
+unsafe fn decode_plane(
+    data: &[u8],
+    index: &[u8],
+    hdr: &CloudHeader,
+    fmt: &CloudFormat,
+    grid: &[TileGeom],
+    row_stride: usize,
+    plane_bytes: usize,
+    scene_idx: usize,
+    band_idx: usize,
+    time_ctx: Option<&[u8]>,
+    band_ctx: Option<&[u8]>,
+) -> Result<Vec<u8>, isize> {
+    let tiles_per_slice = grid.len();
+    let entry_base = (scene_idx * hdr.bands + band_idx) * tiles_per_slice;
+    let mut plane: Vec<u8> = vec![0u8; plane_bytes];
+    let decoded = parallel_map(tiles_per_slice, |t| -> Option<Result<(usize, usize, usize, Vec<u8>), isize>> {
+        let geom = &grid[t];
+        let eoff = (entry_base + t) * INDEX_ENTRY_SIZE;
+        let tile_off = rd_u32(index, eoff) as usize;
+        let tile_len = rd_u32(index, eoff + 4) as usize;
+        let method = index[eoff + 8] as i32;
+        let flags = index[eoff + 9] as u32;
+        let crc = rd_u32(index, eoff + 12);
+        if tile_off + tile_len > data.len() {
+            return Some(Err(E_CLOUD_TRUNC));
+        }
+        let body = &data[tile_off..tile_off + tile_len];
+        if crc32(body) != crc {
+            return Some(Err(E_CLOUD_CRC));
+        }
+        if method != METHOD_RAW && method != METHOD_LZ {
+            return Some(Err(E_CLOUD_METHOD));
+        }
+        if fmt.is_float {
+            let bytes = match decode_tile_float(body, flags, method, geom.w, geom.h) {
+                Ok(b) => b,
+                Err(e) => return Some(Err(e)),
+            };
+            return Some(Ok((geom.y, geom.x, geom.w, bytes)));
+        }
+        let base = geom.y * row_stride + geom.x * fmt.sample_bytes;
+        let time_rows = time_ctx.map(|p| canonical_rows(p, row_stride, base, geom.w, geom.h, fmt));
+        let band_rows = band_ctx.map(|p| canonical_rows(p, row_stride, base, geom.w, geom.h, fmt));
+        let rows = match decode_tile_int(
+            body, flags, method, geom.w, geom.h, fmt,
+            time_rows.as_deref(), band_rows.as_deref(), hdr.predictor,
+        ) {
+            Ok(r) => r,
+            Err(e) => return Some(Err(e)),
+        };
+        let mut bytes = Vec::with_capacity(geom.w * geom.h * fmt.sample_bytes);
+        for r in 0..geom.h {
+            for c in 0..geom.w {
+                let v = rows[r * geom.w + c];
+                bytes.extend_from_slice(&raw_of(v, fmt));
+            }
+        }
+        Some(Ok((geom.y, geom.x, geom.w, bytes)))
+    });
+    for item in decoded {
+        match item {
+            Some(Ok((ty, tx, tw, bytes))) => {
+                let twb = tw * fmt.sample_bytes;
+                for r in 0..bytes.len() / twb {
+                    let src = &bytes[r * twb..(r + 1) * twb];
+                    let dst = (ty + r) * row_stride + tx * fmt.sample_bytes;
+                    plane[dst..dst + twb].copy_from_slice(src);
+                }
+            }
+            Some(Err(e)) => return Err(e),
+            None => return Err(E_CLOUD_ALLOC),
+        }
+    }
+    Ok(plane)
+}
+
+/// Decode a plane together with the planes it depends on.
+///
+/// Only the context chain is decoded (the previous scene of the same band
+/// and the previous band of the same scene) and every plane is cached, so a
+/// band read costs `scenes + bands` plane decodes instead of two full cube
+/// decodes.
+unsafe fn decode_plane_cached(
+    data: &[u8],
+    index: &[u8],
+    hdr: &CloudHeader,
+    fmt: &CloudFormat,
+    grid: &[TileGeom],
+    row_stride: usize,
+    plane_bytes: usize,
+    scene_idx: usize,
+    band_idx: usize,
+    cache: &mut HashMap<(usize, usize), Vec<u8>>,
+) -> Result<Vec<u8>, isize> {
+    if let Some(v) = cache.get(&(scene_idx, band_idx)) {
+        return Ok(v.clone());
+    }
+    let time_ctx = if scene_idx > 0 {
+        Some(decode_plane_cached(
+            data, index, hdr, fmt, grid, row_stride, plane_bytes,
+            scene_idx - 1, band_idx, cache)?)
+    } else {
+        None
+    };
+    let band_ctx = if band_idx > 0 {
+        Some(decode_plane_cached(
+            data, index, hdr, fmt, grid, row_stride, plane_bytes,
+            scene_idx, band_idx - 1, cache)?)
+    } else {
+        None
+    };
+    let plane = decode_plane(
+        data, index, hdr, fmt, grid, row_stride, plane_bytes,
+        scene_idx, band_idx, time_ctx.as_deref(), band_ctx.as_deref())?;
+    cache.insert((scene_idx, band_idx), plane.clone());
+    Ok(plane)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pyra_cloud_read_band(
     data: *const u8,
@@ -1651,104 +1786,33 @@ pub unsafe extern "C" fn pyra_cloud_read_band(
         return E_CLOUD_TRUNC;
     }
     let index = &data[hdr.index_offset..hdr.index_offset + hdr.index_size];
+    if crc32(index) != hdr.index_crc {
+        return E_CLOUD_CRC;
+    }
     let grid = tile_grid(hdr.width, hdr.height, hdr.tile_size);
-    let tiles_per_slice = grid.len();
+    let _tiles_per_slice = grid.len();
     let plane_bytes = hdr.width * hdr.height * fmt.sample_bytes;
     let row_stride = hdr.width * fmt.sample_bytes;
-    let mut plane: Vec<u8> = vec![0u8; plane_bytes];
-
-    // The temporal context needs the previous scene, so that one is decoded
-    // as well when it exists.
-    let need_prev = scene > 0;
-    let mut prev_band: Option<Vec<u8>> = None;
-    if need_prev {
-        // Decode the previous scene's band with a nested call.
-        let mut tmp_ptr: *mut u8 = std::ptr::null_mut();
-        let mut tmp_len: usize = 0;
-        let rc = pyra_cloud_decode(data.as_ptr(), len, &mut tmp_ptr, &mut tmp_len, std::ptr::null_mut());
-        if rc < 0 {
-            return rc;
-        }
-        let all = Vec::from_raw_parts(tmp_ptr, tmp_len, tmp_len);
-        let base = (scene as usize - 1) * hdr.bands * plane_bytes + band as usize * plane_bytes;
-        prev_band = Some(all[base..base + plane_bytes].to_vec());
-        drop(all);
-    }
-    let band_ctx: Option<Vec<u8>> = if band > 0 {
-        let mut tmp_ptr: *mut u8 = std::ptr::null_mut();
-        let mut tmp_len: usize = 0;
-        let rc = pyra_cloud_decode(data.as_ptr(), len, &mut tmp_ptr, &mut tmp_len, std::ptr::null_mut());
-        if rc < 0 {
-            return rc;
-        }
-        let all = Vec::from_raw_parts(tmp_ptr, tmp_len, tmp_len);
-        let base = scene as usize * hdr.bands * plane_bytes + (band as usize - 1) * plane_bytes;
-        let v = all[base..base + plane_bytes].to_vec();
-        drop(all);
-        Some(v)
-    } else {
-        None
+    // Only the planes that are really needed are decoded: the requested one
+    // plus its context chain (the previous scene of the same band and the
+    // previous band of the same scene). The previous implementation decoded
+    // the whole cube twice.
+    let mut cache: HashMap<(usize, usize), Vec<u8>> = HashMap::new();
+    let plane = match decode_plane_cached(
+        data,
+        index,
+        &hdr,
+        &fmt,
+        &grid,
+        row_stride,
+        plane_bytes,
+        scene as usize,
+        band as usize,
+        &mut cache,
+    ) {
+        Ok(p) => p,
+        Err(e) => return e,
     };
-
-    let entry_base = (scene as usize * hdr.bands + band as usize) * tiles_per_slice;
-    let decoded = parallel_map(tiles_per_slice, |t| -> Option<Result<(usize, usize, usize, Vec<u8>), isize>> {
-        let geom = &grid[t];
-        let eoff = (entry_base + t) * INDEX_ENTRY_SIZE;
-        let tile_off = rd_u32(index, eoff) as usize;
-        let tile_len = rd_u32(index, eoff + 4) as usize;
-        let method = index[eoff + 8] as i32;
-        let flags = index[eoff + 9] as u32;
-        let crc = rd_u32(index, eoff + 12);
-        if tile_off + tile_len > data.len() {
-            return Some(Err(E_CLOUD_TRUNC));
-        }
-        let body = &data[tile_off..tile_off + tile_len];
-        if crc32(body) != crc {
-            return Some(Err(E_CLOUD_CRC));
-        }
-        if method != METHOD_RAW && method != METHOD_LZ {
-            return Some(Err(E_CLOUD_METHOD));
-        }
-        if fmt.is_float {
-            let bytes = match decode_tile_float(body, flags, method, geom.w, geom.h) {
-                Ok(b) => b,
-                Err(e) => return Some(Err(e)),
-            };
-            return Some(Ok((geom.y, geom.x, geom.w, bytes)));
-        }
-        let base = geom.y * row_stride + geom.x * fmt.sample_bytes;
-        let time_rows = prev_band.as_ref().map(|p| canonical_rows(p, row_stride, base, geom.w, geom.h, &fmt));
-        let band_rows = band_ctx.as_ref().map(|p| canonical_rows(p, row_stride, base, geom.w, geom.h, &fmt));
-        let rows = match decode_tile_int(
-            body, flags, method, geom.w, geom.h, &fmt,
-            time_rows.as_deref(), band_rows.as_deref(), hdr.predictor,
-        ) {
-            Ok(r) => r,
-            Err(e) => return Some(Err(e)),
-        };
-        let mut bytes = Vec::with_capacity(geom.w * geom.h * fmt.sample_bytes);
-        for r in 0..geom.h {
-            for c in 0..geom.w {
-                let v = rows[r * geom.w + c];
-                bytes.extend_from_slice(&raw_of(v, &fmt));
-            }
-        }
-        Some(Ok((geom.y, geom.x, geom.w, bytes)))
-    });
-    for item in decoded {
-        match item {
-            Some(Ok((ty, tx, tw, bytes))) => {
-                let twb = tw * fmt.sample_bytes;
-                for r in 0..bytes.len() / twb {
-                    let src = &bytes[r * twb..(r + 1) * twb];
-                    let dst = (ty + r) * row_stride + tx * fmt.sample_bytes;
-                    plane[dst..dst + twb].copy_from_slice(src);
-                }
-            }
-            Some(Err(e)) => return e,
-            None => return E_CLOUD_ALLOC,
-        }
-    }
 
     let len = plane.len();
     let boxed = plane.into_boxed_slice();
@@ -1757,4 +1821,260 @@ pub unsafe extern "C" fn pyra_cloud_read_band(
     *out_ptr = ptr;
     *out_len = len;
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pyra_image::pyra_free_buf;
+
+    /// A band table with `count` entries, as the encoder expects it.
+    fn band_table(count: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for i in 0..count {
+            let mut name = format!("band{}", i).into_bytes();
+            name.resize(16, 0);
+            out.extend_from_slice(&name);
+            out.extend_from_slice(&550.0f64.to_le_bytes());
+            out.extend_from_slice(&1u32.to_le_bytes()); // type: radiance
+            out.extend_from_slice(&1u32.to_le_bytes()); // units: radiance
+            out.extend_from_slice(&1.0f32.to_le_bytes());
+            out.extend_from_slice(&0.0f32.to_le_bytes());
+            out.extend_from_slice(&0.0f32.to_le_bytes());
+            out.extend_from_slice(&65535.0f32.to_le_bytes());
+        }
+        out
+    }
+
+    /// A scene table with `count` entries.
+    fn scene_table(count: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for i in 0..count {
+            out.extend_from_slice(&(1_700_000_000i64 + i as i64).to_le_bytes());
+            out.extend_from_slice(&30.5f64.to_le_bytes()); // lon0
+            out.extend_from_slice(&41.5f64.to_le_bytes()); // lat0
+            out.extend_from_slice(&0.01f64.to_le_bytes()); // pixel size x
+            out.extend_from_slice(&0.01f64.to_le_bytes()); // pixel size y
+        }
+        out
+    }
+
+    /// A deterministic test cube: smooth in space, drifting in time.
+    fn cube(w: usize, h: usize, bands: usize, scenes: usize, sb: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(w * h * bands * scenes * sb);
+        for s in 0..scenes {
+            for b in 0..bands {
+                for y in 0..h {
+                    for x in 0..w {
+                        let v = (x * 7 + y * 13 + b * 101 + s * 17) % 4096;
+                        let sample = (v as u32).to_le_bytes();
+                        out.extend_from_slice(&sample[..sb]);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn encode_cube(
+        samples: &[u8],
+        w: usize,
+        h: usize,
+        bands: usize,
+        scenes: usize,
+        fmt: u32,
+        predictor: i32,
+    ) -> Vec<u8> {
+        let bt = band_table(bands);
+        let st = scene_table(scenes);
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = unsafe {
+            pyra_cloud_encode(
+                samples.as_ptr(),
+                samples.len(),
+                w as u32,
+                h as u32,
+                bands as u32,
+                scenes as u32,
+                fmt,
+                bt.as_ptr(),
+                bt.len(),
+                st.as_ptr(),
+                st.len(),
+                std::ptr::null(),
+                0,
+                64,
+                predictor,
+                -1,
+                &mut out_ptr,
+                &mut out_len,
+            )
+        };
+        assert_eq!(rc, 0, "encode failed: {}", rc);
+        let data = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { pyra_free_buf(out_ptr, out_len) };
+        data
+    }
+
+    #[test]
+    fn crc32_matches_the_reference_vector() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b""), 0);
+    }
+
+    #[test]
+    fn sha256_matches_the_reference_vectors() {
+        let empty = sha256(b"");
+        assert_eq!(
+            empty.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        let abc = sha256(b"abc");
+        assert_eq!(
+            abc.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn encode_decode_round_trip() {
+        let (w, h, bands, scenes) = (16usize, 12usize, 2usize, 3usize);
+        let raw = cube(w, h, bands, scenes, 2);
+        let blob = encode_cube(&raw, w, h, bands, scenes, SFMT_U16 as u32, -1);
+
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let mut meta = [0i32; 21];
+        let rc = unsafe {
+            pyra_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
+        };
+        assert_eq!(rc, 0, "decode failed: {}", rc);
+        let back = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { pyra_free_buf(out_ptr, out_len) };
+
+        assert_eq!(back, raw, "decoded cube differs");
+        assert_eq!(meta[2] as usize, w);
+        assert_eq!(meta[3] as usize, h);
+        assert_eq!(meta[4] as usize, bands);
+        assert_eq!(meta[5] as usize, scenes);
+        assert_eq!(meta[6], SFMT_U16);
+        assert_eq!(meta[7], 16);
+    }
+
+    #[test]
+    fn info_reports_the_geometry() {
+        let (w, h, bands, scenes) = (8usize, 6usize, 3usize, 2usize);
+        let raw = cube(w, h, bands, scenes, 2);
+        let blob = encode_cube(&raw, w, h, bands, scenes, SFMT_U16 as u32, -1);
+        let mut meta = [0i32; 21];
+        let rc = unsafe { pyra_cloud_info(blob.as_ptr(), blob.len(), meta.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+        assert_eq!(meta[0], 1, "version");
+        assert_eq!(meta[2] as usize, w);
+        assert_eq!(meta[4] as usize, bands);
+        assert_eq!(meta[5] as usize, scenes);
+        assert_eq!(meta[11] as usize, (bands * scenes) as usize, "tile entries");
+    }
+
+    #[test]
+    fn read_band_returns_that_band_only() {
+        let (w, h, bands, scenes) = (8usize, 6usize, 3usize, 2usize);
+        let raw = cube(w, h, bands, scenes, 2);
+        let blob = encode_cube(&raw, w, h, bands, scenes, SFMT_U16 as u32, -1);
+
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = unsafe {
+            pyra_cloud_read_band(blob.as_ptr(), blob.len(), 1, 2, &mut out_ptr, &mut out_len)
+        };
+        assert_eq!(rc, 0, "read_band failed: {}", rc);
+        let band = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { pyra_free_buf(out_ptr, out_len) };
+
+        let plane = w * h * 2;
+        let start = (1 * bands + 2) * plane;
+        assert_eq!(band.len(), plane);
+        assert_eq!(band.as_slice(), &raw[start..start + plane]);
+    }
+
+    #[test]
+    fn a_damaged_container_is_rejected() {
+        let (w, h, bands, scenes) = (8usize, 6usize, 1usize, 1usize);
+        let raw = cube(w, h, bands, scenes, 2);
+        let blob = encode_cube(&raw, w, h, bands, scenes, SFMT_U16 as u32, -1);
+
+        // flip a byte inside the first tile body (the payload starts right
+        // after the index, whose offset and size live in the header)
+        let mut damaged = blob.clone();
+        let index_offset = u32::from_le_bytes([
+            damaged[92], damaged[93], damaged[94], damaged[95],
+        ]) as usize;
+        let index_size = u32::from_le_bytes([
+            damaged[96], damaged[97], damaged[98], damaged[99],
+        ]) as usize;
+        let at = index_offset + index_size;
+        damaged[at] ^= 0x40;
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let mut meta = [0i32; 21];
+        let rc = unsafe {
+            pyra_cloud_decode(damaged.as_ptr(), damaged.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
+        };
+        assert!(rc < 0, "a damaged container must not decode");
+    }
+
+    #[test]
+    fn a_truncated_container_is_rejected() {
+        let (w, h, bands, scenes) = (8usize, 6usize, 1usize, 1usize);
+        let raw = cube(w, h, bands, scenes, 2);
+        let blob = encode_cube(&raw, w, h, bands, scenes, SFMT_U16 as u32, -1);
+        let mut meta = [0i32; 21];
+        let rc = unsafe { pyra_cloud_info(blob.as_ptr(), 10, meta.as_mut_ptr()) };
+        assert!(rc < 0, "a truncated header must be rejected");
+    }
+
+    #[test]
+    fn every_predictor_round_trips() {
+        let (w, h, bands, scenes) = (12usize, 9usize, 2usize, 2usize);
+        let raw = cube(w, h, bands, scenes, 2);
+        for pred in 0..PRED_COUNT {
+            let blob = encode_cube(&raw, w, h, bands, scenes, SFMT_U16 as u32, pred);
+            let mut out_ptr: *mut u8 = std::ptr::null_mut();
+            let mut out_len: usize = 0;
+            let mut meta = [0i32; 21];
+            let rc = unsafe {
+                pyra_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
+            };
+            assert_eq!(rc, 0, "predictor {} failed", pred);
+            let back = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+            unsafe { pyra_free_buf(out_ptr, out_len) };
+            assert_eq!(back, raw, "predictor {} round trip", pred);
+        }
+    }
+
+    #[test]
+    fn the_sample_formats_round_trip() {
+        let (w, h, bands, scenes) = (7usize, 5usize, 1usize, 1usize);
+        for (fmt, sb) in [
+            (SFMT_U8, 1usize),
+            (SFMT_U16, 2),
+            (SFMT_U32, 4),
+            (SFMT_I16, 2),
+            (SFMT_I32, 4),
+        ] {
+            let raw = cube(w, h, bands, scenes, sb);
+            let blob = encode_cube(&raw, w, h, bands, scenes, fmt as u32, -1);
+            let mut out_ptr: *mut u8 = std::ptr::null_mut();
+            let mut out_len: usize = 0;
+            let mut meta = [0i32; 21];
+            let rc = unsafe {
+                pyra_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
+            };
+            assert_eq!(rc, 0, "format {} failed: {}", fmt, rc);
+            let back = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+            unsafe { pyra_free_buf(out_ptr, out_len) };
+            assert_eq!(back, raw, "format {} round trip", fmt);
+        }
+    }
 }

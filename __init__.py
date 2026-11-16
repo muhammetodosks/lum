@@ -1,5 +1,5 @@
 # PYRA - Pure Python reversible image format & codec (stdlib only).
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 from .constants import (
     MAGIC, VERSION, VERSION_LEGACY,
@@ -17,6 +17,7 @@ from .api import (
     encode, decode, encode_file, decode_file,
     decode_region, iter_tiles, encode_animation,
 )
+from . import cloud
 
 __all__ = [
     "MAGIC", "VERSION", "VERSION_LEGACY",
@@ -30,5 +31,6 @@ __all__ = [
     "validate_dimensions", "validate_chunk_size", "validate_file_size",
     "encode", "decode", "encode_file", "decode_file",
     "decode_region", "iter_tiles", "encode_animation",
+    "cloud",
     "__version__",
 ]

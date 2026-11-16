@@ -9,6 +9,7 @@ import os
 import random
 import struct
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -210,6 +211,133 @@ def test_band_predictor():
     check("the band predictor round trips", out == raw)
 
 
+def test_cpp_layer():
+    """The C++ work-set helpers behave like the reference implementation."""
+    import pyra.cloud as _cloud
+    if not _cloud.fast_available():
+        check("the C++ cloud core is present", False)
+        return
+    check("the C++ cloud core is present", True)
+
+    raw = make_cube("smooth", 12, 8, 3, 2, SFMT_U16)
+    w, h, bands, scenes = 12, 8, 3, 2
+
+    # --- the raw cube format round trips
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "cube.pyrx")
+        try:
+            _cloud.raw_write(path, raw, w, h, bands, scenes, SFMT_U16)
+            written = True
+        except Exception:  # noqa: BLE001
+            written = False
+        samples, rw, rh, rb, rs, rf = _cloud.raw_read(path)
+        check("the C++ raw cube round trips",
+              written and samples == raw
+              and (rw, rh, rb, rs, rf) == (w, h, bands, scenes, SFMT_U16))
+
+    # --- the band statistics (one band over every scene)
+    stats = _cloud.band_stats(raw, w, h, bands, scenes, SFMT_U16, 1)
+    plane = w * h
+    values = []
+    for scene in range(scenes):
+        base = (scene * bands + 1) * plane
+        for i in range(base, base + plane):
+            values.append(int.from_bytes(raw[i * 2:i * 2 + 2], "little"))
+    check("the band statistics find the minimum",
+          stats["minimum"] == min(values))
+    check("the band statistics find the maximum",
+          stats["maximum"] == max(values))
+    check("the band statistics count every sample",
+          stats["count"] == plane * scenes)
+    check("the histogram covers every sample",
+          sum(stats["histogram"]) == plane * scenes)
+
+    # --- the false colour render
+    rgb = _cloud.render_rgb(raw, w, h, bands, scenes, SFMT_U16, 0,
+                            0, 1, 2, 4096.0, 2048.0, 4096.0, 2048.0,
+                            4096.0, 2048.0)
+    check("the render produces one RGB triple per pixel",
+          isinstance(rgb, bytes) and len(rgb) == w * h * 3)
+
+    # --- planar and interleaved are the same data
+    # the cube is band planar: element (scene, band, y, x) sits at
+    # ((scene * bands + band) * height + y) * width + x
+    interleaved = _cloud.interleave(raw, w, h, bands, scenes, SFMT_U16, 0)
+    expected = bytearray()
+    for y in range(h):
+        for x in range(w):
+            for b in range(bands):
+                index = (b * h + y) * w + x
+                expected += raw[index * 2:index * 2 + 2]
+    check("the interleaved form carries the same samples",
+          bytes(interleaved) == bytes(expected))
+
+    back = _cloud.deinterleave(interleaved, w, h, bands, SFMT_U16)
+    expected = bytearray()
+    for b in range(bands):
+        for y in range(h):
+            for x in range(w):
+                index = (b * h + y) * w + x
+                expected += raw[index * 2:index * 2 + 2]
+    check("the deinterleaved form is band planar again",
+          bytes(back) == bytes(expected))
+
+
+def test_cli():
+    """The command line builds and inspects a cloud container."""
+    import io
+    import json
+    from contextlib import redirect_stdout
+
+    from pyra import cli as _cli
+
+    raw = make_cube("smooth", 12, 8, 3, 2, SFMT_U16)
+    with tempfile.TemporaryDirectory() as tmp:
+        pyrx = os.path.join(tmp, "cube.pyrx")
+        container = os.path.join(tmp, "cube.pyrc")
+        out = os.path.join(tmp, "out.pyrx")
+        import pyra.cloud as _cloud
+        if not _cloud.fast_available():
+            check("the command line builds a cloud container", False)
+            return
+        _cloud.raw_write(pyrx, raw, 12, 8, 3, 2, SFMT_U16)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            rc = _cli.main(["cloud", "encode", pyrx, container,
+                            "--width", "12", "--height", "8", "--bands", "3",
+                            "--scenes", "2", "--format", "u16",
+                            "--band-name", "red", "--band-name", "green",
+                            "--band-name", "nir", "--meta", "satellite=test"])
+        ok = rc == 0 and os.path.exists(container)
+        check("the command line builds a cloud container", ok)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            rc = _cli.main(["cloud", "info", container])
+        text = buffer.getvalue()
+        check("the command line reports the geometry",
+              rc == 0 and "bands" in text and "3" in text)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            rc = _cli.main(["cloud", "decode", container, out,
+                            "--scene", "1", "--band", "2"])
+        ok = rc == 0 and os.path.exists(out)
+        if ok:
+            samples, rw, rh, rb, rs, rf = _cloud.raw_read(out)
+            plane = 12 * 8
+            base = (1 * 3 + 2) * plane
+            ok = samples == raw[base * 2:(base + plane) * 2]
+        check("the command line decodes a single band", ok)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            rc = _cli.main(["cloud", "stats", container, "--band", "0"])
+        check("the command line prints the band statistics",
+              rc == 0 and "min=" in buffer.getvalue())
+
+
 def main():
     print("=== PYRC cloud format test suite ===")
     test_roundtrip_matrix()
@@ -219,6 +347,8 @@ def main():
     test_integrity()
     test_bad_input()
     test_band_predictor()
+    test_cpp_layer()
+    test_cli()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

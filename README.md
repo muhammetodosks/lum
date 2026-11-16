@@ -42,7 +42,7 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | 16-bit depth | ✅ | Full-pixel domain covered |
 | Animation container | ✅ | Frame count + fps header |
 | CLI | ✅ | encode/decode/inspect/verify/benchmark |
-| Cloud container PYRC | ✅ | `test_cloud.py` 10 checks, Rust-only codec |
+| Cloud container PYRC | ✅ | `test_cloud.py` 25 checks, Rust-only codec |
 | Medical container PYRM | ✅ | `test_medical.py` 49 checks, 864 native/pure parity trials |
 | DICOM Part 10 files | ✅ | Real DICOM in and out, explicit VR little endian, uncompressed |
 | 3D volume support | ✅ | Slice-local tiles, `slice` predictor for volumetric data |
@@ -531,6 +531,8 @@ no pure-Python fallback to keep in sync.
 | Volumetric prediction | The `TIME` predictor reads the previous scene, the `BAND` predictor the previous band |
 | Lossless | The decoded cube is byte-identical to the input and the header carries its SHA-256 |
 | Speed | Tiles are coded in parallel; a single band can be read without decoding the rest of the cube |
+| Integrity | Every structure has a checksum: header, metadata, tile index, tile bodies, payload, plus the SHA-256 of the cube |
+| Tooling | A C++ working-set layer (statistics, histograms, false-colour rendering, planar/interleaved conversion) and a `pyra cloud` command group |
 
 ```python
 from pyra.cloud import encode, decode, read_band
@@ -542,6 +544,34 @@ blob = encode(samples, width=4096, height=4096, bands=12, scenes=8,
 meta, cube = decode(blob)
 one_band = read_band(blob, scene=0, band=3)      # only that band is decoded
 ```
+
+### The cloud command line
+
+```bash
+# a raw cube (the "PYRX" working-set format) into a container
+python3 -m pyra cloud encode cube.pyrx cube.pyrc --width 4096 --height 4096 \
+        --bands 12 --scenes 8 --format u16 --band-name B01 --band-wavelength 443
+
+python3 -m pyra cloud info cube.pyrc            # geometry, bands, scenes
+python3 -m pyra cloud stats cube.pyrc --band 0  # min/max/mean/stddev per band
+python3 -m pyra cloud render cube.pyrc rgb.ppm --scene 0 --red 3 --green 2 --blue 1
+python3 -m pyra cloud decode cube.pyrc --scene 0 --band 3 one_band.pyrx
+```
+
+### The C++ working-set layer
+
+`cpp/pyra_cloud.cpp` (C++20, std only) provides the operations a cloud
+workflow needs on a decoded cube, without a Python round trip:
+
+| Function | What it does |
+|----------|--------------|
+| `pyra_cloud_raw_write` / `pyra_cloud_raw_read` | The `PYRX` raw cube format (32 byte header, band planar) |
+| `pyra_cloud_band_stats` | Minimum, maximum, mean, standard deviation and a 256 bin histogram per band |
+| `pyra_cloud_render_rgb` | False-colour composite of three bands with a window and a level |
+| `pyra_cloud_interleave` / `pyra_cloud_deinterleave` | Band planar ↔ pixel interleaved conversion |
+
+The file format is specified in
+[`docs/FORMAT-PYRC.md`](docs/FORMAT-PYRC.md).
 
 ---
 
@@ -560,8 +590,13 @@ pyra/
 ├── fast.py            ctypes loader for _libpyra_fast.so (C++ fast path, same contract)
 ├── rust/pyra_core.rs  std-only Rust cdylib port of the hot paths (bit-exact to Python)
 ├── rust/pyra_image.rs whole-image encoder/decoder in Rust, one thread per tile
+├── rust/pyra_med.rs   native PYRM encoder/decoder (SHA-256, parallel tiles)
+├── rust/pyra_cloud.rs native PYRC encoder/decoder (the cloud codec, Rust only)
 ├── cpp/pyra_fast.cpp  C++20 shared library: adaptive row filters (bit-exact to Python)
-├── scripts/build_native.sh  builds the Rust core and, if g++ is present, the C++ core
+├── cpp/pyra_cloud.cpp C++20 working-set layer for cloud cubes: raw I/O, statistics, rendering
+├── cloud.py            PYRC binding: encode / decode / info / read_band + the C++ helpers
+├── scripts/build_native.sh  builds the Rust core and, if g++ is present, the C++ cores
+├── scripts/run_tests.sh     runs every suite (native, fallback, Rust unit tests, C++ self test)
 ├── entropy.py         adaptive range coder + Fenwick tree
 ├── entropycost.py     exact integer entropy cost (used by the planner's tie-breaks)
 ├── predictors.py      7 reversible predictors + per-row adaptive selection
@@ -570,9 +605,9 @@ pyra/
 ├── security.py        limits + typed errors
 ├── pngbench.py        stdlib-only PNG reader/writer (benchmark reference + write/read loop test)
 ├── medical/           PYRM medical container (constants, container, predictors, lz, codec, preview, dicom, dicomfile, native)
-├── rust/pyra_med.rs   native PYRM encoder/decoder (SHA-256, parallel tiles)
 ├── docs/FORMAT-PYRM.md    the PYRM format specification
-└── tests/             test_lossless.py (246 checks) + test_medical.py (49 checks)
+├── docs/FORMAT-PYRC.md    the PYRC format specification
+└── tests/             test_lossless.py (246 checks) + test_medical.py (96 checks) + test_cloud.py (25 checks)
 ```
 
 ## Running Tests
@@ -580,6 +615,10 @@ pyra/
 ```bash
 python3 -m pyra.tests.test_lossless
 python3 -m pyra.tests.test_medical
+python3 -m pyra.tests.test_cloud
+
+bash scripts/run_tests.sh              # all of the above, native and fallback
+PYRA_BUILD_TESTS=1 bash scripts/run_tests.sh   # plus the Rust unit tests and the C++ self test
 ```
 
 Every check asserts `decoded == original` (no sampling, no approximation).

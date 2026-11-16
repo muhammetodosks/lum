@@ -14,6 +14,7 @@ from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
                         FILTER_GLOBAL, FILTER_ADAPTIVE,
                         PyraError, CorruptedFileError)
 from .pngbench import encode_png
+from . import cloud as _cloud
 from .medical import codec as _med_codec
 from .medical import dicom as _med_dicom
 from .medical import dicomfile as _med_dicomfile
@@ -46,6 +47,19 @@ _MED_METHOD_NAMES = {MED_METHOD_RAW: "raw", MED_METHOD_LZ: "lz"}
 _MED_FORMAT_BY_NAME = {v: k for k, v in _MED_FORMAT_NAMES.items()}
 _MED_PRED_BY_NAME = {v: k for k, v in _MED_PRED_NAMES.items()}
 _MED_METHOD_BY_NAME = {v: k for k, v in _MED_METHOD_NAMES.items()}
+
+# ------------------------------------------------------------- cloud (PYRC)
+_CLOUD_FORMAT_NAMES = {0: "u8", 1: "u16", 2: "u32", 3: "i16", 4: "i32",
+                       5: "f32"}
+_CLOUD_PRED_NAMES = {0: "none", 1: "left", 2: "up", 3: "average", 4: "paeth",
+                     5: "gradient", 6: "median", 7: "time", 8: "band"}
+_CLOUD_METHOD_NAMES = {0: "raw", 1: "lz"}
+_CLOUD_FORMAT_BY_NAME = {v: k for k, v in _CLOUD_FORMAT_NAMES.items()}
+_CLOUD_PRED_BY_NAME = {v: k for k, v in _CLOUD_PRED_NAMES.items()}
+_CLOUD_METHOD_BY_NAME = {v: k for k, v in _CLOUD_METHOD_NAMES.items()}
+_CLOUD_BAND_TYPES = ("reflectance", "radiance", "brightness_temperature",
+                     "quality_flag", "classification", "precipitation",
+                     "albedo", "elevation")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -172,6 +186,72 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="display window (default: the WindowWidth of the metadata)")
     mv.add_argument("--level", type=float, default=None,
                     help="display level (default: the WindowCenter of the metadata)")
+    cloud = sub.add_parser("cloud", help="PYRC cloud/EO container tools")
+    cloud_sub = cloud.add_subparsers(dest="cloud_cmd", required=True)
+
+    ce = cloud_sub.add_parser("encode",
+                              help="encode a raw cube into a .pyrc file")
+    ce.add_argument("input", help="raw cube file (PYRX)")
+    ce.add_argument("output")
+    ce.add_argument("--width", type=int, required=True)
+    ce.add_argument("--height", type=int, required=True)
+    ce.add_argument("--bands", type=int, required=True)
+    ce.add_argument("--scenes", type=int, default=1)
+    ce.add_argument("--format", choices=list(_CLOUD_FORMAT_BY_NAME),
+                    default="u16")
+    ce.add_argument("--tile", type=int, default=256)
+    ce.add_argument("--predictor", choices=["auto"] + list(_CLOUD_PRED_BY_NAME),
+                    default="auto")
+    ce.add_argument("--method", choices=["auto", "raw", "lz"], default="auto")
+    ce.add_argument("--band-name", action="append", default=[],
+                    metavar="NAME",
+                    help="name of a band (repeatable, in band order)")
+    ce.add_argument("--band-wavelength", action="append", default=[],
+                    metavar="NM", type=float,
+                    help="wavelength of a band in nm (repeatable)")
+    ce.add_argument("--band-type", action="append", default=[],
+                    metavar="TYPE", choices=list(_CLOUD_BAND_TYPES),
+                    help="type of a band (repeatable)")
+    ce.add_argument("--scene-time", action="append", default=[],
+                    metavar="UNIX_TS", type=int,
+                    help="timestamp of a scene (repeatable)")
+    ce.add_argument("--lon0", action="append", default=[], metavar="DEG",
+                    type=float, help="longitude of a scene origin (repeatable)")
+    ce.add_argument("--lat0", action="append", default=[], metavar="DEG",
+                    type=float, help="latitude of a scene origin (repeatable)")
+    ce.add_argument("--meta", action="append", default=[], metavar="KEY=VALUE",
+                    help="metadata entry (repeatable)")
+
+    cd = cloud_sub.add_parser("decode",
+                              help="decode a .pyrc file into raw samples")
+    cd.add_argument("input")
+    cd.add_argument("output")
+    cd.add_argument("--scene", type=int, default=None,
+                    help="decode only this scene")
+    cd.add_argument("--band", type=int, default=None,
+                    help="decode only this band (with --scene)")
+
+    ci = cloud_sub.add_parser("info", help="print the container metadata")
+    ci.add_argument("input")
+
+    cs = cloud_sub.add_parser("stats",
+                               help="per band statistics of a cube")
+    cs.add_argument("input", help="a .pyrc file or a raw cube (PYRX)")
+    cs.add_argument("--band", type=int, default=None,
+                    help="only this band (default: every band)")
+    cs.add_argument("--histogram", action="store_true",
+                    help="also print the 256 bin histogram")
+
+    cr = cloud_sub.add_parser("render",
+                               help="render a false colour composite as a PPM")
+    cr.add_argument("input")
+    cr.add_argument("output")
+    cr.add_argument("--scene", type=int, default=0)
+    cr.add_argument("--red", type=int, default=0)
+    cr.add_argument("--green", type=int, default=1)
+    cr.add_argument("--blue", type=int, default=2)
+    cr.add_argument("--window", type=float, default=0.0)
+    cr.add_argument("--level", type=float, default=0.0)
     return p
 
 
@@ -533,6 +613,160 @@ def _med_preview(args) -> int:
     return 0
 
 
+# ------------------------------------------------------------- cloud (PYRC)
+
+def _cloud_load_cube(path: str):
+    """Load a cube either from a PYRC container or from a raw PYRX file.
+
+    Returns (samples, width, height, bands, scenes, sample_format).
+    """
+    with open(path, "rb") as f:
+        blob = f.read()
+    if blob[:8] == _cloud.MAGIC:
+        info, samples = _cloud.decode(blob)
+        return (samples, info["width"], info["height"], info["bands"],
+                info["scenes"], info["sample_format"])
+    samples, width, height, bands, scenes, fmt = _cloud.raw_read(path)
+    return samples, width, height, bands, scenes, fmt
+
+
+def _cloud_encode(args) -> int:
+    samples, width, height, bands, scenes, fmt = _cloud_load_cube(args.input)
+    if (width, height, bands, scenes) != (args.width, args.height, args.bands,
+                                         args.scenes):
+        print(f"pyra: error: the file holds {width}x{height} x{bands} bands "
+              f"x{scenes} scenes, not {args.width}x{args.height} x{args.bands} "
+              f"x{args.scenes}", file=sys.stderr)
+        return 1
+    if _CLOUD_FORMAT_NAMES.get(fmt, "?") != args.format:
+        print(f"pyra: error: the file holds "
+              f"{_CLOUD_FORMAT_NAMES.get(fmt, '?')} samples, not {args.format}",
+              file=sys.stderr)
+        return 1
+    band_meta = []
+    for i in range(bands):
+        entry = {"name": (args.band_name[i] if i < len(args.band_name) else ""),
+                 "type": 0}
+        if i < len(args.band_wavelength):
+            entry["wavelength_nm"] = args.band_wavelength[i]
+        if i < len(args.band_type):
+            entry["type"] = _CLOUD_BAND_TYPES.index(args.band_type[i])
+        band_meta.append(entry)
+    scene_meta = []
+    for i in range(scenes):
+        entry = {}
+        if i < len(args.scene_time):
+            entry["timestamp"] = args.scene_time[i]
+        if i < len(args.lon0):
+            entry["lon0"] = args.lon0[i]
+        if i < len(args.lat0):
+            entry["lat0"] = args.lat0[i]
+        scene_meta.append(entry)
+    blob = _cloud.encode(samples, width, height, bands, scenes, fmt,
+                         band_meta=band_meta, scene_meta=scene_meta,
+                         metadata=_med_meta(args.meta), tile_size=args.tile,
+                         predictor=_CLOUD_PRED_BY_NAME.get(args.predictor, -1),
+                         method=_CLOUD_METHOD_BY_NAME.get(args.method, -1))
+    with open(args.output, "wb") as f:
+        f.write(blob)
+    print(f"Encoded {args.input} -> {args.output}")
+    print(f"  geometry: {width}x{height} x{bands} bands x{scenes} scenes "
+          f"{_CLOUD_FORMAT_NAMES.get(fmt, '?')}")
+    print(f"  size: {len(blob)} bytes")
+    return 0
+
+
+def _cloud_decode(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    if args.scene is not None and args.band is not None:
+        samples = _cloud.read_band(blob, args.scene, args.band)
+        info = _cloud.info(blob)
+        _cloud.raw_write(args.output, samples, info["width"], info["height"], 1,
+                         1, info["sample_format"])
+        print(f"Decoded band {args.band} of scene {args.scene} -> {args.output}")
+        print(f"  samples: {len(samples)} bytes")
+        return 0
+    info, samples = _cloud.decode(blob)
+    _cloud.raw_write(args.output, samples, info["width"], info["height"],
+                     info["bands"], info["scenes"], info["sample_format"])
+    print(f"Decoded {args.input} -> {args.output}")
+    print(f"  geometry: {info['width']}x{info['height']} x{info['bands']} "
+          f"bands x{info['scenes']} scenes")
+    print(f"  samples: {len(samples)} bytes")
+    return 0
+
+
+def _cloud_info(args) -> int:
+    with open(args.input, "rb") as f:
+        blob = f.read()
+    info = _cloud.info(blob)
+    print(f"=== PYRC Cloud Inspection: {args.input} ===")
+    for key in ("version", "width", "height", "bands", "scenes",
+                "sample_format", "bits", "tile_size", "tiles_x", "tiles_y",
+                "num_entries", "predictor"):
+        print(f"  {key}: {info[key]}")
+    print(f"  format: {_CLOUD_FORMAT_NAMES.get(info['sample_format'], '?')}")
+    print(f"  file_size: {len(blob)} bytes")
+    if info.get("band_table"):
+        print("  bands:")
+        for i, band in enumerate(info["band_table"]):
+            print(f"    [{i}] {band['name'] or '-'} "
+                  f"type={band['type']} units={band['units']} "
+                  f"wavelength={band['wavelength_nm']} nm")
+    if info.get("scene_table"):
+        print("  scenes:")
+        for i, scene in enumerate(info["scene_table"]):
+            print(f"    [{i}] t={scene['timestamp']} "
+                  f"lon0={scene['lon0']} lat0={scene['lat0']} "
+                  f"pixel={scene['pixel_size_x']}x{scene['pixel_size_y']}")
+    if info.get("metadata"):
+        print(f"  metadata: {info['metadata']}")
+    return 0
+
+
+def _cloud_stats(args) -> int:
+    samples, width, height, bands, scenes, fmt = _cloud_load_cube(args.input)
+    wanted = range(bands) if args.band is None else [args.band]
+    print(f"=== cube statistics: {args.input} ===")
+    print(f"  {width}x{height} x{bands} bands x{scenes} scenes "
+          f"{_CLOUD_FORMAT_NAMES.get(fmt, '?')}")
+    for band in wanted:
+        stats = _cloud.band_stats(samples, width, height, bands, scenes, fmt,
+                                  band)
+        print(f"  band {band}: min={stats['minimum']:.4g} "
+              f"max={stats['maximum']:.4g} mean={stats['mean']:.4g} "
+              f"stddev={stats['stddev']:.4g} n={stats['count']}")
+        if args.histogram:
+            hist = stats["histogram"]
+            peak = max(hist) if hist else 0
+            for start in range(0, 256, 32):
+                chunk = hist[start:start + 32]
+                print("    %3d: %s" % (start, " ".join(
+                    f"{c:>7d}" for c in chunk)))
+            print(f"    peak bin count: {peak}")
+    return 0
+
+
+def _cloud_render(args) -> int:
+    samples, width, height, bands, scenes, fmt = _cloud_load_cube(args.input)
+    if args.scene >= scenes:
+        print(f"pyra: error: scene {args.scene} is outside the cube "
+              f"({scenes} scenes)", file=sys.stderr)
+        return 1
+    rgb = _cloud.render_rgb(samples, width, height, bands, scenes, fmt,
+                            args.scene, args.red, args.green, args.blue,
+                            args.window, args.level, args.window, args.level,
+                            args.window, args.level)
+    with open(args.output, "wb") as f:
+        f.write(f"P6\n{width} {height}\n255\n".encode())
+        f.write(rgb)
+    print(f"Rendered {args.input} scene {args.scene} -> {args.output}")
+    print(f"  bands: r={args.red} g={args.green} b={args.blue} "
+          f"window={args.window} level={args.level}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -601,6 +835,20 @@ def main(argv=None) -> int:
             if args.med_cmd == "preview":
                 return _med_preview(args)
             print(f"Unknown medical command: {args.med_cmd}", file=sys.stderr)
+            return 2
+
+        if args.cmd == "cloud":
+            if args.cloud_cmd == "encode":
+                return _cloud_encode(args)
+            if args.cloud_cmd == "decode":
+                return _cloud_decode(args)
+            if args.cloud_cmd == "info":
+                return _cloud_info(args)
+            if args.cloud_cmd == "stats":
+                return _cloud_stats(args)
+            if args.cloud_cmd == "render":
+                return _cloud_render(args)
+            print(f"Unknown cloud command: {args.cloud_cmd}", file=sys.stderr)
             return 2
 
         print(f"Unknown command: {args.cmd}", file=sys.stderr)
