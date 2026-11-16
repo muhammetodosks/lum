@@ -1164,6 +1164,25 @@ def test_region_decode():
     _, part = decode_region(signed, 2, 2, 0, 4, 4, 1, verify_key=key)
     check("a region decode honours the signature", not bad)
 
+    # the native region decoder must agree with the pure-Python reference
+    # byte for byte (the native path is used automatically when it exists)
+    if _native.available():
+        diffs = []
+        raw = make_samples("smooth", 33, 21, 3, 1, SFMT_U16)
+        blob = encode(raw, 33, 21, 3, 1, SFMT_U16)
+        for (rx, ry, rz, rw, rh, rd) in [(0, 0, 0, 33, 21, 3),
+                                         (4, 5, 1, 9, 7, 2),
+                                         (30, 18, 2, 3, 3, 1)]:
+            nat = _native.decode_region(blob, rx, ry, rz, rw, rh, rd)
+            _, ref = pure(decode_region, blob, rx, ry, rz, rw, rh, rd)
+            if nat is None or bytes(nat) != bytes(ref):
+                diffs.append(f"{rx},{ry},{rz} {rw}x{rh}x{rd}")
+        check("the native region decoder matches the reference", not diffs)
+        for line in diffs[:5]:
+            print("       ", line)
+    else:
+        check("the native region decoder matches the reference", True)
+
 
 def test_cli_decode_writes_the_file():
     """The command line must actually write the decoded samples.

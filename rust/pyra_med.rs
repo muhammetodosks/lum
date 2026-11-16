@@ -1513,6 +1513,278 @@ fn parse_header(data: &[u8]) -> Result<MedHeader, isize> {
     })
 }
 
+/// Decode the residual symbols of one tile body.
+///
+/// The predictor table has already been split off by the caller, so `stream`
+/// is the entropy stream of the tile. The four coding paths (escaped
+/// symbols, LZ coded bytes, byte planes with one model per plane and the
+/// plain byte stream) all end in the same residual vector.
+unsafe fn decode_tile_stream(
+    stream: &[u8],
+    flags: u32,
+    method: i32,
+    count: usize,
+    fmt: &MedFormat,
+) -> Result<Vec<u32>, isize> {
+    if method != METHOD_RAW && method != METHOD_LZ {
+        return Err(E_MED_METHOD);
+    }
+    if flags & TILE_FLAG_ESCAPE as u32 != 0 {
+        // one symbol per sample: zig-zag values plus escaped residuals
+        if method == METHOD_LZ {
+            let mut dec = RangeDec::new(stream, ENTROPY_SYMBOLS_LZ);
+            let mut tokens: Vec<u32> = Vec::new();
+            let limit = count * (1 + fmt.escape_chunks) + 64;
+            loop {
+                let sym = dec.decode_symbol() as u32;
+                tokens.push(sym);
+                if sym == LZ_TOKEN_EOF {
+                    break;
+                }
+                if tokens.len() > limit {
+                    return Err(E_MED_LZ);
+                }
+            }
+            let bytes = lz_decode_bounded(&tokens, limit)?;
+            escape_residuals(bytes.iter().map(|&b| b as u32), count, fmt)
+        } else {
+            let mut dec = RangeDec::new(stream, ESCAPE_ALPHABET);
+            let iter = std::iter::from_fn(|| Some(dec.decode_symbol() as u32));
+            escape_residuals(iter, count, fmt)
+        }
+    } else {
+        let packed: Vec<u8> = if method == METHOD_LZ {
+            let mut dec = RangeDec::new(stream, ENTROPY_SYMBOLS_LZ);
+            let mut tokens: Vec<u32> = Vec::new();
+            let limit = count * fmt.value_bytes * 2 + 64;
+            loop {
+                let sym = dec.decode_symbol() as u32;
+                tokens.push(sym);
+                if sym == LZ_TOKEN_EOF {
+                    break;
+                }
+                if tokens.len() > limit {
+                    return Err(E_MED_LZ);
+                }
+            }
+            lz_decode(&tokens, count * fmt.value_bytes)?
+        } else if flags & TILE_FLAG_CONTEXT as u32 != 0 {
+            entropy_decode_planes(stream, ENTROPY_SYMBOLS_RAW, fmt.value_bytes, count)
+        } else {
+            entropy_decode_bytes(stream, ENTROPY_SYMBOLS_RAW, count * fmt.value_bytes)
+        };
+        if flags & TILE_FLAG_SPLIT as u32 != 0 {
+            Ok(merge_planes(&packed, count, fmt.value_bytes))
+        } else {
+            Ok(packed[..count].iter().map(|&b| b as u32).collect())
+        }
+    }
+}
+
+/// Decode one tile of a container into its canonical rows.
+///
+/// The rows are cached, because a region read often touches the same tile
+/// more than once (and because the volumetric predictor needs the tile of
+/// the previous slice).
+struct RoiState<'a> {
+    data: &'a [u8],
+    index: &'a [u8],
+    grid: &'a [TileGeom],
+    tiles_per_slice: usize,
+    channels: usize,
+    predictor: i32,
+    fmt: MedFormat,
+    cache: std::collections::HashMap<(usize, usize), Vec<Vec<u32>>>,
+}
+
+impl<'a> RoiState<'a> {
+    unsafe fn tile_rows(&mut self, zz: usize, t: usize) -> Result<Vec<Vec<u32>>, isize> {
+        if let Some(hit) = self.cache.get(&(zz, t)) {
+            return Ok(hit.clone());
+        }
+        // copy the geometry out, the borrow of self.grid would conflict
+        // with the recursive call below
+        let (gx, gy, gw, gh) = (self.grid[t].x, self.grid[t].y, self.grid[t].w, self.grid[t].h);
+        let data = self.data;
+        let index = self.index;
+        let entry_off = (zz * self.tiles_per_slice + t) * MED_INDEX_ENTRY_SIZE;
+        let tile_off = rd_u32(index, entry_off) as usize;
+        let tile_len = rd_u32(index, entry_off + 4) as usize;
+        let method = index[entry_off + 8] as i32;
+        let flags = index[entry_off + 9] as u32;
+        let crc = rd_u32(index, entry_off + 12);
+        if tile_off + tile_len > data.len() {
+            return Err(E_MED_TRUNC);
+        }
+        let body = &data[tile_off..tile_off + tile_len];
+        if crc32(body) != crc {
+            return Err(E_MED_CRC);
+        }
+        let (stream, pred_ids): (&[u8], Vec<i32>) =
+            if flags & TILE_FLAG_ADAPTIVE as u32 != 0 {
+                let nbytes = (gh + 1) / 2;
+                if body.len() < nbytes {
+                    return Err(E_MED_TRUNC);
+                }
+                (&body[nbytes..], unpack_filter_bits(&body[..nbytes], gh))
+            } else {
+                (body, vec![self.predictor; gh])
+            };
+        let vps = self.fmt.values_per_sample;
+        let per_row = gw * self.channels * vps;
+        let count = per_row * gh;
+        let residuals = decode_tile_stream(stream, flags, method, count, &self.fmt)?;
+        // the volumetric predictor reads the previous slice, so the context
+        // tile is only decoded when the row table actually asks for it
+        let need_ctx = zz > 0 && pred_ids.iter().any(|&p| p == PRED_SLICE);
+        let ctx: Option<Vec<u32>> = if need_ctx {
+            let prev = self.tile_rows(zz - 1, t)?;
+            let mut flat: Vec<u32> = Vec::with_capacity(per_row * gh);
+            for r in 0..gh {
+                flat.extend_from_slice(&prev[r]);
+            }
+            Some(flat)
+        } else {
+            None
+        };
+        let flat = reconstruct_tile(
+            &residuals,
+            &pred_ids,
+            per_row,
+            gh,
+            self.channels,
+            &self.fmt,
+            ctx.as_deref(),
+        );
+        let mut rows: Vec<Vec<u32>> = Vec::with_capacity(gh);
+        for r in 0..gh {
+            rows.push(flat[r * per_row..(r + 1) * per_row].to_vec());
+        }
+        self.cache.insert((zz, t), rows.clone());
+        Ok(rows)
+    }
+}
+
+/// Decode only a rectangular region of a container.
+///
+/// The region is given in samples: `x`/`y` are the first column and row of
+/// the first slice, `z` the first slice, and `width`/`height`/`depth` the
+/// size of the region. Only the tiles that touch the region are decoded.
+///
+/// The result is the tight region: slice by slice, row by row, and only the
+/// requested columns - exactly what a viewer needs to paint the window.
+///
+/// Every check that does not need the complete sample set is performed: the
+/// magic bytes, the version, the header CRC, the metadata CRC, the tile
+/// index and the CRC of every tile that is touched. The whole-payload CRC
+/// and the SHA-256 content hash are **not** checked, because they need every
+/// sample of the container - which is precisely what this call avoids
+/// decoding.
+#[no_mangle]
+pub unsafe extern "C" fn pyra_med_decode_region(
+    src: *const u8,
+    len: usize,
+    x: i32,
+    y: i32,
+    z: i32,
+    width: i32,
+    height: i32,
+    depth: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> isize {
+    if src.is_null() {
+        return E_MED_HEADER;
+    }
+    if width <= 0 || height <= 0 || depth <= 0 || x < 0 || y < 0 || z < 0 {
+        return E_MED_SHAPE;
+    }
+    let data = std::slice::from_raw_parts(src, len);
+    let hdr = match parse_header(data) {
+        Ok(h) => h,
+        Err(e) => return e,
+    };
+    let fmt = match med_format(hdr.sample_format) {
+        Some(f) => f,
+        None => return E_MED_FORMAT,
+    };
+    if hdr.bits != 8 * fmt.sample_bytes as u32 {
+        return E_MED_HEADER;
+    }
+    if hdr.meta_offset + hdr.meta_size > data.len() {
+        return E_MED_TRUNC;
+    }
+    let meta_blob = &data[hdr.meta_offset..hdr.meta_offset + hdr.meta_size];
+    if crc32(meta_blob) != hdr.meta_crc {
+        return E_MED_CRC;
+    }
+    if hdr.index_offset + hdr.index_size > data.len() {
+        return E_MED_TRUNC;
+    }
+    let index = &data[hdr.index_offset..hdr.index_offset + hdr.index_size];
+    let grid = tile_grid(hdr.width, hdr.height, hdr.tile_size);
+    let tiles_per_slice = grid.len();
+    if hdr.num_tiles != tiles_per_slice * hdr.depth {
+        return E_MED_HEADER;
+    }
+    let x = x as usize;
+    let y = y as usize;
+    let z = z as usize;
+    let width = width as usize;
+    let height = height as usize;
+    let depth = depth as usize;
+    if x + width > hdr.width || y + height > hdr.height || z + depth > hdr.depth {
+        return E_MED_SHAPE;
+    }
+    let vps = fmt.values_per_sample;
+    let channels = hdr.channels;
+
+    let mut state = RoiState {
+        data,
+        index,
+        grid: &grid,
+        tiles_per_slice,
+        channels,
+        predictor: hdr.predictor,
+        fmt,
+        cache: std::collections::HashMap::new(),
+    };
+
+    let mut out: Vec<u8> = Vec::with_capacity(
+        depth * height * width * channels * state.fmt.sample_bytes,
+    );
+    for zz in z..z + depth {
+        for r in y..y + height {
+            for (t, geom) in grid.iter().enumerate() {
+                if geom.y > r || r >= geom.y + geom.h {
+                    continue;
+                }
+                let c0 = x.max(geom.x);
+                let c1 = (x + width).min(geom.x + geom.w);
+                if c0 >= c1 {
+                    continue;
+                }
+                let rows = match state.tile_rows(zz, t) {
+                    Ok(v) => v,
+                    Err(e) => return e,
+                };
+                let lo = (c0 - geom.x) * channels * vps;
+                let hi = (c1 - geom.x) * channels * vps;
+                let row = &rows[r - geom.y];
+                out.extend_from_slice(&decode_row(&row[lo..hi], &state.fmt));
+            }
+        }
+    }
+
+    let len = out.len();
+    let boxed = out.into_boxed_slice();
+    let ptr = boxed.as_ptr() as *mut u8;
+    std::mem::forget(boxed);
+    *out_ptr = ptr;
+    *out_len = len;
+    0
+}
+
 /// Decode a whole container into the raw sample bytes.
 #[no_mangle]
 pub unsafe extern "C" fn pyra_med_decode(
@@ -1595,64 +1867,7 @@ pub unsafe extern "C" fn pyra_med_decode(
         }
         let per_row = geom.w * hdr.channels * vps;
         let count = per_row * geom.h;
-        let residuals: Vec<u32> = if flags & TILE_FLAG_ESCAPE as u32 != 0 {
-            // one symbol per sample: zig-zag values plus escaped residuals
-            if method == METHOD_LZ {
-                let mut dec = RangeDec::new(stream, ENTROPY_SYMBOLS_LZ);
-                let mut tokens: Vec<u32> = Vec::new();
-                let limit = count * (1 + fmt.escape_chunks) + 64;
-                loop {
-                    let sym = dec.decode_symbol() as u32;
-                    tokens.push(sym);
-                    if sym == LZ_TOKEN_EOF {
-                        break;
-                    }
-                    if tokens.len() > limit {
-                        return Err(E_MED_LZ);
-                    }
-                }
-                let bytes = lz_decode_bounded(&tokens, limit)?;
-                escape_residuals(bytes.iter().map(|&b| b as u32), count, &fmt)?
-            } else {
-                let mut dec = RangeDec::new(stream, ESCAPE_ALPHABET);
-                let iter = std::iter::from_fn(|| Some(dec.decode_symbol() as u32));
-                escape_residuals(iter, count, &fmt)?
-            }
-        } else {
-            let packed: Vec<u8> = if method == METHOD_LZ {
-                let mut dec = RangeDec::new(stream, ENTROPY_SYMBOLS_LZ);
-                let mut tokens: Vec<u32> = Vec::new();
-                let limit = count * fmt.value_bytes * 2 + 64;
-                loop {
-                    let sym = dec.decode_symbol() as u32;
-                    tokens.push(sym);
-                    if sym == LZ_TOKEN_EOF {
-                        break;
-                    }
-                    if tokens.len() > limit {
-                        return Err(E_MED_LZ);
-                    }
-                }
-                match lz_decode(&tokens, count * fmt.value_bytes) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                }
-            } else if flags & TILE_FLAG_CONTEXT as u32 != 0 {
-                entropy_decode_planes(
-                    stream,
-                    ENTROPY_SYMBOLS_RAW,
-                    fmt.value_bytes,
-                    count,
-                )
-            } else {
-                entropy_decode_bytes(stream, ENTROPY_SYMBOLS_RAW, count * fmt.value_bytes)
-            };
-            if flags & TILE_FLAG_SPLIT as u32 != 0 {
-                merge_planes(&packed, count, fmt.value_bytes)
-            } else {
-                packed[..count].iter().map(|&b| b as u32).collect()
-            }
-        };
+        let residuals = decode_tile_stream(stream, flags, method, count, &fmt)?;
         Ok((residuals, pred_ids))
     });
 

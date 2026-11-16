@@ -757,6 +757,14 @@ def decode_region(blob: bytes, x: int, y: int, z: int, width: int,
     if z + depth > hdr.depth:
         raise ValueError("the region does not fit into the volume")
 
+    # Native region path: only the tiles that touch the window are decoded.
+    # The signature has already been verified above, so the native core only
+    # has to do the structural checks. None means "not handled here" and the
+    # reference path below then runs and raises the very same exception.
+    native_region = _native.decode_region(blob, x, y, z, width, height, depth)
+    if native_region is not None:
+        return metadata, native_region
+
     grid = list(_tile_grid(hdr.width, hdr.height, hdr.tile_size))
     tiles_per_slice = len(grid)
     if hdr.num_tiles != tiles_per_slice * hdr.depth:

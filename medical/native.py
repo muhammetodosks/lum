@@ -49,6 +49,12 @@ def _load():
         lib.pyra_med_info.restype = _isize
         lib.pyra_med_info.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, ctypes.POINTER(_i32)]
+        lib.pyra_med_decode_region.restype = _isize
+        lib.pyra_med_decode_region.argtypes = [
+            ctypes.POINTER(ctypes.c_ubyte), _sz,
+            _i32, _i32, _i32, _i32, _i32, _i32,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+            ctypes.POINTER(_sz)]
         lib.pyra_free_buf.restype = None
         lib.pyra_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
     except OSError:
@@ -131,6 +137,33 @@ def decode(blob: bytes) -> bytes | None:
         lib.pyra_free_buf(out_p, out_len.value)
 
 
+def decode_region(blob: bytes, x: int, y: int, z: int, width: int,
+                  height: int, depth: int) -> bytes | None:
+    """Decode only a rectangular region of a container in one native call.
+
+    Returns the tight region (slice by slice, row by row, only the
+    requested columns) or None when the backend is unavailable or the
+    request is rejected (the caller then runs the reference path, which
+    raises the very same exception).
+    """
+    lib = _load()
+    if lib is None or not enabled():
+        return None
+    buf = ctypes.create_string_buffer(bytes(blob), len(blob))
+    src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
+    out_p = ctypes.POINTER(ctypes.c_ubyte)()
+    out_len = ctypes.c_size_t()
+    rc = lib.pyra_med_decode_region(src, len(blob), x, y, z, width, height,
+                                    depth, ctypes.byref(out_p),
+                                    ctypes.byref(out_len))
+    if rc != 0 or not out_p:
+        return None
+    try:
+        return ctypes.string_at(out_p, out_len.value)
+    finally:
+        lib.pyra_free_buf(out_p, out_len.value)
+
+
 def info(blob: bytes) -> dict | None:
     """Read the header of a container without decoding the samples."""
     lib = _load()
@@ -149,4 +182,4 @@ def info(blob: bytes) -> dict | None:
     }
 
 
-__all__ = ["encode", "decode", "info", "available", "enabled"]
+__all__ = ["encode", "decode", "decode_region", "info", "available", "enabled"]

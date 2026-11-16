@@ -405,7 +405,7 @@ auditability. The full specification lives in
 | Preview | Window/level 8-bit preview of any slice, computed in C++ |
 | DICOM files | Reads and writes real DICOM Part 10 files (explicit VR little endian, uncompressed), so a container can go to a PACS and come back |
 | Context modelling (v3) | ✅ | One adaptive model per byte plane, 6-18 % smaller on textured volumes |
-| Region decoding | ✅ | Only the tiles a box touches are decoded |
+| Region decoding | ✅ | Only the tiles a box touches are decoded, in Python and in Rust |
 | Signed containers (HMAC-SHA256) | ✅ | A keyed MAC over the whole file, in the reserved header bytes |
 | Third-party DICOM conformance | ✅ | pydicom parses our files and we parse pydicom's, both byte-exact |
 | Metadata fidelity | PYRM → DICOM → PYRM keeps the clinical attributes **exactly** the same set - no loss, no invention, no duplicated DICOM tag |

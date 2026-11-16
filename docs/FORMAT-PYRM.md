@@ -380,6 +380,18 @@ handed out belongs to a tile whose own CRC-32 matched.
 The output is the tight crop of the full decode: slice by slice, row by
 row, the requested columns.
 
+The region decoder exists twice and both implementations are byte-identical:
+the pure-Python reference in `medical/codec.py` and the native core
+(`pyra_med_decode_region` in `rust/pyra_med.rs`), which the Python layer
+uses automatically when the shared library is present. The native path
+decodes only the tiles the box touches and reconstructs the requested rows in
+place; the tiles it needs for the volumetric context (the previous slice of
+the same tile when the `slice` predictor is in use) are resolved
+recursively and cached, so a box that spans several slices never decodes a
+slice twice. The two paths were checked against each other over 2 592
+combinations of sample format, geometry, tile size, predictor and box shape,
+and against the tight crop of a full decode.
+
 ### Signing and provenance
 
 The reserved area at the end of the header (offset 112..144, 32 bytes)

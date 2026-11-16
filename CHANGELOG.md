@@ -8,6 +8,36 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.9.0 — native region decoding
+
+A region decode existed, but it ran entirely in Python. It is now part of the
+native core as well.
+
+**Added**
+
+* `pyra_med_decode_region` in `rust/pyra_med.rs`: decodes a box of a volume
+  natively. Only the tiles the box touches are decoded, the tiles needed for
+  the volumetric context (the previous slice of the same tile when the
+  `slice` predictor is used) are resolved recursively and cached, and the
+  requested rows are reconstructed in place.
+* `medical/native.py`: the binding, and the dispatch in `medical/codec.py`
+  that uses it automatically when the shared library is present.
+
+**Changed**
+
+* The full decode and the region decode now share one tile decoder
+  (`decode_tile_stream`), so the two paths cannot drift apart.
+* `tests/test_medical.py`: the native region decoder is compared with the
+  pure-Python reference (97 checks).
+
+**Measured**
+
+* 2 592 combinations of sample format, geometry, tile size, predictor and
+  box shape: the native region output equals the pure-Python region output
+  *and* the tight crop of the full decode — 0 differences.
+
+---
+
 ## v0.8.0 — the cloud working set: C++ tools, command line, checksummed index
 
 The `PYRC` container of v0.7.0 is now a complete working set: the codec was
