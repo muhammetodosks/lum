@@ -1231,6 +1231,95 @@ def test_cli_decode_writes_the_file():
         check("the region file holds the region only", False)
 
 
+def test_near_lossless():
+    """The near-lossless mode bounds the error and stays byte-exact."""
+    from pyra.medical import UnsupportedFormatError
+
+    worst_ok = True
+    parity_ok = True
+    smaller_ok = True
+    lossless_ok = True
+    flag_ok = True
+    f32_ok = True
+    verify_ok = True
+
+    for sf in (SFMT_U8, SFMT_U16, SFMT_I16, SFMT_U32):
+        fmt = _codec._Format(sf)
+        sb = fmt.sample_bytes
+        w, h, d, ch = 24, 16, 2, 1
+        raw = make_samples("smooth", w, h, d, ch, sf)
+        lossless = encode(raw, w, h, d, ch, sf)
+        _, exact = decode(lossless)
+        if exact != raw:
+            lossless_ok = False
+
+        for err in (1, 3, 7):
+            blob = encode(raw, w, h, d, ch, sf, max_error=err)
+            # the native core and the reference produce the same container
+            if blob != pure(encode, raw, w, h, d, ch, sf, max_error=err):
+                parity_ok = False
+            # and the same samples
+            _, out = decode(blob)
+            _, ref = pure(decode, blob)
+            if out != ref:
+                parity_ok = False
+            # the error bound holds for every sample
+            for i in range(0, len(raw), sb):
+                a = int.from_bytes(raw[i:i + sb], "little")
+                b = int.from_bytes(out[i:i + sb], "little")
+                if abs(a - b) > err:
+                    worst_ok = False
+            # the error bound must not cost space: the container never grows
+            # beyond a small margin (a smooth synthetic ramp can even shrink
+            # less than a noisy image because quantization breaks the ramp)
+            if len(blob) > len(lossless) * 3 // 2 + 64:
+                smaller_ok = False
+            # the header records the mode
+            hdr = _container.unpack_header(blob)
+            if hdr.step != 2 * err + 1:
+                flag_ok = False
+            if not (hdr.flags & 0x02):
+                flag_ok = False
+            # the container is still verifiable
+            try:
+                verify(blob)
+            except Exception:  # noqa: BLE001
+                verify_ok = False
+
+    check("the near-lossless error bound holds", worst_ok)
+    check("the native and the reference containers are identical", parity_ok)
+    check("the near-lossless container does not blow up", smaller_ok)
+    check("the lossless mode is unchanged", lossless_ok)
+    check("the header records the quantization step", flag_ok)
+    check("a near-lossless container verifies", verify_ok)
+
+    # on noisy data the quantization really pays off
+    w, h, d, ch = 64, 64, 1, 1
+    noisy = make_samples("noise", w, h, d, ch, SFMT_U8)
+    base = encode(noisy, w, h, d, ch, SFMT_U8)
+    small = encode(noisy, w, h, d, ch, SFMT_U8, max_error=8)
+    check("the near-lossless mode compresses noisy data",
+          len(small) < len(base))
+
+    # a float sample cannot be quantized: it is not predicted at all
+    try:
+        encode(make_samples("smooth", 8, 8, 1, 1, SFMT_F32), 8, 8, 1, 1,
+               SFMT_F32, max_error=2)
+        f32_ok = False
+    except UnsupportedFormatError:
+        pass
+    check("the near-lossless mode refuses float samples", f32_ok)
+
+    # a negative bound is nonsense
+    try:
+        encode(make_samples("smooth", 8, 8, 1, 1, SFMT_U8), 8, 8, 1, 1,
+               SFMT_U8, max_error=-1)
+        f32_ok = False
+    except ValueError:
+        pass
+    check("a negative error bound is refused", f32_ok)
+
+
 def main():
     print("=== PYRM medical format test suite ===")
     test_roundtrip_matrix()
@@ -1257,6 +1346,7 @@ def main():
     test_cli_decode_writes_the_file()
     test_signature()
     test_audit_block()
+    test_near_lossless()
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("Failures:")

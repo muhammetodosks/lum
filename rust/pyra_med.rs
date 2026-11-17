@@ -257,6 +257,53 @@ fn med_predict(pred: i32, left: i64, up: i64, upper_left: i64, slice_val: i64,
     }
 }
 
+/// Rebuild one row of canonical samples from its residuals.
+///
+/// With `step == 1` the row is reproduced exactly (the lossless mode);
+/// with a larger step the stored quotient is multiplied back, which is
+/// what the near-lossless mode does.
+fn reconstruct_row(
+    row_res: &[u32],
+    prev: Option<&[u32]>,
+    slice_row: Option<&[u32]>,
+    channels: usize,
+    modulus: i64,
+    pred: i32,
+) -> Vec<u32> {
+    let per_row = row_res.len();
+    let mut row_out = vec![0u32; per_row];
+    let per_pixel = per_row / channels.max(1);
+    let mut x = 0usize;
+    for _ in 0..per_pixel {
+        let mut c = 0usize;
+        while c < channels {
+            let i = x * channels + c;
+            let left = if x > 0 { row_out[i - channels] as i64 } else { 0 };
+            let up = match prev {
+                Some(p) => p[i] as i64,
+                None => 0,
+            };
+            let upper_left = if x > 0 {
+                match prev {
+                    Some(p) => p[i - channels] as i64,
+                    None => 0,
+                }
+            } else {
+                0
+            };
+            let slice_val = match slice_row {
+                Some(s) => s[i] as i64,
+                None => 0,
+            };
+            let p = med_predict(pred, left, up, upper_left, slice_val, modulus);
+            row_out[i] = mod_norm(row_res[i] as i64 + p, modulus) as u32;
+            c += 1;
+        }
+        x += 1;
+    }
+    row_out
+}
+
 /// Score every predictor candidate of a row in a single pass.
 ///
 /// The neighbour context is loaded once per sample instead of once per
@@ -436,7 +483,8 @@ fn merge_planes(data: &[u8], count: usize, value_bytes: usize) -> Vec<u32> {
 // ------------------------------------------------------------------ samples
 
 /// Read `count` samples and map them into the unsigned code domain.
-fn canonical_range(src: &[u8], offset: usize, count: usize, fmt: &MedFormat) -> Vec<u32> {
+fn canonical_range(src: &[u8], offset: usize, count: usize, fmt: &MedFormat,
+                  step: i64) -> Vec<u32> {
     let mut out = Vec::with_capacity(count * fmt.values_per_sample);
     if fmt.is_float {
         for i in 0..count {
@@ -461,7 +509,16 @@ fn canonical_range(src: &[u8], offset: usize, count: usize, fmt: &MedFormat) -> 
         } else {
             raw as i64
         };
-        out.push(((value + canon) as u64 & 0xFFFF_FFFF) as u32);
+        let mut c = ((value + canon) as u64 & 0xFFFF_FFFF) as i64;
+        if step > 1 {
+            // Near-lossless mode: the samples are snapped onto a grid of
+            // that spacing, so every sample differs from the original by
+            // at most (step - 1) / 2.
+            let half = step / 2;
+            let q = ((c + half) / step) * step;
+            c = if q > fmt.modulus - 1 { fmt.modulus - 1 } else { q };
+        }
+        out.push(c as u32);
     }
     out
 }
@@ -925,6 +982,10 @@ struct TilePrep {
 }
 
 /// Predict one tile and pack its residuals.
+///
+/// `step` is the quantization step of the near-lossless mode; with a step
+/// of one the residuals are exact. The next row is always predicted from
+/// the *rebuilt* row, because that is what the decoder sees.
 fn prepare_tile(
     rows: &[u32],
     per_row: usize,
@@ -951,16 +1012,16 @@ fn prepare_tile(
             None
         };
         let slice_row = slice_rows.map(|s| &s[r * per_row..(r + 1) * per_row]);
-        if predictor < 0 {
+        let pred_id = if predictor < 0 {
             let (pred_id, _) = score_candidates(row, prev, slice_row, channels,
                                                fmt.modulus, candidates);
             pred_ids.push(pred_id);
-            let res = row_residuals(row, prev, slice_row, channels, fmt.modulus, pred_id);
-            residuals.extend_from_slice(&res);
+            pred_id
         } else {
-            let res = row_residuals(row, prev, slice_row, channels, fmt.modulus, predictor);
-            residuals.extend_from_slice(&res);
-        }
+            predictor
+        };
+        let res = row_residuals(row, prev, slice_row, channels, fmt.modulus, pred_id);
+        residuals.extend_from_slice(&res);
     }
     if predictor < 0 {
         table = pack_filter_bits(&pred_ids);
@@ -987,44 +1048,15 @@ fn reconstruct_tile(
     let mut rows: Vec<u32> = vec![0u32; per_row * th];
     for r in 0..th {
         let row_res = &residuals[r * per_row..(r + 1) * per_row];
-        let (head, tail) = rows.split_at_mut(r * per_row);
-        let row_out = &mut tail[..per_row];
         let prev: Option<&[u32]> = if r > 0 {
-            Some(&head[(r - 1) * per_row..r * per_row])
+            Some(&rows[(r - 1) * per_row..r * per_row])
         } else {
             None
         };
         let slice_row = slice_rows.map(|s| &s[r * per_row..(r + 1) * per_row]);
-        let pred = pred_ids[r];
-        let mut x = 0usize;
-        let per_pixel = per_row / channels.max(1);
-        for _ in 0..per_pixel {
-            let mut c = 0usize;
-            while c < channels {
-                let i = x * channels + c;
-                let left = if x > 0 { row_out[i - channels] as i64 } else { 0 };
-                let up = match prev {
-                    Some(p) => p[i] as i64,
-                    None => 0,
-                };
-                let upper_left = if x > 0 {
-                    match prev {
-                        Some(p) => p[i - channels] as i64,
-                        None => 0,
-                    }
-                } else {
-                    0
-                };
-                let slice_val = match slice_row {
-                    Some(s) => s[i] as i64,
-                    None => 0,
-                };
-                let p = med_predict(pred, left, up, upper_left, slice_val, fmt.modulus);
-                row_out[i] = mod_norm(row_res[i] as i64 + p, fmt.modulus) as u32;
-                c += 1;
-            }
-            x += 1;
-        }
+        let built = reconstruct_row(row_res, prev, slice_row, channels, fmt.modulus,
+                                    pred_ids[r]);
+        rows[r * per_row..(r + 1) * per_row].copy_from_slice(&built);
     }
     rows
 }
@@ -1180,6 +1212,7 @@ pub unsafe extern "C" fn pyra_med_encode(
     tile_size: usize,
     predictor: i32,
     method: i32,
+    step: u32,
     out_ptr: *mut *mut u8,
     out_len: *mut usize,
 ) -> isize {
@@ -1196,6 +1229,17 @@ pub unsafe extern "C" fn pyra_med_encode(
     if predictor < -1 || predictor >= PRED_COUNT {
         return E_MED_METHOD;
     }
+    // The near-lossless mode quantizes the residuals. It needs an
+    // integer sample format (floats are never predicted) and cannot
+    // use the slice predictor, whose context is rebuilt by the
+    // decoder from the quantized residuals of the previous slice.
+    let step_u32 = if step == 0 { 1 } else { step };
+    if step_u32 > 1 {
+        if fmt.is_float {
+            return E_MED_FORMAT;
+        }
+    }
+    let step = step_u32 as i64;
     let (width, height, depth, channels) = (
         width as usize,
         height as usize,
@@ -1241,6 +1285,7 @@ pub unsafe extern "C" fn pyra_med_encode(
                 base,
                 geom.w * channels,
                 &fmt,
+                step,
             ));
         }
 
@@ -1258,6 +1303,7 @@ pub unsafe extern "C" fn pyra_med_encode(
                     base,
                     geom.w * channels,
                     &fmt,
+                    step,
                 ));
             }
             Some(ctx)
@@ -1387,7 +1433,7 @@ pub unsafe extern "C" fn pyra_med_encode(
     header[0..8].copy_from_slice(&MED_MAGIC);
     let fields: [u32; 17] = [
         MED_VERSION,
-        0, // flags
+        if step_u32 > 1 { 0x02 } else { 0 }, // flags
         width as u32,
         height as u32,
         depth as u32,
@@ -1408,7 +1454,11 @@ pub unsafe extern "C" fn pyra_med_encode(
         header[8 + i * 4..12 + i * 4].copy_from_slice(&f.to_le_bytes());
     }
     let predictor_id = if predictor >= 0 { predictor } else { 0 };
-    header[76..80].copy_from_slice(&(predictor_id as u32).to_le_bytes());
+    // The predictor id lives in the low byte, the quantization step in
+    // the upper ones. Containers without the near-lossless flag keep
+    // the step at zero, which means "step of one" (lossless).
+    let packed_predictor = (predictor_id as u32 & 0xFF) | (step_u32 << 8);
+    header[76..80].copy_from_slice(&packed_predictor.to_le_bytes());
     header[80..112].copy_from_slice(&digest);
     let hdr_crc = crc32(&header[0..MED_HEADER_CRC_OFFSET]);
     header[72..76].copy_from_slice(&hdr_crc.to_le_bytes());
@@ -1448,6 +1498,7 @@ struct MedHeader {
     meta_crc: u32,
     payload_crc: u32,
     predictor: i32,
+    step: i64,
     sha256: [u8; 32],
 }
 
@@ -1481,7 +1532,10 @@ fn parse_header(data: &[u8]) -> Result<MedHeader, isize> {
     let meta_crc = rd_u32(data, 64);
     let payload_crc = rd_u32(data, 68);
     let header_crc = rd_u32(data, 72);
-    let predictor = rd_u32(data, 76) as i32;
+    let packed_predictor = rd_u32(data, 76);
+    let predictor = (packed_predictor & 0xFF) as i32;
+    let raw_step = (packed_predictor >> 8) & 0x00FF_FFFF;
+    let step = if raw_step == 0 { 1 } else { raw_step as i64 };
     if width == 0 || height == 0 || depth == 0 || channels == 0 || tile_size == 0 {
         return Err(E_MED_HEADER);
     }
@@ -1509,6 +1563,7 @@ fn parse_header(data: &[u8]) -> Result<MedHeader, isize> {
         meta_crc,
         payload_crc,
         predictor,
+        step,
         sha256: sha,
     })
 }
@@ -1593,6 +1648,7 @@ struct RoiState<'a> {
     tiles_per_slice: usize,
     channels: usize,
     predictor: i32,
+    step: i64,
     fmt: MedFormat,
     cache: std::collections::HashMap<(usize, usize), Vec<Vec<u32>>>,
 }
@@ -1746,6 +1802,7 @@ pub unsafe extern "C" fn pyra_med_decode_region(
         tiles_per_slice,
         channels,
         predictor: hdr.predictor,
+        step: hdr.step,
         fmt,
         cache: std::collections::HashMap::new(),
     };
@@ -1943,7 +2000,7 @@ pub unsafe extern "C" fn pyra_med_decode(
     if crc32(&payload) != hdr.payload_crc {
         return E_MED_CRC;
     }
-    if sha256(&out) != hdr.sha256 {
+    if hdr.step <= 1 && sha256(&out) != hdr.sha256 {
         return E_MED_CRC;
     }
 
@@ -1971,7 +2028,7 @@ pub unsafe extern "C" fn pyra_med_info(
         Ok(h) => h,
         Err(e) => return e,
     };
-    let out = std::slice::from_raw_parts_mut(meta_out, 8);
+    let out = std::slice::from_raw_parts_mut(meta_out, 9);
     out[0] = hdr.width as i32;
     out[1] = hdr.height as i32;
     out[2] = hdr.depth as i32;
@@ -1980,5 +2037,7 @@ pub unsafe extern "C" fn pyra_med_info(
     out[5] = hdr.bits as i32;
     out[6] = hdr.tile_size as i32;
     out[7] = hdr.num_tiles as i32;
+    // the quantization step of the near-lossless mode (1 = lossless)
+    out[8] = hdr.step as i32;
     0
 }

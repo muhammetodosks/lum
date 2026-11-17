@@ -43,7 +43,8 @@ The magic value is `b"PYRA\r\n\x1A\n"` — a recognizable 8-byte signature follo
 | Animation container | ✅ | Frame count + fps header |
 | CLI | ✅ | encode/decode/inspect/verify/benchmark |
 | Cloud container PYRC | ✅ | `test_cloud.py` 25 checks, Rust-only codec |
-| Medical container PYRM | ✅ | `test_medical.py` 49 checks, 864 native/pure parity trials |
+| Medical container PYRM | ✅ | `test_medical.py` 106 checks, native/pure parity trials |
+| Near-lossless PYRM | ✅ | `--max-error N`, absolute per-sample error bound, decoder unchanged |
 | DICOM Part 10 files | ✅ | Real DICOM in and out, explicit VR little endian, uncompressed |
 | 3D volume support | ✅ | Slice-local tiles, `slice` predictor for volumetric data |
 | SHA-256 content hash | ✅ | Every container carries the hash of the raw samples |

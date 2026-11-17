@@ -109,6 +109,10 @@ def _build_parser() -> argparse.ArgumentParser:
     me.add_argument("--predictor", choices=["auto"] + list(_MED_PRED_BY_NAME),
                     default="auto")
     me.add_argument("--method", choices=["auto", "raw", "lz"], default="auto")
+    me.add_argument("--max-error", type=int, default=0, metavar="N",
+                    help="switch to the near-lossless mode: every sample is "
+                         "reconstructed with an absolute error of at most N "
+                         "(0 = lossless)")
     me.add_argument("--meta", action="append", default=[],
                     metavar="KEY=VALUE", help="metadata entry (repeatable)")
     me.add_argument("--dicom", action="store_true",
@@ -412,7 +416,8 @@ def _med_encode(args) -> int:
                               method=method,
                               require_dicom=args.require_dicom,
                               sign_key=sign_key, audit=args.audit,
-                              audit_timestamp=args.audit_timestamp)
+                              audit_timestamp=args.audit_timestamp,
+                              max_error=args.max_error)
     with open(args.output, "wb") as f:
         f.write(blob)
     info = _med_codec.info(blob)
@@ -420,6 +425,10 @@ def _med_encode(args) -> int:
     print(f"  geometry: {info['width']}x{info['height']}x{info['depth']} "
           f"ch={info['channels']} {_MED_FORMAT_NAMES.get(info['sample_format'])}")
     print(f"  size: {len(blob)} bytes, tiles: {info['num_tiles']}")
+    step = info.get("step", 1)
+    if step > 1:
+        print(f"  near-lossless: maximum absolute error "
+              f"{(step - 1) // 2} (quantization step {step})")
     if args.dicom or args.require_dicom:
         print(f"  dicom compatible: "
               f"{_med_dicom.is_dicom_compatible(metadata)}")
@@ -470,6 +479,10 @@ def _med_info(args) -> int:
                 "bits", "tile_size", "num_tiles"):
         print(f"  {key}: {info[key]}")
     print(f"  format: {_MED_FORMAT_NAMES.get(info['sample_format'])}")
+    step = info.get("step", 1)
+    print(f"  mode: {'lossless' if step <= 1 else 'near-lossless'}"
+          + ("" if step <= 1 else
+             f" (maximum absolute error {(step - 1) // 2})"))
     print(f"  file_size: {len(blob)} bytes")
     metadata = _med_codec.decode(blob)[0]
     summary = _med_dicom.describe(metadata)

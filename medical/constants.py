@@ -87,6 +87,16 @@ PRED_CANDIDATES_3D = PRED_CANDIDATES_2D + (PRED_SLICE,)
 #: Bits per row in the row filter table.
 FILTER_BITS_PER_ROW = 4
 
+#: Container flag: the residuals are quantized, so the decoded samples may
+#: differ from the original ones by at most the recorded error bound.
+FLAG_NEAR_LOSSLESS = 0x02
+
+#: The predictor id lives in the low byte of the header field, the
+#: quantization step in the upper bytes.
+PREDICTOR_MASK = 0xFF
+STEP_SHIFT = 8
+STEP_MASK = 0xFFFFFF
+
 # --------------------------------------------------------------- tile methods
 METHOD_RAW = 0   # residual bytes straight into the entropy coder
 METHOD_LZ = 1    # residual bytes -> LZ77 token stream -> entropy coder

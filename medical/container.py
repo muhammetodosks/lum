@@ -38,6 +38,8 @@ import struct
 import zlib
 from .constants import (MAGIC, VERSION, VERSION_V1, VERSION_V2,
                         CorruptedFileError,
+                        FLAG_NEAR_LOSSLESS, PREDICTOR_MASK, STEP_MASK,
+                        STEP_SHIFT,
                         TILE_FLAG_ADAPTIVE, TILE_FLAG_SPLIT)
 
 HEADER_SIZE = 144
@@ -57,7 +59,7 @@ class Header:
                  "sample_format", "bits", "tile_size", "num_tiles",
                  "index_offset", "index_size", "meta_offset", "meta_size",
                  "meta_crc", "payload_crc", "header_crc", "predictor",
-                 "sha256", "signature")
+                 "sha256", "signature", "step")
 
     def __init__(self, **kw):
         for name in self.__slots__:
@@ -79,12 +81,20 @@ def pack_header(hdr: Header, sha256: bytes) -> bytes:
     signature = hdr.signature if hdr.signature else b"\x00" * 32
     if len(signature) != 32:
         raise ValueError("signature must be 32 bytes")
+    # The predictor id lives in the low byte of the header field; the
+    # upper bytes carry the quantization step of the near-lossless mode.
+    step = hdr.step if hdr.step else 1
+    flags = hdr.flags or 0
+    if step > 1:
+        flags |= FLAG_NEAR_LOSSLESS
+    packed_predictor = ((hdr.predictor or 0) & PREDICTOR_MASK) | \
+                       ((step & STEP_MASK) << STEP_SHIFT)
     body = _HDR.pack(
-        MAGIC, hdr.version, hdr.flags, hdr.width, hdr.height, hdr.depth,
+        MAGIC, hdr.version, flags, hdr.width, hdr.height, hdr.depth,
         hdr.channels, hdr.sample_format, hdr.bits, hdr.tile_size,
         hdr.num_tiles, hdr.index_offset, hdr.index_size, hdr.meta_offset,
-        hdr.meta_size, hdr.meta_crc, hdr.payload_crc, 0, hdr.predictor, sha256,
-        signature)
+        hdr.meta_size, hdr.meta_crc, hdr.payload_crc, 0, packed_predictor,
+        sha256, signature)
     crc = zlib.crc32(body[:HEADER_CRC_OFFSET]) & 0xFFFFFFFF
     return body[:HEADER_CRC_OFFSET] + struct.pack("<I", crc) + body[76:]
 
@@ -110,14 +120,21 @@ def unpack_header(data: bytes) -> Header:
         raise CorruptedFileError("header CRC mismatch")
     if index_size != num_tiles * INDEX_ENTRY_SIZE:
         raise CorruptedFileError("tile index size mismatch")
+    # The predictor id lives in the low byte, the quantization step of the
+    # near-lossless mode in the upper bytes. Containers written before the
+    # near-lossless mode carry the predictor alone, which reads as step 1.
+    predictor_id = predictor & PREDICTOR_MASK
+    step = (predictor >> STEP_SHIFT) & STEP_MASK
+    if step == 0:
+        step = 1
     return Header(version=version, flags=flags, width=width, height=height,
                   depth=depth, channels=channels, sample_format=sample_format,
                   bits=bits, tile_size=tile_size, num_tiles=num_tiles,
                   index_offset=index_offset, index_size=index_size,
                   meta_offset=meta_offset, meta_size=meta_size,
                   meta_crc=meta_crc, payload_crc=payload_crc,
-                  header_crc=header_crc, predictor=predictor, sha256=sha256,
-                  signature=signature)
+                  header_crc=header_crc, predictor=predictor_id, sha256=sha256,
+                  signature=signature, step=step)
 
 
 def pack_metadata(meta: dict | None) -> tuple[bytes, int]:

@@ -50,8 +50,8 @@ from . import signature as _signature
 from .lz import lz_decode, lz_encode
 from .predictors import (best_row_predictor, candidate_list, merge_planes,
                          pack_filter_bits, pack_residuals, predict_value,
-                         row_residuals, split_planes, unpack_filter_bits,
-                         unpack_residuals)
+                         reconstruct_row, row_residuals,
+                         split_planes, unpack_filter_bits, unpack_residuals)
 
 _ENTROPY_SYMBOLS_RAW = 256
 _ENTROPY_SYMBOLS_LZ = LZ_TOKEN_SYMBOLS
@@ -107,8 +107,16 @@ def _tile_grid(width: int, height: int, tile_size: int):
         ty += tile_size
 
 
-def _canonical_row(samples: bytes, offset: int, count: int, fmt: _Format) -> list[int]:
-    """Read `count` samples and map them into the unsigned code domain."""
+def _canonical_row(samples: bytes, offset: int, count: int, fmt: _Format,
+                   step: int = 1) -> list[int]:
+    """Read `count` samples and map them into the unsigned code domain.
+
+    With a `step` larger than one the samples are quantized onto a grid of
+    that spacing (the near-lossless mode): every sample then differs from
+    the original by at most `(step - 1) // 2`. The quantization happens
+    *before* the prediction, so the rest of the pipeline stays lossless
+    with respect to the quantized values.
+    """
     out = []
     if fmt.is_float:
         for i in range(count):
@@ -120,12 +128,16 @@ def _canonical_row(samples: bytes, offset: int, count: int, fmt: _Format) -> lis
     modulus = fmt.modulus
     canon = fmt.canon_offset
     signed = fmt.signed
+    half = step // 2
     for i in range(count):
         chunk = samples[offset + i * sb: offset + (i + 1) * sb]
         if len(chunk) < sb:
             raise ValueError("truncated sample buffer")
         value = int.from_bytes(chunk, "little", signed=signed)
-        out.append((value + canon) % modulus)
+        v = (value + canon) % modulus
+        if step > 1:
+            v = min(((v + half) // step) * step, modulus - 1)
+        out.append(v)
     return out
 
 
@@ -303,6 +315,8 @@ def _encode_tile(rows: list[list[int]], channels: int, fmt: _Format,
     Returns (body bytes, method, flags).
     """
     flags = 0
+    # The slice predictor reads the previous slice, which the decoder
+    # rebuilds exactly, so it stays available in every mode.
     candidates = candidate_list(2 if slice_rows is not None else 1)
     table = b""
     pred_ids: list[int] = []
@@ -369,12 +383,25 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
            metadata: dict | None = None, tile_size: int = 256,
            predictor: int = -1, method: int = -1,
            require_dicom: bool = False, sign_key: bytes | None = None,
-           audit: bool = False, audit_timestamp: str | None = None) -> bytes:
+           audit: bool = False, audit_timestamp: str | None = None,
+           max_error: int = 0) -> bytes:
     """Encode a medical image into a PYRM container.
 
     `samples` holds the raw samples in little-endian order (exactly the
     bytes the decoder returns). `predictor` and `method` accept -1, which
     lets the encoder measure the alternatives and pick the cheapest one.
+
+    With `max_error` the container switches to the **near-lossless** mode:
+    every sample is reconstructed with an absolute error of at most
+    `max_error` (the format stores the residual quantized to a step of
+    `2 * max_error + 1`). The decoded image is therefore *not* identical to
+    the input any more, but the error is bounded and documented in the
+    container. `max_error = 0` is the ordinary lossless mode.
+
+    The near-lossless mode does not apply to floating point samples (they
+    are not predicted) and it cannot use the slice predictor, because that
+    predictor reads the previous slice, which the decoder rebuilds from the
+    quantized residuals.
 
     With `require_dicom` the metadata block is validated against the image
     geometry before anything is written: a clinical series that claims a
@@ -399,9 +426,12 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
             samples[:_n], width, height, depth, channels, sample_format,
             encoder=f"pyra/{__version__}", codec=f"PYRM-v{VERSION}",
             timestamp=audit_timestamp)
+    if max_error < 0:
+        raise ValueError("the error bound must not be negative")
+    step = 2 * int(max_error) + 1
     blob = _encode_core(samples, width, height, depth, channels,
                         sample_format, metadata, tile_size, predictor, method,
-                        require_dicom)
+                        require_dicom, step)
     if sign_key is not None:
         blob = _signature.sign(blob, sign_key)
     return blob
@@ -411,7 +441,7 @@ def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
            channels: int = 1, sample_format: int = 1,
            metadata: dict | None = None, tile_size: int = 256,
            predictor: int = -1, method: int = -1,
-           require_dicom: bool = False) -> bytes:
+           require_dicom: bool = False, step: int = 1) -> bytes:
     """Encode a medical image into a PYRM container.
 
     `samples` holds the raw samples in little-endian order (exactly the
@@ -437,6 +467,11 @@ def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
         raise UnsupportedFormatError(f"unsupported predictor {predictor}")
     if fmt.is_float:
         predictor = 0  # float samples are shuffled, not predicted
+    if step > 1:
+        if fmt.is_float:
+            raise UnsupportedFormatError(
+                "the near-lossless mode does not apply to floating point "
+                "samples: they are not predicted")
     if require_dicom:
         _dicom.validate_dicom_metadata(metadata, width, height, depth,
                                         channels, sample_format, strict=True)
@@ -452,7 +487,7 @@ def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
     native_blob = _native.encode(
         samples, width, height, depth, channels, sample_format,
         metadata=meta_blob, tile_size=tile_size, predictor=predictor,
-        method=method)
+        method=method, step=step)
     if native_blob is not None:
         return native_blob
 
@@ -466,7 +501,8 @@ def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
         slice_rows = []
         for y in range(height):
             base = slice_offset + y * width * channels * fmt.sample_bytes
-            slice_rows.append(_canonical_row(samples, base, width * channels, fmt))
+            slice_rows.append(_canonical_row(samples, base, width * channels,
+                                              fmt, step))
         vps = fmt.values_per_sample
         for (tx, ty, tw, th) in grid:
             lo = tx * channels * vps
@@ -479,7 +515,8 @@ def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
                                                predictor, METHOD_RAW)[0:3:2]
             if method == -1:
                 lz_body, _, lz_flags = _encode_tile(rows, channels, fmt,
-                                                     slice_ctx, predictor, METHOD_LZ)
+                                                     slice_ctx, predictor,
+                                                     METHOD_LZ)
                 if len(lz_body) < len(raw_body):
                     body, m, flags = lz_body, METHOD_LZ, lz_flags
                 else:
@@ -522,7 +559,8 @@ def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
         index_offset=index_offset, index_size=index_size,
         meta_offset=meta_offset, meta_size=len(meta_blob), meta_crc=meta_crc,
         payload_crc=payload_crc, header_crc=0,
-        predictor=predictor if predictor >= 0 else 0, sha256=digest)
+        predictor=predictor if predictor >= 0 else 0, sha256=digest,
+        step=step)
     return (_container.pack_header(hdr, digest) + meta_blob + index_blob
             + bytes(payload))
 
@@ -531,7 +569,7 @@ def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
 
 def _decode_tile(body: bytes, flags: int, method: int, tw: int, th: int,
                  channels: int, fmt: _Format, slice_rows: list[list[int]] | None,
-                 predictor: int) -> list[list[int]]:
+                 predictor: int, step: int = 1) -> list[list[int]]:
     """Decode one tile into canonical rows."""
     if flags & TILE_FLAG_ADAPTIVE:
         nbytes = (th + 1) // 2
@@ -605,17 +643,8 @@ def _decode_tile(body: bytes, flags: int, method: int, tw: int, th: int,
         row_res = residuals[r * per_row:(r + 1) * per_row]
         prev = rows[r - 1] if r > 0 else None
         slice_row = slice_rows[r] if slice_rows is not None else None
-        row = [0] * per_row
-        for i in range(len(row_res)):
-            x = i // channels
-            left = row[i - channels] if x > 0 else 0
-            up = prev[i] if prev is not None else 0
-            upper_left = prev[i - channels] if (prev is not None and x > 0) else 0
-            slice_val = slice_row[i] if slice_row is not None else 0
-            pred = predict_value(pred_ids[r], left, up, upper_left,
-                                slice_val, fmt.modulus)
-            row[i] = (row_res[i] + pred) % fmt.modulus
-        rows.append(row)
+        rows.append(reconstruct_row(row_res, prev, slice_row, channels,
+                                    fmt.modulus, pred_ids[r]))
     return rows
 
 
@@ -685,7 +714,7 @@ def decode(blob: bytes, verify_key: bytes | None = None) -> tuple[dict, bytes]:
             if prev_slice is not None:
                 slice_ctx = [prev_slice[ty + r][lo:hi] for r in range(th)]
             rows = _decode_tile(body, flags, method, tw, th, channels, fmt,
-                                slice_ctx, hdr.predictor)
+                                slice_ctx, hdr.predictor, hdr.step)
             for r, row in enumerate(rows):
                 slice_rows[ty + r][lo:lo + len(row)] = row
                 # byte offset of the tile column inside the slice
@@ -697,7 +726,7 @@ def decode(blob: bytes, verify_key: bytes | None = None) -> tuple[dict, bytes]:
 
     if (zlib.crc32(bytes(payload)) & 0xFFFFFFFF) != hdr.payload_crc:
         raise CorruptedFileError("payload CRC mismatch")
-    if hashlib.sha256(bytes(out)).digest() != hdr.sha256:
+    if hdr.step <= 1 and hashlib.sha256(bytes(out)).digest() != hdr.sha256:
         raise CorruptedFileError("content hash mismatch")
     return metadata, bytes(out)
 
@@ -795,7 +824,7 @@ def decode_region(blob: bytes, x: int, y: int, z: int, width: int,
                     break
         ctx = tile_rows(zz - 1, t) if need_ctx else None
         rows = _decode_tile(body, flags, method, tw, th, hdr.channels, fmt,
-                            ctx, hdr.predictor)
+                            ctx, hdr.predictor, hdr.step)
         cache[(zz, t)] = rows
         return rows
 
@@ -830,7 +859,7 @@ def info(blob: bytes) -> dict:
         "width": hdr.width, "height": hdr.height, "depth": hdr.depth,
         "channels": hdr.channels, "sample_format": hdr.sample_format,
         "bits": hdr.bits, "tile_size": hdr.tile_size,
-        "num_tiles": hdr.num_tiles,
+        "num_tiles": hdr.num_tiles, "step": hdr.step,
     }
 
 
@@ -880,7 +909,7 @@ def verify(blob: bytes, key: bytes | None = None) -> dict:
 
     # the content hash needs the decoded samples
     samples = decode(blob)[1]
-    if hashlib.sha256(samples).digest() != hdr.sha256:
+    if hdr.step <= 1 and hashlib.sha256(samples).digest() != hdr.sha256:
         raise CorruptedFileError("content hash mismatch")
 
     # The clinical metadata is checked against the geometry of the

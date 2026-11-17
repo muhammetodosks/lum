@@ -8,6 +8,36 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.10.0 — near-lossless PYRM
+
+The medical container can now trade a small, bounded error for a smaller
+file. The bound is absolute and exact: no sample moves by more than the
+requested amount.
+
+**Added**
+
+* `encode(..., max_error=N)` and `pyra med encode --max-error N`: the
+  encoder quantizes each canonical sample onto a `2N+1` grid **before**
+  prediction, so the residual chain and the decoder stay exact and the
+  error bound is independent of modular wrap-around.
+* `pyra_med_encode` takes the quantization step, the header stores it in
+  `flags` bit 1 plus the packed word at offset 76 (`predictor | step << 8`),
+  and `info()` reports it as `step`.
+* The slice predictor stays available in the near-lossless mode (the
+  quantized samples are what gets predicted).
+* `tests/test_medical.py`: error-bound, native/reference parity, mode flag,
+  verify and refusal checks (106 checks total).
+
+**Changed**
+
+* The SHA-256 content hash is skipped for `step > 1` containers: the decoded
+  samples intentionally differ from the original. The CRC-32 chain still
+  covers the file integrity.
+* Float samples are refused in the near-lossless mode.
+
+Measured (64x64 u8 noise): 4323 B lossless, 4092 B at error 1, 2977 B at
+error 8.
+
 ## v0.9.0 — native region decoding
 
 A region decode existed, but it ran entirely in Python. It is now part of the

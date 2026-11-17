@@ -38,7 +38,7 @@ def _load():
         lib.pyra_med_encode.restype = _isize
         lib.pyra_med_encode.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, _u32, _u32, _u32, _u32,
-            _u32, ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _i32, _i32,
+            _u32, ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _i32, _i32, _u32,
             ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
             ctypes.POINTER(_sz)]
         lib.pyra_med_decode.restype = _isize
@@ -80,7 +80,8 @@ def available() -> bool:
 
 def encode(samples: bytes, width: int, height: int, depth: int = 1,
            channels: int = 1, sample_format: int = 1, metadata: bytes = b"",
-           tile_size: int = 256, predictor: int = -1, method: int = -1) -> bytes | None:
+           tile_size: int = 256, predictor: int = -1, method: int = -1,
+           step: int = 1) -> bytes | None:
     """Encode a whole medical image in one native call.
 
     `metadata` is the raw metadata block (JSON bytes) that goes into the
@@ -104,7 +105,8 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
     rc = lib.pyra_med_encode(
         src, need, width, height, depth, channels, sample_format,
         ctypes.cast(msrc, ctypes.POINTER(ctypes.c_ubyte)), len(metadata),
-        tile_size, predictor, method, ctypes.byref(out_p), ctypes.byref(out_len))
+        tile_size, predictor, method, step,
+        ctypes.byref(out_p), ctypes.byref(out_len))
     if rc != 0 or not out_p:
         return None
     try:
@@ -171,7 +173,7 @@ def info(blob: bytes) -> dict | None:
         return None
     buf = ctypes.create_string_buffer(bytes(blob), len(blob))
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
-    meta = (ctypes.c_int32 * 8)()
+    meta = (ctypes.c_int32 * 9)()
     rc = lib.pyra_med_info(src, len(blob), meta)
     if rc != 0:
         return None
@@ -179,6 +181,7 @@ def info(blob: bytes) -> dict | None:
         "width": meta[0], "height": meta[1], "depth": meta[2],
         "channels": meta[3], "sample_format": meta[4], "bits": meta[5],
         "tile_size": meta[6], "num_tiles": meta[7],
+        "step": meta[8],
     }
 
 

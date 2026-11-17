@@ -132,6 +132,29 @@ def residual_score(residuals: list[int], modulus: int) -> int:
     return score
 
 
+def reconstruct_row(residuals: list[int], prev_row: list[int] | None,
+                    slice_row: list[int] | None, channels: int, modulus: int,
+                    pred_type: int) -> list[int]:
+    """Rebuild one row of canonical samples from its residuals.
+
+    The reconstruction is always exact: the near-lossless mode quantizes
+    the samples *before* the prediction (in the sample domain), so the
+    residuals that reach the decoder describe the quantized values
+    faithfully.
+    """
+    n = len(residuals)
+    row = [0] * n
+    for i in range(n):
+        x = i // channels
+        left = row[i - channels] if x > 0 else 0
+        up = prev_row[i] if prev_row is not None else 0
+        upper_left = prev_row[i - channels] if (prev_row is not None and x > 0) else 0
+        slice_val = slice_row[i] if slice_row is not None else 0
+        pred = predict_value(pred_type, left, up, upper_left, slice_val, modulus)
+        row[i] = (residuals[i] + pred) % modulus
+    return row
+
+
 def best_row_predictor(row: list[int], prev_row: list[int] | None,
                        slice_row: list[int] | None, channels: int,
                        modulus: int, candidates: tuple[int, ...]) -> tuple[int, list[int]]:
@@ -244,5 +267,6 @@ __all__ = [
     "candidate_list", "row_residuals",
     "residual_score", "best_row_predictor", "pack_filter_bits",
     "unpack_filter_bits", "split_planes", "merge_planes", "pack_residuals",
-    "unpack_residuals", "PRED_COUNT",
+    "unpack_residuals", "reconstruct_row",
+    "PRED_COUNT",
 ]

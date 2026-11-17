@@ -531,6 +531,39 @@ The numbers above are from the 256×256×32 u16 CT volume.
   format was left alone; a one percent gain does not justify a format
   change and a second implementation of the context rule.
 
+## Near-lossless mode
+
+A container can promise a maximum absolute sample error instead of exact
+reconstruction. The encoder quantizes every canonical sample onto a grid
+*before* prediction:
+
+```
+step = 2 * max_error + 1
+v_q  = min(((v + step // 2) // step) * step, modulus - 1)
+```
+
+Everything after that step (prediction, residuals, entropy coding, LZ) is
+lossless with respect to the quantized samples, so the decoder is unchanged
+and the error bound `|v - v_q| <= (step - 1) // 2` holds regardless of the
+modular wrap-around. Quantizing in the sample domain (not the residual
+domain) is what makes the bound absolute: a residual is modular, and a
+residual near the wrap point would otherwise quantize to an error of almost
+a full modulus.
+
+The header carries the step: `flags` bit 1 (`0x02`) marks the mode and the
+32 bit word at offset 76 packs `predictor | (step << 8)`. A v1/v2 reader
+sees `flags` bit 1 clear and step zero, so the layout stays backward
+compatible. Because the decoded samples intentionally differ from the
+original, the SHA-256 content hash cannot be verified in this mode; the
+decode and verify paths skip it when `step > 1` and rely on the CRC-32
+chain for file integrity. Float samples are refused (a float prediction is
+not quantized).
+
+Measured on 64x64 u8 uniform noise: 4323 B lossless, 4092 B at
+`max_error=1`, 2977 B at `max_error=8`. On a perfectly smooth synthetic
+ramp the quantization can cost a few bytes (the grid breaks the ramp), which
+is expected: near-lossless pays off on noisy, real-world data.
+
 ## Error classes
 
 * `MedicalError` — base class of the format errors.
@@ -541,6 +574,9 @@ The numbers above are from the 256×256×32 u16 CT volume.
 
 ## Version history
 
+* **v3** — the near-lossless mode: a maximum absolute sample error stored in
+  `flags` bit 1 and the packed word at offset 76 (the layout is compatible
+  with v1 and v2 containers, which decode unchanged).
 * **v2** — the DICOM compatible clinical metadata layer (calibration,
   photometric interpretation, display window, sample description) and the
   LOCO-I median edge detector as an eighth predictor.
