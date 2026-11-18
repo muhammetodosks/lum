@@ -40,11 +40,11 @@ compared with JPEG XL (`libjxl --effort 7`, distance swept over -1..15):
 
 | PSNR | PYRA | as % of JXL |
 |------|------|-------------|
-| 30 dB | 18.0 KB | 96.8 % |
-| 34 dB | 36.1 KB | 98.4 % |
-| 38 dB | 69.7 KB | 117.3 % |
-| 42 dB | 124.3 KB | 114.4 % |
-| 46 dB | 204.8 KB | 101.1 % |
+| 30 dB | 17.9 KB | 93.9 % |
+| 34 dB | 35.5 KB | 96.0 % |
+| 38 dB | 68.5 KB | 112.8 % |
+| 42 dB | 122.1 KB | 111.3 % |
+| 46 dB | 202.5 KB | 98.9 % |
 
 Encoding runs at ~19 MP/s single-threaded, roughly ten times the JXL reference
 in the same harness.
@@ -62,6 +62,10 @@ in the same harness.
   raw bits.
 * Sign prediction from lower-frequency coefficients already coded in the same
   block.
+* Chroma step multiplier 0.72, carried in the header: the inverse YCbCr
+  transform weights chroma error by 1.402/1.772, so chroma error dominates RGB
+  MSE even though the eye tolerates it. Spending *more* on chroma than luma is
+  cheaper than the reverse.
 
 **Measured and rejected**
 
@@ -69,6 +73,7 @@ in the same harness.
 * Flat high-frequency shaping, chroma stride, a second-order tilt term, and a
   finer 9-state neighbour context all measured neutral or worse.
 * A within-block energy context for significance: neutral to negative.
+* Coarser chroma (`PYRA_CQ` 1.1 and 1.25, `PYRA_CS` 1.4/2.0/2.8): always larger.
 
 ## v0.10.0 — near-lossless PYRM
 

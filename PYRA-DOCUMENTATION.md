@@ -1148,7 +1148,8 @@ ve kaçış kodları hep aynı aralık kodlayıcısından geçer.
 │ color_space      B    1B   (1=GRAY 2=RGB 3=RGBA) │
 │ coding           B    1B   bit0 = DCT, bit1 = 4:2:0 │
 │ quality          B    1B   (1..100)          │
-│ reserved          12B                        │
+│ chroma_mult      B    1B   (adım çarpanı, 1/128) │
+│ reserved          11B                        │
 │ plane_count      B    1B                     │
 ├──────────────────────────────────────────────┤
 │ her düzlem için: u32 uzunluk + akış           │
@@ -1157,8 +1158,12 @@ ve kaçış kodları hep aynı aralık kodlayıcısından geçer.
 └──────────────────────────────────────────────┘
 ```
 
-Başlık 36 bayttır. `quality` yalnızca bilgi amaçlıdır: çözücü nicemleme
-tablolarını `quality`'den yeniden üretir, bu yüzden tablo dosyada taşınmaz.
+Başlık 36 bayttır. Nicemleme tabloları dosyada taşınmaz: çözücü onları
+`quality`'den yeniden üretir. Bunun tek istisnası 24. bayttaki kroma adım
+çarpanıdır — `quality` tek başına onu söylemez, ve çözücünün derleyicisinde
+sabit durursa eski dosyalar sessizce yanlış piksele çözülür. Bu yüzden değer
+dosyada taşınır; 0 "çarpan yok" anlamına gelir ve bu alan eklenmeden önce
+yazılmış dosyaların içeriğidir.
 Sürüm 4 reddedilir — aynı yerleşimi paylaşıyordu ama entropi modeli
 değiştiği için sessizce yanlış piksel üretirdi.
 
@@ -1172,6 +1177,7 @@ biçimlendirilir:
 | `scale(q)` | Klasik JPEG kalite eğrisi: `q<50` için `5000/q`, değilse `200-2q` |
 | **spektral eğim** | Adımı `1 + t·f` ile ölçekler, `f = (u+v)/14`, `t` kalitede -0,6 → -0,95 arası enterpolasyon |
 | **RDOQ** | Her AC katsayısı için `D + λ·R` karşılaştırması; `λ = 1,6·step²` |
+| **kroma çarpanı** | Kroma adımlarını `0,72` ile ölçekler; dosyada 1/128 birimde taşınır |
 
 Eğim bu codec'in en büyük tek kazancı oldu: 46 dB'de %7. JPEG tabloları
 Huffman çağında, yaklaşık 1 bit/piksel için ayarlanmıştı; bağlam modeli olan
@@ -1182,6 +1188,13 @@ yüzden eğim kalitede doğrusal enterpole edilir.
 RDOQ başlangıçta `rate_est()` içinde bir katsayıyı 3 bit sayıyordu; gerçek
 maliyet ölçümde 5,9 bit çıktı. `λ`'yı 0,1'den 1,6'ya çıkarmak sıfır olmayan
 katsayıları doğru fiyatlandırdı ve orta/yüksek oranlarda %1-3 kazandırdı.
+
+Kroma çarpanı, "göz rengi daha az çözer, kromaya daha az bit ver" sezgisinin
+tam tersini ölçtü. Ters YCbCr dönüşümü kroma hatasını R için 1,402, B için
+1,772 ile çarpar; yani kroma hatası, göz onu daha az umursasa da RGB MSE'ye
+baskın gelir. 0,5–1,25 aralığının taraması en iyisinin 0,72 olduğunu gösterdi:
+kromaya *daha çok* bit vermek, aynı RGB PSNR'de dosyayı küçültüyor. 38 dB'de
+%1,7, 46 dB'de %1,1 kazanç.
 
 ### 27.4 Entropi modeli
 
@@ -1244,6 +1257,7 @@ değil.
 | 9 durumlu komşu bağlamı | Nötr (69,8 vs 69,7 KB) |
 | Blok içi enerji bağlamı | Nötr ile negatif arası |
 | Büyüklük için ikili ağaç | Kesikli unary'den kötü |
+| Kroma adımı kaba (`PYRA_CS`/`PYRA_CQ` > 1) | Hepsi kaybettirdi; en iyisi 0,72, yani daha *ince* kroma |
 
 Aralık kodlayıcının kendisi optimal: `PYRA_STATS` her kalitede gerçek çıktıyı
 ideal maliyetle (∑−log₂p) karşılaştırıyor ve oran %100,0. Yani darboğaz

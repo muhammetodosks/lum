@@ -19,6 +19,7 @@ import math
 import os
 import random
 import struct
+import zlib
 import sys
 import tempfile
 
@@ -205,6 +206,20 @@ def test_info():
     check("info marks the container as lossy", meta["lossy"] is True)
     check("info flags subsampling in header mode", meta["mode"] == 1)
     check("info does not decode planes (header only)", "samples" not in meta)
+
+    # The chroma step multiplier travels in byte 24 (1/128 units) because the
+    # decoder rebuilds the quantiser from `quality` alone otherwise. A zero
+    # there means "no multiplier": that is what files written before the field
+    # existed contain, and they must still decode with a 1.0 multiplier.
+    check("header carries the chroma step multiplier", blob[24] == 92)
+    check("multiplier is stored in 1/128 units",
+          abs(blob[24] / 128.0 - 0.72) < 1.0 / 128.0)
+    legacy = bytearray(blob)
+    legacy[24] = 0
+    legacy[-4:] = struct.pack(">I", zlib.crc32(bytes(legacy[:-4])) & 0xFFFFFFFF)
+    legacy_meta, legacy_samples = lossy.decode(bytes(legacy))
+    check("a zero multiplier byte is accepted as 1.0",
+          legacy_meta["width"] == w and len(legacy_samples) == w * h * 3)
 
 
 def test_corruption():

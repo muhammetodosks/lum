@@ -648,6 +648,13 @@ fn spectral_tilt(quality: i32) -> f32 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(TILT_HIGH);
+    tilt_of(quality, lo, hi)
+}
+
+/// Tilt with no environment involvement. The decoder must use this one: a
+/// file has to decode to the same pixels on every machine, so nothing on the
+/// decode side may depend on a tuning variable being set.
+fn tilt_of(quality: i32, lo: f32, hi: f32) -> f32 {
     let t = (quality.clamp(1, 100) as f32 - 1.0) / 99.0;
     lo + (hi - lo) * t
 }
@@ -681,6 +688,78 @@ fn tilt_bend() -> f32 {
 }
 
 const TILT_BEND: f32 = 0.0;
+
+/// Plane-level quantiser scale.
+///
+/// The codec spends roughly 60 % of its bytes on luma and 40 % on the two
+/// chroma planes, but RGB error weights chroma error by 1.402 (R) and 1.772
+/// (B) after the inverse transform. That means a bit moved from luma to
+/// chroma buys more RGB PSNR than a bit kept in luma, up to a point. These
+/// two knobs are swept to find that point; 1.0 is neutral and is what gets
+/// baked in if the sweep does not pay.
+fn table_scale(q: &mut [f32; 64], s: f32) {
+    if s == 1.0 {
+        return;
+    }
+    for v in q.iter_mut() {
+        *v = (*v * s).max(1.0);
+    }
+}
+
+fn chroma_qmult() -> f32 {
+    std::env::var("PYRA_CQ")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(CHROMA_QMULT)
+}
+
+fn luma_qmult() -> f32 {
+    std::env::var("PYRA_YQ")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(LUMA_QMULT)
+}
+
+/// Baked from a sweep of 0.5 .. 1.25. The optimum is a *finer* chroma step,
+/// which is the opposite of what a "the eye is blind to colour" argument
+/// would suggest: the inverse YCbCr transform multiplies chroma error by
+/// 1.402 for R and 1.772 for B, so chroma error dominates RGB MSE even
+/// though the eye tolerates it. Spending more bits there is cheaper than
+/// spending them on luma. The curve is flat between 0.70 and 0.75.
+const CHROMA_QMULT: f32 = 0.72;
+const LUMA_QMULT: f32 = 1.0;
+
+/// Build the luma and chroma quantiser tables for a quality level.
+///
+/// `chroma_mult` is the *total* chroma step multiplier and must be identical
+/// on both sides. On encode it comes from the tuning knobs and is then written
+/// into the file; on decode it is read back from the file. `knobs` selects
+/// whether the environment-overridable variants are consulted, and is true
+/// only for the encoder.
+fn quantisers(quality: i32, chroma_mult: f32, knobs: bool) -> ([f32; 64], [f32; 64]) {
+    let mut qy = quant_table(&BASE_LUMA, quality);
+    let mut qc = scaled(&chroma_base(), quality, chroma_mult);
+    let shape = if knobs { hf_shape() } else { HF_SHAPE };
+    shape_table(&mut qy, shape);
+    shape_table(&mut qc, shape);
+    let (tilt, bend) = if knobs {
+        (spectral_tilt(quality), tilt_bend())
+    } else {
+        (tilt_of(quality, TILT_LOW, TILT_HIGH), TILT_BEND)
+    };
+    tilt_table(&mut qy, tilt, bend);
+    tilt_table(&mut qc, tilt, bend);
+    let yq = if knobs { luma_qmult() } else { LUMA_QMULT };
+    table_scale(&mut qy, yq);
+    (qy, qc)
+}
+
+/// Encode-side chroma multiplier, rounded to the 1/128 grid the header can
+/// carry. Rounding here rather than at write time is what keeps the encoder
+/// and the decoder in exact agreement.
+fn chroma_mult_to_byte(m: f32) -> u8 {
+    (m * 128.0).round().clamp(1.0, 255.0) as u8
+}
 
 /// Chroma quantiser stride multiplier.
 ///
@@ -1254,14 +1333,9 @@ pub fn encode(data: &[u8], width: usize, height: usize, channels: usize,
     let use_sub = sub && color_space != CS_GRAY_V;
 
     let cos = cos_table();
-    let mut qy = quant_table(&BASE_LUMA, quality);
-    let mut qc = scaled(&chroma_base(), quality, chroma_stride());
-    shape_table(&mut qy, hf_shape());
-    shape_table(&mut qc, hf_shape());
-    let tilt = spectral_tilt(quality);
-    let bend = tilt_bend();
-    tilt_table(&mut qy, tilt, bend);
-    tilt_table(&mut qc, tilt, bend);
+    let cq_byte = chroma_mult_to_byte(chroma_stride() * chroma_qmult());
+    let cq_used = cq_byte as f32 / 128.0;
+    let (qy, qc) = quantisers(quality, cq_used, true);
     let planes = rgb_to_planes(data, width, height, ch, color_space, use_sub);
     let (cw, chh) = if use_sub { ((width + 1) / 2, (height + 1) / 2) } else { (width, height) };
 
@@ -1281,7 +1355,15 @@ pub fn encode(data: &[u8], width: usize, height: usize, channels: usize,
     out.push(color_space as u8);
     out.push(1 | ((use_sub as u8) << 1)); // coding
     out.push(quality as u8);
-    put_u32(&mut out, 0);
+    // Byte 24: the chroma step multiplier in 1/128 units. The decoder has to
+    // reproduce the exact quantiser the encoder used, so the value travels
+    // with the file instead of being compiled into both sides. Zero means
+    // "no multiplier", which is what version-5 files written before this
+    // field existed contain.
+    out.push(cq_byte);
+    out.push(0);
+    out.push(0);
+    out.push(0);
     put_u32(&mut out, 0);
     out.push(0);
     out.push(0);
@@ -1336,14 +1418,9 @@ pub fn decode(blob: &[u8]) -> Result<(usize, usize, i32, Vec<u8>), isize> {
     }
     let use_sub = (coding >> 1) & 1 == 1;
     let cos = cos_table();
-    let mut qy = quant_table(&BASE_LUMA, quality);
-    let mut qc = scaled(&chroma_base(), quality, chroma_stride());
-    shape_table(&mut qy, hf_shape());
-    shape_table(&mut qc, hf_shape());
-    let tilt = spectral_tilt(quality);
-    let bend = tilt_bend();
-    tilt_table(&mut qy, tilt, bend);
-    tilt_table(&mut qc, tilt, bend);
+    let cq_byte = blob[24];
+    let cq_used = if cq_byte == 0 { 1.0 } else { cq_byte as f32 / 128.0 };
+    let (qy, qc) = quantisers(quality, cq_used, false);
     let (cw, chh) = if use_sub { ((width + 1) / 2, (height + 1) / 2) } else { (width, height) };
 
     let mut off = HDR;
