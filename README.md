@@ -225,9 +225,23 @@ images rather than six: JXL cannot go below 34.64 dB on Clouds or 35.68 dB on
 Fuji at any distance. Where all six are covered the absolute rates are
 61.15 / 109.66 / 183.36 KB per megapixel at 38 / 42 / 46 dB.
 
-Encoding runs at roughly 19 MP/s single-threaded, about ten times the JXL
-reference in the same harness. Details, the exact tuning that was measured, and
-the ideas that were rejected are in
+Measured on a 1920×1080 photograph (2.07 MP, four cores, five iterations after
+a warm-up), qualities 50/85/95:
+
+| | q50 | q85 | q95 |
+|---|---|---|---|
+| encode | 18.67 MP/s | 17.12 MP/s | 16.28 MP/s |
+| decode | 31.00 MP/s | 28.11 MP/s | 25.82 MP/s |
+
+JPEG XL through `ffmpeg -c:v libjxl -effort 7` on the same image encodes at
+1.9-2.0 MP/s and decodes at 11.2-12.6 MP/s, so PYRA is about 9x faster to encode
+and 2.7x faster to decode. Those JXL numbers include ffmpeg's startup and PPM
+I/O, which makes the comparison conservative rather than flattering.
+
+Planes are coded on scoped threads and the tuning knobs are resolved once per
+plane instead of per coefficient; both changes are byte-identical, verified
+against a build with parallelism forced off. Details, the exact tuning that was
+measured, and the ideas that were rejected are in
 [PYRA-DOCUMENTATION.md](PYRA-DOCUMENTATION.md#27-kayıplı-codec--pyra-v6).
 
 ## Security Limits and Fuzz Properties

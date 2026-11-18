@@ -9,6 +9,67 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.13.0 — encoder 6.4x faster, byte-identical
+
+v0.12.0 claimed ~19 MP/s. Measuring it properly on a 1920x1080 photograph gave
+**2.86 MP/s**. The old figure came from a small image and was never true at
+camera resolution; the numbers below are measured on Province (1920x1080,
+2.07 MP) at q=50/85/95, five iterations after a warm-up, on four cores.
+
+Two wins, neither of which changes a single output byte:
+
+| Stage | q50 | q85 | q95 |
+|-------|-----|-----|-----|
+| before | 2.86 | 2.78 | 2.67 MP/s |
+| knobs hoisted | 12.59 | 11.36 | 10.08 MP/s |
+| + plane threads | **18.67** | **17.12** | **16.28 MP/s** |
+
+Decode went from 20.50 / 18.13 / 15.59 to **31.00 / 28.11 / 25.82 MP/s**.
+
+**Deadzone and lambda read from the environment per coefficient**
+
+`deadzone()` was called inside the 64-coefficient loop of `rdoq`, and `lam()`
+once per block. Both wrap `std::env::var`, which takes a lock and allocates a
+`String`: 65 environment lookups per block, on a path that runs once per
+coefficient. They cannot change mid-image, so they are resolved once per plane
+and passed in. Encoding: 2.86 → 12.59 MP/s, 4.4x, same bytes.
+
+**Planes encoded and decoded in parallel**
+
+A plane's DC prediction chain, neighbourhood state and range coder are all
+confined to that plane, so plane order cannot affect a plane's bytes. Planes
+are therefore spawned on scoped threads and their streams concatenated in plane
+order. Below `PAR_MIN_PIXELS` (256x256) the sequential path is kept: thread
+spawn costs more than a small image is worth.
+
+Correctness was checked against a second build compiled with threading forced
+off (`PAR_MIN_PIXELS = usize::MAX`), comparing both container bytes and decoded
+pixels across four images, two sizes (320x240 and 1920x1080, straddling the
+threshold) and two qualities: 16/16 identical. The v6 regression references
+(`ref_q50`, `ref_q85`) still hash to the same values, and `tests/test_lossy.py`
+passes 72/72.
+
+**Speed against JPEG XL, same machine**
+
+Measured through `ffmpeg -c:v libjxl -effort 7` on the same 1920x1080 image,
+distances 2.0/1.0/0.5 (90/128/185 KB):
+
+* encode: JXL 1.92-2.00 MP/s, PYRA 16.3-18.7 MP/s -> **~9x faster**
+* decode: JXL 11.2-12.6 MP/s, PYRA 25.8-31.0 MP/s -> **~2.7x faster**
+
+The JXL figures include ffmpeg's own startup and PPM I/O, so they are an upper
+bound on JXL's speed and the ratio is if anything conservative.
+
+**Rejected**
+
+* Reading the knobs once per image instead of once per plane: no measurable
+  difference, and per plane keeps the change local.
+* Block-level threading with a shared coder: the range coder is serial by
+  construction, so this would need a restart per block and cost 2-4 % of the
+  rate. Plane threads capture almost all of the gain on real images.
+* `-C target-cpu=native`: measured at 3 %, and it would make the binary
+  non-portable for no meaningful return next to the 6.4x above.
+
 ## v0.12.0 — per-band quantisation, PYRA v6
 
 The lossy codec's weak point was never the entropy model: `PYRA_STATS` reports
@@ -117,8 +178,9 @@ compared with JPEG XL (`libjxl --effort 7`, distance swept over -1..15):
 | 42 dB | 113.8 KB | 101.7 % |
 | 46 dB | 190.3 KB | 91.3 % |
 
-Encoding runs at ~19 MP/s single-threaded, roughly ten times the JXL reference
-in the same harness.
+Encoding was stated here as ~19 MP/s single-threaded. That number was wrong:
+measured on a 1920x1080 photo it was 2.86 MP/s. The mistake is corrected and
+explained in v0.13.0, which makes the claim true rather than deleting it.
 
 **Tuning that earned its place**
 

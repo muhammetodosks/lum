@@ -1,4 +1,4 @@
-# PYRA v4 (lossy DCT) test suite.
+# PYRA v6 (lossy DCT) test suite.
 # Run:  python3 -m pyra.tests.test_lossy
 #
 # Version 4 is the first lossy PYRA revision: YCbCr, 8x8 DCT, perceptual
@@ -83,14 +83,14 @@ def flat(w: int, h: int, ch: int = 3, value: int = 128) -> bytes:
 def roundtrip(raw, w, h, ch, q, sub=lossy.SUBSAMPLE_444):
     cs = {1: CS_GRAY, 3: CS_RGB, 4: CS_RGBA}[ch]
     blob = lossy.encode(raw, w, h, cs, q, sub)
-    assert blob is not None, "the native v4 codec must be built for this suite"
+    assert blob is not None, "the native v6 codec must be built for this suite"
     meta, back = lossy.decode(blob)
     return blob, meta, back
 
 
 def test_available():
     print("\n-- codec availability --")
-    check("native v4 codec is built", lossy.available())
+    check("native v6 codec is built", lossy.available())
     check("channels_for(CS_GRAY) == 1", lossy.channels_for(CS_GRAY) == 1)
     check("channels_for(CS_RGB) == 3", lossy.channels_for(CS_RGB) == 3)
     check("channels_for(CS_RGBA) == 4", lossy.channels_for(CS_RGBA) == 4)
@@ -300,7 +300,7 @@ def test_stream_desync():
 
 def test_api_and_cli_paths():
     print("\n-- api / codec integration --")
-    tmp = tempfile.mkdtemp(prefix="pyra_v4_test_")
+    tmp = tempfile.mkdtemp(prefix="pyra_v6_test_")
     w, h = 64, 40
     raw = photo(w, h)
     ppm = os.path.join(tmp, "in.ppm")
@@ -389,7 +389,7 @@ def test_colour_transform():
 
 def main():
     if not lossy.available():
-        print("PYRA v4 codec is not built - run scripts/build_native.sh first")
+        print("PYRA v6 codec is not built - run scripts/build_native.sh first")
         return 1
     test_available()
     test_quality()

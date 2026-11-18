@@ -77,7 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
     e.add_argument("--tile", type=int, default=256)
     e.add_argument("--colorspace", choices=["auto", "gray", "rgb", "rgba"], default="auto")
     e.add_argument("--quality", type=int, default=0, metavar="Q",
-                   help="encode lossy with the v4 codec at quality 1..100 "
+                   help="encode lossy with the v6 codec at quality 1..100 "
                         "(0 keeps the lossless v3 codec)")
     e.add_argument("--subsampling", choices=["auto", "444", "420"], default="auto",
                    help="chroma subsampling for the lossy codec "
@@ -274,7 +274,7 @@ def _inspect(input_path: str) -> None:
         from . import lossy
         meta = lossy.info(data)
         if meta is None:
-            print(f"VERIFICATION FAILED: malformed PYRA v5 container")
+            print(f"VERIFICATION FAILED: malformed PYRA v6 container")
             return
         print(f"=== PYRA Image Inspection: {input_path} ===")
         print(f"  version: 5 (lossy DCT)")
@@ -826,7 +826,7 @@ def main(argv=None) -> int:
                 from . import lossy
                 stored = lossy.info(out_bytes) or {}
                 sub_name = "4:2:0" if stored.get("subsampling") == 2 else "4:4:4"
-                print(f"  size: {len(out_bytes)} bytes, codec: DCT lossy v4, "
+                print(f"  size: {len(out_bytes)} bytes, codec: DCT lossy v6, "
                       f"quality: {stored.get('quality')}, chroma: {sub_name}")
                 print("Done.")
                 return 0

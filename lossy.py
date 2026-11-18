@@ -1,4 +1,4 @@
-# PYRA v4 — lossy codec binding (Rust core).
+# PYRA v6 — lossy codec binding (Rust core).
 #
 # The codec itself lives in `rust/pyra_lossy.rs`: YCbCr (optional 4:2:0),
 # 8x8 DCT, perceptual quantisation and an adaptive binary range coder. This
@@ -21,10 +21,10 @@ _lib = None
 _load_attempted = False
 
 _ERR = {
-    -500: "invalid PYRA v4 parameter",
-    -501: "malformed PYRA v4 header",
-    -502: "PYRA v4 CRC mismatch",
-    -503: "malformed PYRA v4 stream",
+    -500: "invalid PYRA v6 parameter",
+    -501: "malformed PYRA v6 header",
+    -502: "PYRA v6 CRC mismatch",
+    -503: "malformed PYRA v6 stream",
 }
 
 SUBSAMPLE_AUTO = 0
@@ -74,7 +74,7 @@ def available() -> bool:
 
 
 def _error(rc: int) -> CorruptedFileError:
-    return CorruptedFileError(_ERR.get(rc, f"PYRA v4 codec error {rc}"))
+    return CorruptedFileError(_ERR.get(rc, f"PYRA v6 codec error {rc}"))
 
 
 def channels_for(color_space: int) -> int:
@@ -89,7 +89,7 @@ def channels_for(color_space: int) -> int:
 
 def encode(raw: bytes, width: int, height: int, color_space: int = CS_RGB,
            quality: int = 90, subsampling: int = SUBSAMPLE_AUTO):
-    """Encode interleaved 8-bit samples into a PYRA v4 lossy container."""
+    """Encode interleaved 8-bit samples into a PYRA v6 lossy container."""
     lib = _load()
     if lib is None:
         return None
@@ -113,10 +113,10 @@ def encode(raw: bytes, width: int, height: int, color_space: int = CS_RGB,
 
 
 def decode(blob: bytes):
-    """Decode a PYRA v4 container into `(meta, raw_samples)`."""
+    """Decode a PYRA v6 container into `(meta, raw_samples)`."""
     lib = _load()
     if lib is None:
-        raise CorruptedFileError("the native PYRA v4 codec is not available")
+        raise CorruptedFileError("the native PYRA v6 codec is not available")
     raw = ctypes.create_string_buffer(bytes(blob), len(blob))
     src = ctypes.cast(raw, ctypes.POINTER(ctypes.c_ubyte))
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
@@ -131,7 +131,7 @@ def decode(blob: bytes):
         lib.pyra_free_buf(out_p, out_len.value)
     meta = info(blob)
     if meta is None:
-        raise CorruptedFileError("malformed PYRA v4 header")
+        raise CorruptedFileError("malformed PYRA v6 header")
     return meta, samples
 
 

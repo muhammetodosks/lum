@@ -1235,7 +1235,7 @@ başına hesaplanıp ortalanır:
 | 42 dB | 109,66 KB | 123,31 KB | %97,6 | 6 |
 | 46 dB | 183,36 KB | 230,08 KB | %88,2 | 6 |
 
-Hız: ~19 MP/s kodlama, aynı donanımda JXL referansının ~10 katı.
+Hız ve onun nasıl ölçüldüğü 27.10'da.
 
 PYRA beş hedefte de JXL'den küçük. 30 ve 34 dB satırları altı değil dört
 görüntü kapsıyor: JXL hiçbir mesafede Clouds'ta 34,64 dB'in, Fuji'de
@@ -1323,7 +1323,60 @@ değil.
 | Tek bant tablosu (38 dB'de fit) | 46 dB'de −%2,7 ama 34 dB'de düz görüntülerde +%5,4 (Fuji) / +%3,2 (Clouds) |
 | İki çıpalı tek doğru (q=10..90) | 30 dB'de %1 daha iyi, ama 38 dB'de Fuji hâlâ +%2,1 — şekil ortada kabarıyor |
 | Çıpaların dışına ekstrapolasyon | Fitin gerekçelendirmediği kadar kaba adımlar üretiyor |
+| Blok düzeyinde thread + paylaşılan coder | Aralık kodlayıcı doğası gereği sıralı; blok başına yeniden başlatma orandan %2-4 yer |
+| `-C target-cpu=native` | %3; yanında 6,4 kat varken taşınabilirliği bozmaya değmez |
+| Ayarları görüntü başına okumak | Düzlem başına okumayla ölçülebilir fark yok, düzlem başına sürüm değişikliği yerel tutuyor |
 
 Aralık kodlayıcının kendisi optimal: `PYRA_STATS` her kalitede gerçek çıktıyı
 ideal maliyetle (∑−log₂p) karşılaştırıyor ve oran %100,0. Yani darboğaz
 coder değil, model ve katsayılar.
+
+### 27.10 Hız
+
+Erken sürümlerde yazılan "~19 MP/s" sayısı yanlıştı: küçük bir görüntüde
+ölçülmüştü. 1920×1080 bir fotoğrafta (2,07 MP, dört çekirdek, ısınmadan sonra
+beş tur) gerçek değer **2,86 MP/s** çıktı. Aşağıdaki sayılar aynı görüntü
+(Province) üzerinde, q=50/85/95 için ölçüldü:
+
+| Aşama | q50 | q85 | q95 |
+|-------|-----|-----|-----|
+| başlangıç | 2,86 | 2,78 | 2,67 MP/s |
+| ayarlar döngü dışına | 12,59 | 11,36 | 10,08 MP/s |
+| + düzlem iş parçacıkları | **18,67** | **17,12** | **16,28 MP/s** |
+
+Çözme 20,50 / 18,13 / 15,59'dan **31,00 / 28,11 / 25,82 MP/s**'ye çıktı.
+Hiçbir aşama tek bir çıktı baytını değiştirmedi.
+
+**Ortam değişkenleri katsayı başına okunuyordu**
+
+`deadzone()` `rdoq`'nun 64 katsayılık döngüsünün *içinde*, `lam()` ise blok
+başına çağrılıyordu. İkisi de `std::env::var` sarıyor; bu çağrı her seferinde
+kilit alıp bir `String` ayırıyor. Yani blok başına 65 ortam okuması vardı, hem
+de katsayı başına çalışan bir yolda. Değerler görüntü ortasında değişemez, bu
+yüzden düzlem başına bir kez çözülüp içeri geçiriliyor. Kodlama 2,86 → 12,59
+MP/s, 4,4 kat, baytlar aynı.
+
+**Düzlemler paralel kodlanıp çözülüyor**
+
+Bir düzlemin DC tahmin zinciri, komşuluk durumu ve aralık kodlayıcısı o
+düzlemin içinde kalır; düzlem sırası bir düzlemin baytlarını etkileyemez. Bu
+yüzden düzlemler scoped thread'lere dağıtılıp akışlar dosya sırasında
+birleştiriliyor. `PAR_MIN_PIXELS` (256×256) altında sıralı yol korunuyor:
+thread açma maliyeti küçük görüntünün işinden büyük.
+
+Doğruluk, paralelliği zorla kapatılmış ikinci bir derlemeyle (`PAR_MIN_PIXELS =
+usize::MAX`) karşılaştırılarak kanıtlandı: dört görüntü, iki boyut (320×240 ve
+1920×1080 — eşiğin iki yanı) ve iki kalite, hem kap baytları hem çözülen
+pikseller: 16/16 aynı. `ref_q50` / `ref_q85` referansları da aynı hash'i veriyor,
+`tests/test_lossy.py` 72/72 geçiyor.
+
+**JPEG XL ile hız, aynı makinede**
+
+`ffmpeg -c:v libjxl -effort 7`, aynı 1920×1080 görüntü, mesafe 2,0/1,0/0,5
+(90/128/185 KB):
+
+* kodlama: JXL 1,92-2,00 MP/s, PYRA 16,3-18,7 MP/s → **~9 kat**
+* çözme: JXL 11,2-12,6 MP/s, PYRA 25,8-31,0 MP/s → **~2,7 kat**
+
+JXL sayıları ffmpeg'in kendi açılışını ve PPM giriş/çıkışını içeriyor, yani
+JXL'in hızı için bir üst sınır; oran olduğundan küçük, abartılı değil.

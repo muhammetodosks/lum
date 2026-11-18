@@ -546,11 +546,10 @@ fn quant_table(base: &[f32; 64], quality: i32) -> [f32; 64] {
 /// where the rate is a bit estimate and `lambda` scales with the quantiser
 /// (the classic Lagrangian weighting). The DC coefficient is skipped: it is
 /// predicted from its neighbours and carries the block mean.
-fn rdoq(block: &[f32; 64], q: &[f32; 64], coef: &mut [i32; 64], lam: f32) {
+fn rdoq(block: &[f32; 64], q: &[f32; 64], coef: &mut [i32; 64], lam: f32, dz: f32) {
     for i in 0..64 {
         let step = q[i];
         let v = block[i] / step;
-        let dz = deadzone();
         let dzl = if v >= 0.0 {
             (v + dz).floor()
         } else {
@@ -1089,6 +1088,34 @@ impl Neigh {
     }
 }
 
+/// Below this many pixels the threads cost more than they save: spawning is
+/// tens of microseconds, a small image is less work than that.
+const PAR_MIN_PIXELS: usize = 256 * 256;
+
+/// Encode every plane, concurrently when the image is big enough.
+///
+/// Planes are independent by construction. The DC prediction chain runs inside
+/// one plane, the neighbourhood state is per plane, and each plane has its own
+/// range coder, so a plane's bytes cannot depend on another's. The streams are
+/// concatenated in plane order afterwards, which makes the output byte for
+/// byte identical to the sequential version.
+fn enc_all_planes(planes: &[Vec<f32>], color_space: i32, width: usize, height: usize,
+                  use_sub: bool, qy: &[f32; 64], qc: &[f32; 64],
+                  cos: &[[f32; 8]; 8]) -> Vec<Vec<u8>> {
+    let job = |i: usize| {
+        let q = if i == 0 || i == 3 { qy } else { qc };
+        let (pw, ph) = plane_dims_at(i, color_space, width, height, use_sub);
+        enc_plane(&planes[i], pw, ph, q, cos)
+    };
+    if planes.first().map_or(0, |p| p.len()) < PAR_MIN_PIXELS {
+        return (0..planes.len()).map(job).collect();
+    }
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..planes.len()).map(|i| sc.spawn(move || job(i))).collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    })
+}
+
 fn enc_plane(samples: &[f32], w: usize, h: usize, q: &[f32; 64],
              cos: &[[f32; 8]; 8]) -> Vec<u8> {
     let mut e = REnc::new();
@@ -1101,6 +1128,12 @@ fn enc_plane(samples: &[f32], w: usize, h: usize, q: &[f32; 64],
     let mut cur = vec![Neigh::default(); bw];
     let mut block = [0f32; 64];
     let mut coef = [0i32; 64];
+    // The tuning knobs are environment variables, and `std::env::var` takes a
+    // lock and allocates. Reading them per block (and, for the deadzone, per
+    // coefficient) dominated the encoder: 65 lookups per block. They cannot
+    // change mid-image, so they are resolved once per plane.
+    let lam_v = lam();
+    let dz = deadzone();
     for by in 0..bh {
         let mut left_dc = 0i32;
         let mut left = Neigh::default();
@@ -1113,7 +1146,7 @@ fn enc_plane(samples: &[f32], w: usize, h: usize, q: &[f32; 64],
                 }
             }
             fdct(&mut block, cos);
-            rdoq(&block, q, &mut coef, lam());
+            rdoq(&block, q, &mut coef, lam_v, dz);
 
             // ---- DC: two-dimensional gradient prediction.
             let pred = if bx == 0 && by == 0 {
@@ -1212,6 +1245,39 @@ fn enc_plane(samples: &[f32], w: usize, h: usize, q: &[f32; 64],
             ideal / 8.0, real, real / ideal * 100.0);
     }
     e.finish()
+}
+
+/// Decode every plane, concurrently when the image is big enough. Each plane
+/// has its own stream and its own coder state, and the reconstruct step is
+/// per plane, so nothing is shared. Errors are reported in plane order.
+fn dec_all_planes(blob: &[u8], spans: &[(usize, usize)], color_space: i32,
+                  width: usize, height: usize, use_sub: bool,
+                  qy: &[f32; 64], qc: &[f32; 64],
+                  cos: &[[f32; 8]; 8]) -> Result<Vec<Vec<f32>>, isize> {
+    let job = |i: usize| {
+        let q = if i == 0 || i == 3 { qy } else { qc };
+        let (pw, ph) = plane_dims_at(i, color_space, width, height, use_sub);
+        let (off, len) = spans[i];
+        dec_plane(&blob[off..off + len], pw, ph, q, cos)
+    };
+    let n = spans.len();
+    let big = plane_dims_at(0, color_space, width, height, use_sub);
+    let got: Vec<Option<Vec<f32>>> = if big.0 * big.1 < PAR_MIN_PIXELS {
+        (0..n).map(job).collect()
+    } else {
+        std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..n).map(|i| sc.spawn(move || job(i))).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    };
+    let mut planes = Vec::with_capacity(n);
+    for p in got {
+        match p {
+            Some(p) => planes.push(p),
+            None => return Err(E_STREAM),
+        }
+    }
+    Ok(planes)
 }
 
 fn dec_plane(bytes: &[u8], w: usize, h: usize, q: &[f32; 64],
@@ -1462,12 +1528,7 @@ pub fn encode(data: &[u8], width: usize, height: usize, channels: usize,
     let planes = rgb_to_planes(data, width, height, ch, color_space, use_sub, cocg);
     let (cw, chh) = if use_sub { ((width + 1) / 2, (height + 1) / 2) } else { (width, height) };
 
-    let mut streams: Vec<Vec<u8>> = Vec::new();
-    for (i, plane) in planes.iter().enumerate() {
-        let q = if i == 0 || i == 3 { &qy } else { &qc };
-        let (pw, ph) = plane_dims_at(i, color_space, width, height, use_sub);
-        streams.push(enc_plane(plane, pw, ph, q, &cos));
-    }
+    let streams = enc_all_planes(&planes, color_space, width, height, use_sub, &qy, &qc, &cos);
 
     let mut out = Vec::with_capacity(64 + streams.iter().map(|s| s.len()).sum::<usize>());
     out.extend_from_slice(MAGIC);
@@ -1547,9 +1608,11 @@ pub fn decode(blob: &[u8]) -> Result<(usize, usize, i32, Vec<u8>), isize> {
     let (qy, qc) = quantisers(quality, cq_used, false);
     let (cw, chh) = if use_sub { ((width + 1) / 2, (height + 1) / 2) } else { (width, height) };
 
+    // Validate the plane table first, in file order and with the same checks
+    // as the sequential decoder, so malformed files fail identically.
     let mut off = HDR;
-    let mut planes: Vec<Vec<f32>> = Vec::with_capacity(nplanes);
-    for i in 0..nplanes {
+    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(nplanes);
+    for _ in 0..nplanes {
         if off + 4 > body {
             return Err(E_STREAM);
         }
@@ -1558,17 +1621,14 @@ pub fn decode(blob: &[u8]) -> Result<(usize, usize, i32, Vec<u8>), isize> {
         if off + len > body {
             return Err(E_STREAM);
         }
-        let q = if i == 0 || i == 3 { &qy } else { &qc };
-        let (pw, ph) = plane_dims_at(i, color_space, width, height, use_sub);
-        match dec_plane(&blob[off..off + len], pw, ph, q, &cos) {
-            Some(p) => planes.push(p),
-            None => return Err(E_STREAM),
-        }
+        spans.push((off, len));
         off += len;
     }
     if off != body {
         return Err(E_STREAM);
     }
+    let planes = dec_all_planes(blob, &spans, color_space, width, height, use_sub,
+                                &qy, &qc, &cos)?;
 
     let mut out = vec![0u8; width * height * ch];
     if color_space == CS_GRAY_V {
