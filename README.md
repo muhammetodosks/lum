@@ -214,11 +214,11 @@ per megapixel at matched PSNR:
 
 | PSNR | PYRA | as % of JXL |
 |------|------|-------------|
-| 30 dB | 17.9 KB | 93.9 % |
-| 34 dB | 35.5 KB | 96.0 % |
-| 38 dB | 68.5 KB | 112.8 % |
-| 42 dB | 122.1 KB | 111.3 % |
-| 46 dB | 202.5 KB | 98.9 % |
+| 30 dB | 16.5 KB | 87.9 % |
+| 34 dB | 32.4 KB | 89.2 % |
+| 38 dB | 63.4 KB | 101.8 % |
+| 42 dB | 113.8 KB | 101.7 % |
+| 46 dB | 190.3 KB | 91.3 % |
 
 Encoding runs at roughly 19 MP/s single-threaded, about ten times the JXL
 reference in the same harness. The remaining gap is concentrated in flat,

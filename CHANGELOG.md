@@ -22,7 +22,10 @@ core as the rest of the project.
 * `encode --quality Q` (1..100) and `encode --subsampling 4:4:4|4:2:0`. `auto`
   (the default, quality 0) keeps the lossless v3 path, so nothing changes for
   existing callers.
-* Container version 5: 36-byte header (`quality`, `mode`, `plane_count`), then
+* YCoCg colour transform instead of YCbCr, flagged in the `coding` byte so
+  files written with either transform stay readable.
+* Container version 5: 36-byte header (`quality`, `chroma multiplier`,
+  `mode`, `plane_count`), then
   `u32 length + stream` per plane, then CRC-32 over the whole file. Version 4
   files are rejected rather than decoded: the entropy model changed and they
   would decode to the wrong pixels.
@@ -40,11 +43,11 @@ compared with JPEG XL (`libjxl --effort 7`, distance swept over -1..15):
 
 | PSNR | PYRA | as % of JXL |
 |------|------|-------------|
-| 30 dB | 17.9 KB | 93.9 % |
-| 34 dB | 35.5 KB | 96.0 % |
-| 38 dB | 68.5 KB | 112.8 % |
-| 42 dB | 122.1 KB | 111.3 % |
-| 46 dB | 202.5 KB | 98.9 % |
+| 30 dB | 16.5 KB | 87.9 % |
+| 34 dB | 32.4 KB | 89.2 % |
+| 38 dB | 63.4 KB | 101.8 % |
+| 42 dB | 113.8 KB | 101.7 % |
+| 46 dB | 190.3 KB | 91.3 % |
 
 Encoding runs at ~19 MP/s single-threaded, roughly ten times the JXL reference
 in the same harness.
@@ -66,6 +69,9 @@ in the same harness.
   transform weights chroma error by 1.402/1.772, so chroma error dominates RGB
   MSE even though the eye tolerates it. Spending *more* on chroma than luma is
   cheaper than the reverse.
+* YCoCg instead of YCbCr. Its inverse has unit coefficients (`R = Y + Co - Cg`,
+  `G = Y + Cg`, `B = Y - Co - Cg`), so the same chroma error costs far less in
+  RGB terms. Worth -7.4 % at 38 dB, the largest single win after the tilt.
 
 **Measured and rejected**
 

@@ -1146,7 +1146,7 @@ ve kaçış kodları hep aynı aralık kodlayıcısından geçer.
 │ height           I    4B                     │
 │ bit_depth        B    1B   (8)               │
 │ color_space      B    1B   (1=GRAY 2=RGB 3=RGBA) │
-│ coding           B    1B   bit0 = DCT, bit1 = 4:2:0 │
+│ coding           B    1B   bit0 = DCT, bit1 = 4:2:0, bit2 = YCoCg │
 │ quality          B    1B   (1..100)          │
 │ chroma_mult      B    1B   (adım çarpanı, 1/128) │
 │ reserved          11B                        │
@@ -1226,19 +1226,37 @@ bayt (JXL: `libjxl --effort 7`, mesafe -1..15 taranmış):
 
 | PSNR | PYRA | JXL'ye oran |
 |------|------|-------------|
-| 30 dB | 18,0 KB | %96,8 |
-| 34 dB | 36,1 KB | %98,4 |
-| 38 dB | 69,7 KB | %117,3 |
-| 42 dB | 124,3 KB | %114,4 |
-| 46 dB | 204,8 KB | %101,1 |
+| 30 dB | 16,5 KB | %87,9 |
+| 34 dB | 32,4 KB | %89,2 |
+| 38 dB | 63,4 KB | %101,8 |
+| 42 dB | 113,8 KB | %101,7 |
+| 46 dB | 190,3 KB | %91,3 |
 
 Hız: ~19 MP/s kodlama, aynı donanımda JXL referansının ~10 katı.
 
-Açık fark, düz içerikli fotoğraflarda (gökyüzü, manzara) oluşuyor; sentetik
-ve dokulu görüntülerde PYRA önde. Nedeni ölçüldü: iki codec de düzlem başına
-benzer PSNR'e ulaşıyor, fark **oran**da — aynı baytta JXL 1-3 dB daha iyi.
+30, 34 ve 46 dB'de PYRA JXL'in önünde; 38 ve 42 dB'de %2 gerisinde. Kalan
+açık hâlâ düz içerikli fotoğraflarda (Fuji, Clouds, Province) toplanıyor,
+dokulu ve sentetik görüntülerde PYRA açık ara önde.
 
-### 27.6 4:2:0 neden varsayılan değil
+### 27.6 Renk dönüşümü
+
+Dönüşüm başlangıçta YCbCr idi ve kroma hatası RGB MSE'ye baskın geliyordu:
+ters dönüşüm onu R için 1,402, B için 1,772 ile çarpıyor. YCoCg'nin tersi
+birim katsayılıdır:
+
+```
+R = Y + Co - Cg
+G = Y + Cg
+B = Y - Co - Cg
+```
+
+Aynı kroma hatası, RGB'de yaklaşık 1,4-1,8 kat daha az hata demek. Ölçüm
+beklentiyi doğruladı: 38 dB'de %7,4, 46 dB'de %6,0 kazanç — spektral eğimden
+sonraki en büyük tek kazanç. Dönüşüm `coding` baytının 2. bitinde işaretlenir,
+yani eski YCbCr dosyaları okunmaya devam eder. Kroma çarpanının optimumu
+YCoCg altında da 0,72'de kaldı (0,6 / 0,8 / 0,9 / 1,0 / 1,1 / 1,25 tarandı).
+
+### 27.7 4:2:0 neden varsayılan değil
 
 Kroma yarıörnekleme, eşleşen RGB PSNR'de her zaman daha büyük dosya üretti.
 Sebep yapısal: 4:4:4'te kroma düzlemleri zaten çok düz, bağlam modeli onları
@@ -1246,7 +1264,7 @@ neredeyse bedava kodluyor; 4:2:0 ise luma'yı aynı PSNR'e çekmek için daha ç
 bit harcatıyor. Seçenek API'de duruyor (`--subsampling 4:2:0`), varsayılan
 değil.
 
-### 27.7 Ölçülüp reddedilenler
+### 27.8 Ölçülüp reddedilenler
 
 | Fikir | Sonuç |
 |-------|-------|

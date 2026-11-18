@@ -761,6 +761,24 @@ fn chroma_mult_to_byte(m: f32) -> u8 {
     (m * 128.0).round().clamp(1.0, 255.0) as u8
 }
 
+/// Colour transform selection: false = YCbCr (the default), true = YCoCg.
+///
+/// YCbCr's inverse amplifies chroma error by 1.402 (R) and 1.772 (B), which is
+/// why chroma error dominated RGB MSE and the chroma quantiser had to be made
+/// finer. YCoCg's inverse is `R = Y + Co - Cg`, `G = Y + Cg`,
+/// `B = Y - Co - Cg`: unit coefficients, so the same chroma error costs less
+/// in RGB terms and the chroma steps can be coarser for the same quality.
+/// Whether that actually wins is a measurement, not an argument.
+fn use_ycocg() -> bool {
+    std::env::var("PYRA_CT")
+        .ok()
+        .map(|v| v == "1")
+        .unwrap_or(YCOCG)
+}
+
+/// Baked from a direct A/B against YCbCr on the same six photos.
+const YCOCG: bool = true;
+
 /// Chroma quantiser stride multiplier.
 ///
 /// Chroma is currently eating ~40% of the stream. The eye resolves far less
@@ -840,7 +858,7 @@ fn plane_dims_at(i: usize, cs: i32, w: usize, h: usize, subsampled: bool) -> (us
 }
 
 fn rgb_to_planes(src: &[u8], w: usize, h: usize, ch: usize, cs: i32,
-                 subsampled: bool) -> Vec<Vec<f32>> {
+                 subsampled: bool, cocg: bool) -> Vec<Vec<f32>> {
     if cs == CS_GRAY_V {
         let mut y = vec![0f32; w * h];
         for i in 0..w * h {
@@ -857,7 +875,11 @@ fn rgb_to_planes(src: &[u8], w: usize, h: usize, ch: usize, cs: i32,
         for x in 0..w {
             let i = (y * w + x) * ch;
             let (r, g, b) = (src[i] as f32, src[i + 1] as f32, src[i + 2] as f32);
-            py[y * w + x] = 0.299 * r + 0.587 * g + 0.114 * b;
+            py[y * w + x] = if cocg {
+                0.25 * r + 0.5 * g + 0.25 * b
+            } else {
+                0.299 * r + 0.587 * g + 0.114 * b
+            };
         }
     }
     // chroma at the (possibly reduced) chroma resolution
@@ -881,8 +903,14 @@ fn rgb_to_planes(src: &[u8], w: usize, h: usize, ch: usize, cs: i32,
             g *= inv;
             b *= inv;
             let o = y * cw + x;
-            pb[o] = -0.168736 * r - 0.331264 * g + 0.5 * b + 128.0;
-            pr[o] = 0.5 * r - 0.418688 * g - 0.081312 * b + 128.0;
+            if cocg {
+                // Co = R/2 - B/2, Cg = -R/4 + G/2 - B/4, both in +-127.5
+                pb[o] = 0.5 * r - 0.5 * b + 128.0;
+                pr[o] = -0.25 * r + 0.5 * g - 0.25 * b + 128.0;
+            } else {
+                pb[o] = -0.168736 * r - 0.331264 * g + 0.5 * b + 128.0;
+                pr[o] = 0.5 * r - 0.418688 * g - 0.081312 * b + 128.0;
+            }
         }
     }
     let mut out = vec![py, pb, pr];
@@ -1336,7 +1364,8 @@ pub fn encode(data: &[u8], width: usize, height: usize, channels: usize,
     let cq_byte = chroma_mult_to_byte(chroma_stride() * chroma_qmult());
     let cq_used = cq_byte as f32 / 128.0;
     let (qy, qc) = quantisers(quality, cq_used, true);
-    let planes = rgb_to_planes(data, width, height, ch, color_space, use_sub);
+    let cocg = use_ycocg();
+    let planes = rgb_to_planes(data, width, height, ch, color_space, use_sub, cocg);
     let (cw, chh) = if use_sub { ((width + 1) / 2, (height + 1) / 2) } else { (width, height) };
 
     let mut streams: Vec<Vec<u8>> = Vec::new();
@@ -1353,7 +1382,7 @@ pub fn encode(data: &[u8], width: usize, height: usize, channels: usize,
     put_u32(&mut out, height as u32);
     out.push(8); // bit depth
     out.push(color_space as u8);
-    out.push(1 | ((use_sub as u8) << 1)); // coding
+    out.push(1 | ((use_sub as u8) << 1) | ((cocg as u8) << 2)); // coding
     out.push(quality as u8);
     // Byte 24: the chroma step multiplier in 1/128 units. The decoder has to
     // reproduce the exact quantiser the encoder used, so the value travels
@@ -1417,6 +1446,7 @@ pub fn decode(blob: &[u8]) -> Result<(usize, usize, i32, Vec<u8>), isize> {
         return Err(E_HEADER);
     }
     let use_sub = (coding >> 1) & 1 == 1;
+    let cocg = (coding >> 2) & 1 == 1;
     let cos = cos_table();
     let cq_byte = blob[24];
     let cq_used = if cq_byte == 0 { 1.0 } else { cq_byte as f32 / 128.0 };
@@ -1465,9 +1495,12 @@ pub fn decode(blob: &[u8]) -> Result<(usize, usize, i32, Vec<u8>), isize> {
         let y = yy[i];
         let b = cb[i] - 128.0;
         let r = cr[i] - 128.0;
-        let rr = y + 1.402 * r;
-        let gg = y - 0.344136 * b - 0.714136 * r;
-        let bb = y + 1.772 * b;
+        let (rr, gg, bb) = if cocg {
+            let t = y - (cr[i] - 128.0);
+            (t + (cb[i] - 128.0), y + (cr[i] - 128.0), t - (cb[i] - 128.0))
+        } else {
+            (y + 1.402 * r, y - 0.344136 * b - 0.714136 * r, y + 1.772 * b)
+        };
         out[i * ch] = rr.round().clamp(0.0, 255.0) as u8;
         out[i * ch + 1] = gg.round().clamp(0.0, 255.0) as u8;
         out[i * ch + 2] = bb.round().clamp(0.0, 255.0) as u8;

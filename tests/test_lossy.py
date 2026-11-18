@@ -205,6 +205,7 @@ def test_info():
     check("info reports the plane count", meta["num_planes"] == 3)
     check("info marks the container as lossy", meta["lossy"] is True)
     check("info flags subsampling in header mode", meta["mode"] == 1)
+    check("header flags the YCoCg colour transform", (blob[22] >> 2) & 1 == 1)
     check("info does not decode planes (header only)", "samples" not in meta)
 
     # The chroma step multiplier travels in byte 24 (1/128 units) because the
@@ -366,6 +367,26 @@ def test_gray_and_16bit_limits():
     check("a short sample buffer is rejected", bad)
 
 
+def test_colour_transform():
+    print("\n-- colour transform --")
+    w, h = 64, 48
+    raw = photo(w, h)
+    sizes = {}
+    for name, flag in (("ycocg", "1"), ("ycbcr", "0")):
+        os.environ["PYRA_CT"] = flag
+        blob = lossy.encode(raw, w, h, CS_RGB, 88, lossy.SUBSAMPLE_444)
+        meta, back = lossy.decode(blob)
+        sizes[name] = len(blob)
+        want = 1 if flag == "1" else 0
+        check(f"{name} writes its transform flag", (blob[22] >> 2) & 1 == want)
+        check(f"{name} round-trips above 30 dB", psnr(raw, bytes(back)) > 30.0)
+    os.environ.pop("PYRA_CT", None)
+    # The baked default must be YCoCg, but the size relation is not asserted:
+    # YCoCg wins on average over a photo set, not on every individual image.
+    default = lossy.encode(raw, w, h, CS_RGB, 88, lossy.SUBSAMPLE_444)
+    check("the default transform is YCoCg", (default[22] >> 2) & 1 == 1)
+
+
 def main():
     if not lossy.available():
         print("PYRA v4 codec is not built - run scripts/build_native.sh first")
@@ -375,6 +396,7 @@ def main():
     test_determinism()
     test_subsampling()
     test_color_spaces()
+    test_colour_transform()
     test_info()
     test_corruption()
     test_stream_desync()
