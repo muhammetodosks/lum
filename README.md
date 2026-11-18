@@ -193,6 +193,39 @@ instead of the exact bit width); the decoder picks the packing width from
 the version byte, so v2 files decode bit-exactly as well. Writing old
 versions is no longer offered, reading them is.
 
+## Lossy mode (PYRA v5)
+
+The v3 container is lossless and competes with PNG. For camera output there is
+now a second mode: YCbCr → 8×8 DCT → perceptual quantisation → context-modelled
+binary range coder, all in the same dependency-free Rust core.
+
+```bash
+python3 -m pyra.cli encode photo.ppm photo.pyra --quality 92
+python3 -m pyra.cli inspect photo.pyra
+python3 -m pyra.cli decode photo.pyra restored.ppm
+```
+
+`--quality` is 1..100; `auto` (the default, quality 0) keeps the lossless path,
+so existing scripts are unaffected. `--subsampling 4:2:0` is available but off by
+default — at matched RGB PSNR it always produced larger files.
+
+Measured against JPEG XL (`libjxl --effort 7`), six 800 px photos, mean bytes
+per megapixel at matched PSNR:
+
+| PSNR | PYRA | as % of JXL |
+|------|------|-------------|
+| 30 dB | 18.0 KB | 96.8 % |
+| 34 dB | 36.1 KB | 98.4 % |
+| 38 dB | 69.7 KB | 117.3 % |
+| 42 dB | 124.3 KB | 114.4 % |
+| 46 dB | 204.8 KB | 101.1 % |
+
+Encoding runs at roughly 19 MP/s single-threaded, about ten times the JXL
+reference in the same harness. The remaining gap is concentrated in flat,
+smooth photographs; on textured and synthetic content PYRA is ahead. Details,
+the exact tuning that was measured, and the ideas that were rejected are in
+[PYRA-DOCUMENTATION.md](PYRA-DOCUMENTATION.md#27-kayıplı-codec--pyra-v5).
+
 ## Security Limits and Fuzz Properties
 
 | Limit | Value |

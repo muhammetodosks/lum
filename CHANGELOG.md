@@ -1,12 +1,74 @@
 # Changelog
 
 All notable changes to PYRA and PYRM. The format versions are independent:
-`PYRA` container v1 → v2 → v3, `PYRM` container v1 → v2.
+`PYRA` container v1 → v2 → v3 (lossless) and v5 (lossy), `PYRM` container
+v1 → v2.
 
 The project keeps **bit-exact parity** between the native Rust/C++ backends and the
 pure-Python reference: both produce byte-identical containers.
 
 ---
+
+## v0.11.0 — lossy codec (PYRA v5)
+
+PYRA gains a photographic mode. Until now the container was lossless only: it
+competed with PNG, had no quality knob, and was useless for camera output. The
+new mode is a full transform codec — YCbCr, 8x8 DCT, perceptual quantisation and
+a context-modelled binary range coder — written in the same dependency-free Rust
+core as the rest of the project.
+
+**Added**
+
+* `encode --quality Q` (1..100) and `encode --subsampling 4:4:4|4:2:0`. `auto`
+  (the default, quality 0) keeps the lossless v3 path, so nothing changes for
+  existing callers.
+* Container version 5: 36-byte header (`quality`, `mode`, `plane_count`), then
+  `u32 length + stream` per plane, then CRC-32 over the whole file. Version 4
+  files are rejected rather than decoded: the entropy model changed and they
+  would decode to the wrong pixels.
+* `pyra.lossy` ctypes binding (`encode`, `decode`, `info`) and a
+  `PyraCodec.decode` dispatch for v5.
+* `pyra inspect` reports quality, chroma format and plane count for v5 files.
+* `tests/test_lossy.py`: 63 checks covering round-trip accuracy, monotone
+  distortion in quality, header validation, corruption rejection and the
+  codec dispatch.
+
+**Measured**
+
+Mean bytes per megapixel at matched RGB PSNR over six 800 px backgrounds,
+compared with JPEG XL (`libjxl --effort 7`, distance swept over -1..15):
+
+| PSNR | PYRA | as % of JXL |
+|------|------|-------------|
+| 30 dB | 18.0 KB | 96.8 % |
+| 34 dB | 36.1 KB | 98.4 % |
+| 38 dB | 69.7 KB | 117.3 % |
+| 42 dB | 124.3 KB | 114.4 % |
+| 46 dB | 204.8 KB | 101.1 % |
+
+Encoding runs at ~19 MP/s single-threaded, roughly ten times the JXL reference
+in the same harness.
+
+**Tuning that earned its place**
+
+* `LAMBDA` 0.1 → 1.6: the RDOQ rate estimate assumed 3 bits for a unit
+  magnitude, the measurements said 5.9, so nonzeros were underpriced.
+* Spectral tilt, interpolated in quality from -0.6 to -0.95: the JPEG base
+  tables spend too much on high frequencies for this coder at these rates.
+  Worth -7 % at 46 dB.
+* Magnitude coding as truncated unary with an Exp-Golomb escape instead of a
+  binary tree.
+* `last` position through a 6-bit adaptive tree instead of unary length plus
+  raw bits.
+* Sign prediction from lower-frequency coefficients already coded in the same
+  block.
+
+**Measured and rejected**
+
+* 4:2:0 chroma at matched RGB PSNR was always larger than 4:4:4.
+* Flat high-frequency shaping, chroma stride, a second-order tilt term, and a
+  finer 9-state neighbour context all measured neutral or worse.
+* A within-block energy context for significance: neutral to negative.
 
 ## v0.10.0 — near-lossless PYRM
 

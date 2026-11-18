@@ -7,6 +7,7 @@ import tempfile
 from .api import encode_file, decode_file, _parse_pnm
 from .container import PyraContainer
 from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
+                        MAGIC,
                         PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE,
                         PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN,
                         METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX,
@@ -75,6 +76,12 @@ def _build_parser() -> argparse.ArgumentParser:
     e.add_argument("--filter", choices=["auto"] + list(_FILTER_BY_NAME), default="auto")
     e.add_argument("--tile", type=int, default=256)
     e.add_argument("--colorspace", choices=["auto", "gray", "rgb", "rgba"], default="auto")
+    e.add_argument("--quality", type=int, default=0, metavar="Q",
+                   help="encode lossy with the v4 codec at quality 1..100 "
+                        "(0 keeps the lossless v3 codec)")
+    e.add_argument("--subsampling", choices=["auto", "444", "420"], default="auto",
+                   help="chroma subsampling for the lossy codec "
+                        "(auto = 4:4:4, which measures smaller at equal PSNR)")
 
     d = sub.add_parser("decode", help="decode a .pyra file into a PNM image")
     d.add_argument("input")
@@ -262,6 +269,23 @@ def _build_parser() -> argparse.ArgumentParser:
 def _inspect(input_path: str) -> None:
     with open(input_path, "rb") as f:
         data = f.read()
+    if len(data) >= 12 and data[:len(MAGIC)] == MAGIC \
+            and int.from_bytes(data[8:12], "big") == 5:
+        from . import lossy
+        meta = lossy.info(data)
+        if meta is None:
+            print(f"VERIFICATION FAILED: malformed PYRA v5 container")
+            return
+        print(f"=== PYRA Image Inspection: {input_path} ===")
+        print(f"  version: 5 (lossy DCT)")
+        print(f"  dimensions: {meta['width']}x{meta['height']} @ "
+              f"{meta['bit_depth']}-bit")
+        print(f"  color_space: {_CS_NAMES.get(meta['color_space'], meta['color_space'])}")
+        print(f"  quality: {meta['quality']}")
+        print(f"  chroma: {'4:2:0' if meta['subsampling'] == 2 else '4:4:4'}")
+        print(f"  planes: {meta['num_planes']}")
+        print(f"  file_size: {len(data)} bytes")
+        return
     meta, tiles = PyraContainer.unpack_file(data)
     print(f"=== PYRA Image Inspection: {input_path} ===")
     print(f"  version: {meta['version']}")
@@ -791,7 +815,21 @@ def main(argv=None) -> int:
             transform = _TRANSFORM_BY_NAME.get(args.transform, -1)
             filter_mode = _FILTER_BY_NAME.get(args.filter, -1)
             cs = _CS_BY_NAME.get(args.colorspace, -1)
+            sub = {"auto": 0, "444": 1, "420": 2}[args.subsampling]
             print(f"Encoding {args.input} -> {args.output}...")
+            if args.quality:
+                from .api import encode_file as _encode_file
+                _encode_file(args.input, args.output, color_space=cs,
+                             quality=args.quality, subsampling=sub)
+                with open(args.output, "rb") as f:
+                    out_bytes = f.read()
+                from . import lossy
+                stored = lossy.info(out_bytes) or {}
+                sub_name = "4:2:0" if stored.get("subsampling") == 2 else "4:4:4"
+                print(f"  size: {len(out_bytes)} bytes, codec: DCT lossy v4, "
+                      f"quality: {stored.get('quality')}, chroma: {sub_name}")
+                print("Done.")
+                return 0
             encode_file(args.input, args.output, color_space=cs,
                         pred_type=pred, tile_size=args.tile, method=method,
                         transform=transform, filter_mode=filter_mode)

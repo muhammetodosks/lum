@@ -47,6 +47,7 @@
 24. [Ölçülüp reddedilen fikirler](#24-ölçülüp-reddedilen-fikirler)
 25. [Sınırlar ve gelecek işler](#25-sınırlar-ve-gelecek-işler)
 26. [Terim sözlüğü](#26-terim-sözlüğü)
+27. [Kayıplı codec — PYRA v5](#27-kayıplı-codec--pyra-v5)
 
 ---
 
@@ -1111,3 +1112,139 @@ alındı. Kayıt altında tutulur ki tekrar denenmesin:
 | **MONOCHROME1** | Yüksek yoğunluk = siyah olan gri tonlama (görüntüyü tersine çevirir) |
 | **Rescale** | `value * slope + intercept` (CT için HU'ya çevirme) |
 | **Window/Level** | Görüntüleme penceresi: `level ± window/2` aralığı 8-bit'e eşlenir |
+
+---
+
+## 27. Kayıplı codec — PYRA v5
+
+v3 container'ı kayıpsızdır ve PNG ile yarışır. Fotoğraf için gereken şey
+başkadır: kalite/boyut düğmesi, renk dönüşümü, blok dönüşümü ve bağlama
+duyarlı bir entropi modeli. v5 bunların hepsini aynı bağımlılıksız Rust
+çekirdeğinde yapar; Python tarafı yalnızca ctypes bağlayıcısı ve CLI'dır.
+
+### 27.1 Boru hattı
+
+```
+RGB(A) ──► YCbCr ──► 8x8 DCT ──► nicemleme (RDOQ) ──► zig-zag
+                                                        │
+                                     bağlam modeli ──────┤
+                                                        ▼
+                                            ikili aralık kodlayıcı
+```
+
+Sekiz bitlik RGB ve RGBA desteklenir. Gri görüntü tek düzlem olarak saklanır.
+Düzlem başına ayrı bir akış üretilir: DC artığı, anlamlılık, işaret, büyüklük
+ve kaçış kodları hep aynı aralık kodlayıcısından geçer.
+
+### 27.2 Container (v5)
+
+```
+┌──────────────────────────────────────────────┐
+│ magic            8B   "PYRA\r\n\x1A\n"       │
+│ version          I    4B   (5)               │
+│ width            I    4B                     │
+│ height           I    4B                     │
+│ bit_depth        B    1B   (8)               │
+│ color_space      B    1B   (1=GRAY 2=RGB 3=RGBA) │
+│ coding           B    1B   bit0 = DCT, bit1 = 4:2:0 │
+│ quality          B    1B   (1..100)          │
+│ reserved          12B                        │
+│ plane_count      B    1B                     │
+├──────────────────────────────────────────────┤
+│ her düzlem için: u32 uzunluk + akış           │
+├──────────────────────────────────────────────┤
+│ CRC32 (tüm dosya üzerinde)  I   4B          │
+└──────────────────────────────────────────────┘
+```
+
+Başlık 36 bayttır. `quality` yalnızca bilgi amaçlıdır: çözücü nicemleme
+tablolarını `quality`'den yeniden üretir, bu yüzden tablo dosyada taşınmaz.
+Sürüm 4 reddedilir — aynı yerleşimi paylaşıyordu ama entropi modeli
+değiştiği için sessizce yanlış piksel üretirdi.
+
+### 27.3 Nicemleme
+
+Nicemleme tabloları JPEG'in taban tablolarından türetilir ve üç ayarla
+biçimlendirilir:
+
+| Ayar | Etki |
+|------|------|
+| `scale(q)` | Klasik JPEG kalite eğrisi: `q<50` için `5000/q`, değilse `200-2q` |
+| **spektral eğim** | Adımı `1 + t·f` ile ölçekler, `f = (u+v)/14`, `t` kalitede -0,6 → -0,95 arası enterpolasyon |
+| **RDOQ** | Her AC katsayısı için `D + λ·R` karşılaştırması; `λ = 1,6·step²` |
+
+Eğim bu codec'in en büyük tek kazancı oldu: 46 dB'de %7. JPEG tabloları
+Huffman çağında, yaklaşık 1 bit/piksel için ayarlanmıştı; bağlam modeli olan
+4:4:4 bir coder bu oranlarda yüksek frekanslara daha az, alçak frekanslara
+daha çok harcamak istiyor. Düşük kalitede (30 dB) işaret tersine döner, bu
+yüzden eğim kalitede doğrusal enterpole edilir.
+
+RDOQ başlangıçta `rate_est()` içinde bir katsayıyı 3 bit sayıyordu; gerçek
+maliyet ölçümde 5,9 bit çıktı. `λ`'yı 0,1'den 1,6'ya çıkarmak sıfır olmayan
+katsayıları doğru fiyatlandırdı ve orta/yüksek oranlarda %1-3 kazandırdı.
+
+### 27.4 Entropi modeli
+
+Tek bir ikili aralık kodlayıcı, 11 bit olasılık, shift-5 uyarlama. Her sembol
+sınıfı kendi bağlam tablosunu kullanır:
+
+* **DC**: komşu bloklardan gradyan tahmini (LOCO-I `med3(W, N, NW)`), artık
+  Exp-Golomb.
+* **`last`**: bloğun son sıfır olmayan zig-zag konumu, 6 bitlik uyarlanabilir
+  ağaç (63 düğüm). Eski şema uzunluğu unary, alt bitleri ham gönderiyordu ve
+  blok başına ~6,5 bit tutuyordu.
+* **Anlamlılık**: bant sınıfı (10) × komşu büyüklük kovası (4) × bir önceki
+  katsayının kova değeri (3).
+* **Büyüklük**: kesikli unary (`MAG_LEVELS = 8`), sonrasında Exp-Golomb kaçış.
+  Komşu bağlamı yalnızca ilk seviyede kullanılır.
+* **İşaret**: aynı blokta daha önce kodlanmış alçak frekanslı komşuların
+  işaret toplamı (3 sınıf) × sol/üst bloğun işaret durumu (4).
+
+İşaret tahmini, DCT katsayısının bir taban fonksiyonuna izdüşüm olmasından
+gelir: güçlü bir kenar, frekans ekseninde işareti düzenli değişen bir koşu
+üretir. Komşu *bloklar* bunu söylemez, komşu *frekanslar* söyler — ve zig-zag
+sırası gereği `(u-1,v)` ile `(u,v-1)` her zaman `(u,v)`'den önce gelir, yani
+çözücüde de hazırdır.
+
+### 27.5 Ölçülen sonuçlar
+
+Altı adet 800 px arka plan görüntüsü, eşleşen RGB PSNR'de megapiksel başına
+bayt (JXL: `libjxl --effort 7`, mesafe -1..15 taranmış):
+
+| PSNR | PYRA | JXL'ye oran |
+|------|------|-------------|
+| 30 dB | 18,0 KB | %96,8 |
+| 34 dB | 36,1 KB | %98,4 |
+| 38 dB | 69,7 KB | %117,3 |
+| 42 dB | 124,3 KB | %114,4 |
+| 46 dB | 204,8 KB | %101,1 |
+
+Hız: ~19 MP/s kodlama, aynı donanımda JXL referansının ~10 katı.
+
+Açık fark, düz içerikli fotoğraflarda (gökyüzü, manzara) oluşuyor; sentetik
+ve dokulu görüntülerde PYRA önde. Nedeni ölçüldü: iki codec de düzlem başına
+benzer PSNR'e ulaşıyor, fark **oran**da — aynı baytta JXL 1-3 dB daha iyi.
+
+### 27.6 4:2:0 neden varsayılan değil
+
+Kroma yarıörnekleme, eşleşen RGB PSNR'de her zaman daha büyük dosya üretti.
+Sebep yapısal: 4:4:4'te kroma düzlemleri zaten çok düz, bağlam modeli onları
+neredeyse bedava kodluyor; 4:2:0 ise luma'yı aynı PSNR'e çekmek için daha çok
+bit harcatıyor. Seçenek API'de duruyor (`--subsampling 4:2:0`), varsayılan
+değil.
+
+### 27.7 Ölçülüp reddedilenler
+
+| Fikir | Sonuç |
+|-------|-------|
+| 4:2:0 kroma | Eşleşen PSNR'de her zaman daha büyük |
+| Düz HF şekillendirme (`PYRA_HF`) | Daha kaba adım kaybettiriyor |
+| Kroma stride çarpanı (`PYRA_CS`) | 1,4 / 2,0 / 2,8 hepsi kötü |
+| İkinci derece eğim (`PYRA_T2`) | ±0,6 ve 1,2 hepsi kötü |
+| 9 durumlu komşu bağlamı | Nötr (69,8 vs 69,7 KB) |
+| Blok içi enerji bağlamı | Nötr ile negatif arası |
+| Büyüklük için ikili ağaç | Kesikli unary'den kötü |
+
+Aralık kodlayıcının kendisi optimal: `PYRA_STATS` her kalitede gerçek çıktıyı
+ideal maliyetle (∑−log₂p) karşılaştırıyor ve oran %100,0. Yani darboğaz
+coder değil, model ve katsayılar.

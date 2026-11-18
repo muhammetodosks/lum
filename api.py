@@ -55,14 +55,28 @@ def _parse_pnm(input_path: str) -> tuple[int, int, int, list[int], int, int]:
         pixels = list(struct.unpack(f">{len(raw)//2}H", raw))
     return magic, width, height, pixels, bit_depth, max_val
 
-def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1, transform: int = -1, filter_mode: int = -1) -> dict:
+def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1, transform: int = -1, filter_mode: int = -1, quality: int = 0, subsampling: int = 0) -> dict:
     """Encode an image file (PGM P5 / PPM P6, 8- or 16-bit) into a .pyra file.
     color_space=-1 auto-detects from the PNM magic; method=-1 picks the
     method automatically. transform=-1 / filter_mode=-1 pick the colour
-    transform and the row filter mode automatically. Returns encode metadata."""
+    transform and the row filter mode automatically. quality > 0 selects the
+    lossy v4 codec (8-bit only). Returns encode metadata."""
     magic, width, height, raw, bit_depth, extent_max = _parse_pnm_raw(input_path)
     if color_space == -1:
         color_space = CS_GRAY if magic == b"P5" else CS_RGB
+    if quality > 0:
+        from . import lossy
+        if bit_depth != 8:
+            raise ValueError("the lossy v4 codec only accepts 8-bit samples")
+        blob = lossy.encode(raw, width, height, color_space, quality,
+                            subsampling)
+        if blob is None:
+            raise ValueError("the native PYRA v4 codec is not available")
+        with open(output_path, "wb") as f:
+            f.write(blob)
+        return {"width": width, "height": height, "bit_depth": bit_depth,
+                "color_space": color_space, "quality": quality,
+                "subsampling": subsampling, "tile_size": tile_size}
     channels = 1 if color_space == CS_GRAY else 3
     # The native core widens the raw samples itself; the pure-Python path
     # converts them here. Both produce identical container bytes.

@@ -25,6 +25,7 @@ use std::collections::{HashMap, VecDeque};
 mod pyra_image;
 mod pyra_cloud;
 mod pyra_med;
+mod pyra_lossy;
 
 pub const TOKEN_MATCH: u32 = 256;
 pub const TOKEN_EOF: u32 = 257;

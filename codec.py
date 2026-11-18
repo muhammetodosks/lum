@@ -755,6 +755,16 @@ class PyraCodec:
 
     @classmethod
     def decode(cls, file_bytes: bytes) -> tuple[dict, list[int]]:
+        # Version 5 is the lossy codec: different container layout, handled
+        # by the DCT/range-coder backend. Version 4 shared the layout but was
+        # written by an older entropy model, so it decodes to the wrong pixels
+        # rather than failing; it is deliberately not accepted here.
+        if len(file_bytes) >= 12 and file_bytes[:len(MAGIC)] == MAGIC \
+                and struct.unpack(">I", file_bytes[8:12])[0] == 5:
+            from . import lossy
+            meta, samples = lossy.decode(file_bytes)
+            return meta, list(samples)
+
         # Native whole-image path: container parsing, tile decoding and the
         # canvas assembly happen in one call (tiles in parallel). None means
         # "unavailable or malformed" -> the reference path below raises the
