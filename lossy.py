@@ -136,7 +136,7 @@ def decode(blob: bytes):
 
 
 def info(blob: bytes):
-    """Read a PYRA v4 header (validating the CRC) without decoding planes."""
+    """Read a PYRA v6 header (validating the CRC) without decoding planes."""
     lib = _load()
     if lib is None:
         return None
@@ -148,7 +148,7 @@ def info(blob: bytes):
         return None
     m = list(meta)
     return {
-        "version": 5,
+        "version": 6,
         "width": m[0],
         "height": m[1],
         "bit_depth": m[2],

@@ -1,13 +1,81 @@
 # Changelog
 
 All notable changes to PYRA and PYRM. The format versions are independent:
-`PYRA` container v1 → v2 → v3 (lossless) and v5 (lossy), `PYRM` container
+`PYRA` container v1 → v2 → v3 (lossless) and v6 (lossy), `PYRM` container
 v1 → v2.
 
 The project keeps **bit-exact parity** between the native Rust/C++ backends and the
 pure-Python reference: both produce byte-identical containers.
 
 ---
+
+## v0.12.0 — per-band quantisation, PYRA v6
+
+The lossy codec's weak point was never the entropy model: `PYRA_STATS` reports
+the range coder at 100.0 % of the ideal cost, so every byte it writes is a byte
+the model asked for. The bytes were going to the wrong frequencies. The JPEG
+base tables shape the step as a function of `u+v`, which treats all ten
+frequency bands the same way at every quality; the measured optimum does not.
+
+This release adds a per-band multiplier table, fitted against the real codec at
+matched PSNR, and makes PYRA faster than JXL at every measured distortion.
+
+**Changed**
+
+* Container version 6. The quantiser changed, so a v5 decoder would produce
+  different pixels from the same bytes; the version bump makes that a hard
+  error instead of a silent difference. Versions 4 and 5 are rejected.
+* `band_table()` multiplies the step of each of the ten `class_of` bands on top
+  of the spectral tilt, for luma and chroma alike. It sits outside the `knobs`
+  gate, so encoder and decoder always derive the same table from `quality`.
+* The shape is blended across three anchors (`BAND_Q_LOW` 10, `BAND_Q_MID` 56,
+  `BAND_Q_HIGH` 90) and held constant outside that range.
+  `PYRA_QBAND` still overrides it for experiments; `PYRA_GSCALE` still applies
+  after it.
+
+**Measured**
+
+Bytes per megapixel at matched RGB PSNR against JPEG XL (`libjxl --effort 7`,
+distance swept -1..15), six 800 px backgrounds, ratios averaged per image:
+
+| PSNR | v5 | v6 | change | n |
+|------|----|----|--------|-----|
+| 30 dB | 87.9 % | **83.2 %** | -4.7 % | 4 |
+| 34 dB | 89.2 % | **87.3 %** | -1.9 % | 4 |
+| 38 dB | 101.9 % | **99.2 %** | -2.7 % | 6 |
+| 42 dB | 101.7 % | **97.6 %** | -4.1 % | 6 |
+| 46 dB | 91.3 % | **88.2 %** | -3.1 % | 6 |
+
+PYRA is now smaller than JXL at all five targets. The 30 and 34 dB rows cover
+four images rather than six because JXL cannot go below 34.64 dB on Clouds or
+35.68 dB on Fuji at any distance, so there is nothing to compare there.
+Absolute rates where all six images are covered: 61.15 / 109.66 / 183.36 KB/MP
+at 38 / 42 / 46 dB.
+
+The gain is largest where it was needed. Fuji, Clouds and Province — the flat
+photos that were losing 2 % — gain 5.2 / 3.8 / 3.5 % at 38 dB, while the
+textured images (Rainbow, Northan) keep their existing 30-50 % lead.
+
+**Measured and rejected**
+
+* One table fitted at 38 dB applied everywhere. It generalises at 46 dB
+  (-2.7 %) but pushes flat images backwards at 34 dB (Fuji +5.4 %, Clouds
+  +3.2 %). The optimal shape is a function of rate, not a constant.
+* Two anchors on a single line between q=10 and q=90. Better on average at
+  30 dB, but the fitted shape bulges upward through the middle, so a straight
+  line is wrong exactly there: Fuji still lost 2.1 % at 38 dB — the one point
+  where PYRA trailed JXL. Three anchors cost 1.0 % at 30 dB (where the margin
+  is already comfortable) and fix 38 dB, so the three-anchor version is kept.
+* Extrapolating the blend outside q=10..90. The end shapes are held constant
+  instead: past the measured range the line produced steps coarser than any
+  fit justified.
+
+**Method note**
+
+The matched-PSNR search now fails loudly when a target is not bracketed. An
+earlier version silently snapped to the nearest measured point, which reported
+an 11 % win on Rainbow and Fuji at q=85 — those curves never reach 38 dB, and
+the "win" was a comparison between two different distortions.
 
 ## v0.11.0 — lossy codec (PYRA v5)
 

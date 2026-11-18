@@ -193,11 +193,11 @@ instead of the exact bit width); the decoder picks the packing width from
 the version byte, so v2 files decode bit-exactly as well. Writing old
 versions is no longer offered, reading them is.
 
-## Lossy mode (PYRA v5)
+## Lossy mode (PYRA v6)
 
 The v3 container is lossless and competes with PNG. For camera output there is
-now a second mode: YCbCr → 8×8 DCT → perceptual quantisation → context-modelled
-binary range coder, all in the same dependency-free Rust core.
+now a second mode: YCoCg → 8×8 DCT → per-band perceptual quantisation →
+context-modelled binary range coder, all in the same dependency-free Rust core.
 
 ```bash
 python3 -m pyra.cli encode photo.ppm photo.pyra --quality 92
@@ -212,19 +212,23 @@ default — at matched RGB PSNR it always produced larger files.
 Measured against JPEG XL (`libjxl --effort 7`), six 800 px photos, mean bytes
 per megapixel at matched PSNR:
 
-| PSNR | PYRA | as % of JXL |
-|------|------|-------------|
-| 30 dB | 16.5 KB | 87.9 % |
-| 34 dB | 32.4 KB | 89.2 % |
-| 38 dB | 63.4 KB | 101.8 % |
-| 42 dB | 113.8 KB | 101.7 % |
-| 46 dB | 190.3 KB | 91.3 % |
+| PSNR | as % of JXL | n |
+|------|-------------|---|
+| 30 dB | 83.2 % | 4 |
+| 34 dB | 87.3 % | 4 |
+| 38 dB | 99.2 % | 6 |
+| 42 dB | 97.6 % | 6 |
+| 46 dB | 88.2 % | 6 |
+
+PYRA is smaller than JXL at every target. The 30 and 34 dB rows cover four
+images rather than six: JXL cannot go below 34.64 dB on Clouds or 35.68 dB on
+Fuji at any distance. Where all six are covered the absolute rates are
+61.15 / 109.66 / 183.36 KB per megapixel at 38 / 42 / 46 dB.
 
 Encoding runs at roughly 19 MP/s single-threaded, about ten times the JXL
-reference in the same harness. The remaining gap is concentrated in flat,
-smooth photographs; on textured and synthetic content PYRA is ahead. Details,
-the exact tuning that was measured, and the ideas that were rejected are in
-[PYRA-DOCUMENTATION.md](PYRA-DOCUMENTATION.md#27-kayıplı-codec--pyra-v5).
+reference in the same harness. Details, the exact tuning that was measured, and
+the ideas that were rejected are in
+[PYRA-DOCUMENTATION.md](PYRA-DOCUMENTATION.md#27-kayıplı-codec--pyra-v6).
 
 ## Security Limits and Fuzz Properties
 

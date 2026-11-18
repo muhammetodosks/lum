@@ -755,12 +755,13 @@ class PyraCodec:
 
     @classmethod
     def decode(cls, file_bytes: bytes) -> tuple[dict, list[int]]:
-        # Version 5 is the lossy codec: different container layout, handled
-        # by the DCT/range-coder backend. Version 4 shared the layout but was
-        # written by an older entropy model, so it decodes to the wrong pixels
-        # rather than failing; it is deliberately not accepted here.
+        # Version 6 is the lossy codec: different container layout, handled
+        # by the DCT/range-coder backend. Versions 4 and 5 shared the layout
+        # but were written by older entropy/quantiser models, so they decode
+        # to the wrong pixels rather than failing; they are deliberately not
+        # accepted here.
         if len(file_bytes) >= 12 and file_bytes[:len(MAGIC)] == MAGIC \
-                and struct.unpack(">I", file_bytes[8:12])[0] == 5:
+                and struct.unpack(">I", file_bytes[8:12])[0] == 6:
             from . import lossy
             meta, samples = lossy.decode(file_bytes)
             return meta, list(samples)

@@ -1,5 +1,5 @@
 # PYRA - Pure Python reversible image format & codec (stdlib only).
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 from .constants import (
     MAGIC, VERSION, VERSION_LEGACY,

@@ -194,10 +194,10 @@ def test_info():
     raw = photo(w, h)
     blob = lossy.encode(raw, w, h, CS_RGB, 77, lossy.SUBSAMPLE_444)
     check("container starts with the PYRA magic", blob[:len(MAGIC)] == MAGIC)
-    check("version field is 5",
-          struct.unpack(">I", blob[8:12])[0] == 5)
+    check("version field is 6",
+          struct.unpack(">I", blob[8:12])[0] == 6)
     meta = lossy.info(blob)
-    check("info reports version 5", meta["version"] == 5)
+    check("info reports version 6", meta["version"] == 6)
     check("info reports the geometry",
           (meta["width"], meta["height"]) == (w, h))
     check("info reports 8-bit", meta["bit_depth"] == 8)
@@ -310,21 +310,21 @@ def test_api_and_cli_paths():
     out = os.path.join(tmp, "out.pyra")
     meta = encode_file(ppm, out, quality=90, subsampling=lossy.SUBSAMPLE_444)
     check("encode_file reports the quality", meta["quality"] == 90)
-    check("encode_file writes a v5 container",
-          open(out, "rb").read()[len(MAGIC):len(MAGIC) + 4] == b"\x00\x00\x00\x05")
+    check("encode_file writes a v6 container",
+          open(out, "rb").read()[len(MAGIC):len(MAGIC) + 4] == b"\x00\x00\x00\x06")
     decoded = os.path.join(tmp, "back.ppm")
     info = decode_file(out, decoded)
-    check("decode_file returns the v5 geometry", (info["width"], info["height"]) == (w, h))
+    check("decode_file returns the v6 geometry", (info["width"], info["height"]) == (w, h))
     _, m2, w2, raw2, bd2, _ = _parse_pnm_raw(decoded)
     check("decoded file keeps 8-bit samples", bd2 == 8)
     check("decoded file matches the source dimensions", (w2, m2) == (h, w))
     check("decoded file is visually close", psnr(raw, raw2) > 30.0)
 
-    # The generic codec entry point must dispatch v5 to the lossy backend.
+    # The generic codec entry point must dispatch v6 to the lossy backend.
     blob = open(out, "rb").read()
     codec_meta, samples = PyraCodec.decode(blob)
-    check("PyraCodec.decode routes v5 to the lossy backend",
-          codec_meta["version"] == 5 and len(samples) == w * h * 3)
+    check("PyraCodec.decode routes v6 to the lossy backend",
+          codec_meta["version"] == 6 and len(samples) == w * h * 3)
     check("PyraCodec.decode returns Python ints, not bytes",
           isinstance(samples[0], int) and 0 <= samples[0] <= 255)
 

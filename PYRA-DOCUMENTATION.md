@@ -47,7 +47,7 @@
 24. [Ölçülüp reddedilen fikirler](#24-ölçülüp-reddedilen-fikirler)
 25. [Sınırlar ve gelecek işler](#25-sınırlar-ve-gelecek-işler)
 26. [Terim sözlüğü](#26-terim-sözlüğü)
-27. [Kayıplı codec — PYRA v5](#27-kayıplı-codec--pyra-v5)
+27. [Kayıplı codec — PYRA v6](#27-kayıplı-codec--pyra-v6)
 
 ---
 
@@ -1115,17 +1115,17 @@ alındı. Kayıt altında tutulur ki tekrar denenmesin:
 
 ---
 
-## 27. Kayıplı codec — PYRA v5
+## 27. Kayıplı codec — PYRA v6
 
 v3 container'ı kayıpsızdır ve PNG ile yarışır. Fotoğraf için gereken şey
 başkadır: kalite/boyut düğmesi, renk dönüşümü, blok dönüşümü ve bağlama
-duyarlı bir entropi modeli. v5 bunların hepsini aynı bağımlılıksız Rust
+duyarlı bir entropi modeli. v6 bunların hepsini aynı bağımlılıksız Rust
 çekirdeğinde yapar; Python tarafı yalnızca ctypes bağlayıcısı ve CLI'dır.
 
 ### 27.1 Boru hattı
 
 ```
-RGB(A) ──► YCbCr ──► 8x8 DCT ──► nicemleme (RDOQ) ──► zig-zag
+RGB(A) ──► YCoCg ──► 8x8 DCT ──► nicemleme (RDOQ, bant başına) ──► zig-zag
                                                         │
                                      bağlam modeli ──────┤
                                                         ▼
@@ -1136,12 +1136,12 @@ Sekiz bitlik RGB ve RGBA desteklenir. Gri görüntü tek düzlem olarak saklanı
 Düzlem başına ayrı bir akış üretilir: DC artığı, anlamlılık, işaret, büyüklük
 ve kaçış kodları hep aynı aralık kodlayıcısından geçer.
 
-### 27.2 Container (v5)
+### 27.2 Container (v6)
 
 ```
 ┌──────────────────────────────────────────────┐
 │ magic            8B   "PYRA\r\n\x1A\n"       │
-│ version          I    4B   (5)               │
+│ version          I    4B   (6)               │
 │ width            I    4B                     │
 │ height           I    4B                     │
 │ bit_depth        B    1B   (8)               │
@@ -1164,8 +1164,9 @@ Başlık 36 bayttır. Nicemleme tabloları dosyada taşınmaz: çözücü onlar�
 sabit durursa eski dosyalar sessizce yanlış piksele çözülür. Bu yüzden değer
 dosyada taşınır; 0 "çarpan yok" anlamına gelir ve bu alan eklenmeden önce
 yazılmış dosyaların içeriğidir.
-Sürüm 4 reddedilir — aynı yerleşimi paylaşıyordu ama entropi modeli
-değiştiği için sessizce yanlış piksel üretirdi.
+Sürüm 4 ve 5 reddedilir. İkisi de aynı yerleşimi paylaşıyordu ama entropi
+modeli ve nicemleyici değiştiği için sessizce yanlış piksel üretirlerdi; sürüm
+damgası bunu sessiz bir fark yerine sert bir hataya çevirir.
 
 ### 27.3 Nicemleme
 
@@ -1176,6 +1177,7 @@ biçimlendirilir:
 |------|------|
 | `scale(q)` | Klasik JPEG kalite eğrisi: `q<50` için `5000/q`, değilse `200-2q` |
 | **spektral eğim** | Adımı `1 + t·f` ile ölçekler, `f = (u+v)/14`, `t` kalitede -0,6 → -0,95 arası enterpolasyon |
+| **bant tablosu** | On frekans bandının her birini ayrı bir çarpanla ölçekler (bkz. 27.6) |
 | **RDOQ** | Her AC katsayısı için `D + λ·R` karşılaştırması; `λ = 1,6·step²` |
 | **kroma çarpanı** | Kroma adımlarını `0,72` ile ölçekler; dosyada 1/128 birimde taşınır |
 
@@ -1222,23 +1224,61 @@ sırası gereği `(u-1,v)` ile `(u,v-1)` her zaman `(u,v)`'den önce gelir, yani
 ### 27.5 Ölçülen sonuçlar
 
 Altı adet 800 px arka plan görüntüsü, eşleşen RGB PSNR'de megapiksel başına
-bayt (JXL: `libjxl --effort 7`, mesafe -1..15 taranmış):
+bayt (JXL: `libjxl --effort 7`, mesafe -1..15 taranmış). Oranlar görüntü
+başına hesaplanıp ortalanır:
 
-| PSNR | PYRA | JXL'ye oran |
-|------|------|-------------|
-| 30 dB | 16,5 KB | %87,9 |
-| 34 dB | 32,4 KB | %89,2 |
-| 38 dB | 63,4 KB | %101,8 |
-| 42 dB | 113,8 KB | %101,7 |
-| 46 dB | 190,3 KB | %91,3 |
+| PSNR | PYRA | JXL | JXL'ye oran | n |
+|------|------|-----|-------------|---|
+| 30 dB | — | — | %83,2 | 4 |
+| 34 dB | — | — | %87,3 | 4 |
+| 38 dB | 61,15 KB | 63,67 KB | %99,2 | 6 |
+| 42 dB | 109,66 KB | 123,31 KB | %97,6 | 6 |
+| 46 dB | 183,36 KB | 230,08 KB | %88,2 | 6 |
 
 Hız: ~19 MP/s kodlama, aynı donanımda JXL referansının ~10 katı.
 
-30, 34 ve 46 dB'de PYRA JXL'in önünde; 38 ve 42 dB'de %2 gerisinde. Kalan
-açık hâlâ düz içerikli fotoğraflarda (Fuji, Clouds, Province) toplanıyor,
-dokulu ve sentetik görüntülerde PYRA açık ara önde.
+PYRA beş hedefte de JXL'den küçük. 30 ve 34 dB satırları altı değil dört
+görüntü kapsıyor: JXL hiçbir mesafede Clouds'ta 34,64 dB'in, Fuji'de
+35,68 dB'in altına inemiyor, dolayısıyla orada karşılaştırılacak bir nokta
+yok. Kazancın büyük kısmı eskiden kaybettiğimiz düz fotoğraflardan geliyor:
+38 dB'de Fuji %5,2, Clouds %3,8, Province %3,5 küçüldü; dokulu görüntülerde
+(Rainbow, Northan) %30-50'lik mevcut fark korunuyor.
 
-### 27.6 Renk dönüşümü
+### 27.6 Bant tablosu
+
+JPEG'in taban tabloları adımı `u+v`'nin bir fonksiyonu olarak biçimlendirir:
+on frekans bandı her kalitede aynı şekilde ele alınır. Ölçüm bunun doğru
+olmadığını gösterdi. Tablo, `class_of` ile indekslenen on çarpan olarak
+tanımlanır ve spektral eğimin üstüne, hem luma hem kroma için uygulanır.
+
+Katsayılar tahminle değil aramayla bulundu: eşleşen PSNR'de gerçek codec
+üzerinde koordinat inişi, her hedefte dokuz tur. Ortaya çıkan şekil log
+uzayında neredeyse doğrusal ama banttan banda farklı: alçak bantlar daha kaba
+(1,10-1,25), yüksek bantlar daha ince (0,82-0,95) bir adım istiyor. Yani
+"yüksek frekansa daha çok bit ver" sezgisi yalnızca eğimde değil, bant
+dağılımında da geçerli.
+
+Tablo kaliteyle birlikte değişir. Tek bir tabloyu her kalitede kullanmak 46
+dB'de %2,7 kazandırıyor ama 34 dB'de düz görüntüleri geriletiyor (Fuji +%5,4,
+Clouds +%3,2). Şekil kalınlıkla değişiyor, dolayısıyla üç çıpa arasında
+parçalı doğrusal olarak enterpole edilir:
+
+| Çıpa | Kalite | Rolü |
+|------|--------|------|
+| `BAND_LOW` | 10 | Alçak oran şekli |
+| `BAND_MID` | 56 | Orta bantlarda yukarı kabaran şekil |
+| `BAND_HIGH` | 90 | Yüksek oran şekli |
+
+Çıpaların dışında şekil sabit tutulur. Ölçülen aralığın ötesine ekstrapolasyon
+denendi ve reddedildi: doğru, hiçbir fitin gerekçelendirmediği kadar kaba
+adımlar üretiyor.
+
+Neden iki değil üç çıpa: iki çıpa tek bir doğru parçası demek, ve şekil orta
+kalitede yukarı kabarıyor. 38 dB'de — PYRA'nın JXL'in tek gerisinde kaldığı
+nokta — iki çıpalı sürüm Fuji'de hâlâ %2,1 kaybediyordu. Üç çıpa 30 dB'de %1
+daha kötü ama 38 dB'yi düzeltiyor, ve 30 dB zaten rahat kazanılan uç.
+
+### 27.7 Renk dönüşümü
 
 Dönüşüm başlangıçta YCbCr idi ve kroma hatası RGB MSE'ye baskın geliyordu:
 ters dönüşüm onu R için 1,402, B için 1,772 ile çarpıyor. YCoCg'nin tersi
@@ -1256,7 +1296,7 @@ sonraki en büyük tek kazanç. Dönüşüm `coding` baytının 2. bitinde işar
 yani eski YCbCr dosyaları okunmaya devam eder. Kroma çarpanının optimumu
 YCoCg altında da 0,72'de kaldı (0,6 / 0,8 / 0,9 / 1,0 / 1,1 / 1,25 tarandı).
 
-### 27.7 4:2:0 neden varsayılan değil
+### 27.8 4:2:0 neden varsayılan değil
 
 Kroma yarıörnekleme, eşleşen RGB PSNR'de her zaman daha büyük dosya üretti.
 Sebep yapısal: 4:4:4'te kroma düzlemleri zaten çok düz, bağlam modeli onları
@@ -1264,7 +1304,7 @@ neredeyse bedava kodluyor; 4:2:0 ise luma'yı aynı PSNR'e çekmek için daha ç
 bit harcatıyor. Seçenek API'de duruyor (`--subsampling 4:2:0`), varsayılan
 değil.
 
-### 27.8 Ölçülüp reddedilenler
+### 27.9 Ölçülüp reddedilenler
 
 | Fikir | Sonuç |
 |-------|-------|
@@ -1280,6 +1320,9 @@ değil.
 | Exp-golomb kalan bitlerini modelleme (`PYRA_REM`) | Sınıf içi kalan bitler düzgün dağılmış: 70 KB'lik düzlemde 23 bayt |
 | Üst-sağ komşuyu bağlama ekleme (`PYRA_NR`) | 34 dB'de nötr/kötü, diğerlerinde fark yok |
 | 16×16 DCT bloğu | Province +0,3/+3,0/+4,7 %, Rainbow −3,3/−1,0/−1,3 % (34/38/42 dB) — zayıf noktayı derinleştiriyor |
+| Tek bant tablosu (38 dB'de fit) | 46 dB'de −%2,7 ama 34 dB'de düz görüntülerde +%5,4 (Fuji) / +%3,2 (Clouds) |
+| İki çıpalı tek doğru (q=10..90) | 30 dB'de %1 daha iyi, ama 38 dB'de Fuji hâlâ +%2,1 — şekil ortada kabarıyor |
+| Çıpaların dışına ekstrapolasyon | Fitin gerekçelendirmediği kadar kaba adımlar üretiyor |
 
 Aralık kodlayıcının kendisi optimal: `PYRA_STATS` her kalitede gerçek çıktıyı
 ideal maliyetle (∑−log₂p) karşılaştırıyor ve oran %100,0. Yani darboğaz

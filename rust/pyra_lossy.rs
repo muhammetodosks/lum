@@ -12,18 +12,19 @@
 //! adaptive probability per context, shift-5 adaptation, direct bits for the
 //! raw payload. It needs no division, which is what keeps the codec fast.
 //!
-//! Container (version 4), big endian:
+//! Container (version 6), big endian:
 //!
 //! ```text
 //!   0..8    magic  "PYRA\r\n\x1a\n"
-//!   8..12   version = 4
+//!   8..12   version = 6
 //!  12..16   width
 //!  16..20   height
 //!  20       bit depth (8)
 //!  21       colour space
-//!  22       coding byte: bit0 = lossy, bit1 = 4:2:0 chroma
+//!  22       coding byte: bit0 = lossy, bit1 = 4:2:0 chroma, bit2 = YCoCg
 //!  23       quality (1..100)
-//!  24..28   reserved (0)
+//!  24       chroma step multiplier, 1/128 units (0 = legacy, meaning 1.0)
+//!  25..28   reserved (0)
 //!  28..32   reserved (0)
 //!  32..34   reserved (0, 0)
 //!  34       mode = 1 (DCT)
@@ -33,7 +34,7 @@
 //! ```
 
 pub const MAGIC: &[u8; 8] = b"PYRA\r\n\x1A\n";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 const HDR: usize = 36;
 
 const E_PARAM: isize = -500;
@@ -736,6 +737,94 @@ const LUMA_QMULT: f32 = 1.0;
 /// into the file; on decode it is read back from the file. `knobs` selects
 /// whether the environment-overridable variants are consulted, and is true
 /// only for the encoder.
+/// Per-band quantiser multipliers, indexed by `class_of`.
+///
+/// The spectral tilt is a smooth one-parameter curve: it can only say "coarser
+/// towards the top" with a single slope. The actual optimal step per frequency
+/// is not a straight line in log space, so this table lets each band class be
+/// tuned on its own.
+///
+/// Both sides of the codec must use the same table, so this sits outside the
+/// encoder-only tuning block. The identity table returns immediately, which
+/// leaves the bitstream byte-identical to a build without it.
+/// Band endpoints, interpolated in quality exactly like the tilt.
+///
+/// The optimal band shape is not scale invariant: at low rates the coarse
+/// bands carry mostly noise and want a coarser step, while flat images punish
+/// that same shape at 34 dB. A single table therefore does not fit both ends,
+/// so the two endpoints are stored and blended.
+const BAND_LOW: [f32; 10] = [
+    0.8531, 1.1444, 1.0163, 1.0983, 0.9886, 0.8967, 0.9563, 0.9565, 0.9685, 1.0257,
+];
+const BAND_MID: [f32; 10] = [
+    1.0753, 1.2123, 1.1563, 1.1431, 1.0442, 1.0301, 0.9138, 0.9112, 0.8657, 0.9127,
+];
+const BAND_HIGH: [f32; 10] = [
+    1.2160, 1.2390, 1.2468, 1.2457, 1.1399, 1.1608, 0.8679, 0.8703, 0.8165, 0.8759,
+];
+
+/// Quality anchors of the three endpoints. The fitted shape is not a straight
+/// line in quality: it bulges upward through the middle and then flattens, so
+/// one segment was visibly wrong in the middle of the range (flat images lost
+/// 2 % at 38 dB). Outside the measured range the end shape is held constant.
+const BAND_Q_LOW: f32 = 10.0;
+const BAND_Q_MID: f32 = 56.0;
+const BAND_Q_HIGH: f32 = 90.0;
+
+fn band_blend(a: &[f32; 10], b: &[f32; 10], t: f32) -> [f32; 10] {
+    let mut m = [1f32; 10];
+    for i in 0..10 {
+        m[i] = a[i] + (b[i] - a[i]) * t;
+    }
+    m
+}
+
+fn band_of(quality: i32, _lo: &[f32; 10], _hi: &[f32; 10]) -> [f32; 10] {
+    let q = quality.clamp(1, 100) as f32;
+    if q <= BAND_Q_MID {
+        let t = ((q - BAND_Q_LOW) / (BAND_Q_MID - BAND_Q_LOW)).clamp(0.0, 1.0);
+        band_blend(&BAND_LOW, &BAND_MID, t)
+    } else {
+        let t = ((q - BAND_Q_MID) / (BAND_Q_HIGH - BAND_Q_MID)).clamp(0.0, 1.0);
+        band_blend(&BAND_MID, &BAND_HIGH, t)
+    }
+}
+
+fn band_mults(quality: i32) -> [f32; 10] {
+    if let Ok(s) = std::env::var("PYRA_QBAND") {
+        if !s.is_empty() {
+            let mut m = [1f32; 10];
+            for (i, part) in s.split(',').take(10).enumerate() {
+                if let Ok(v) = part.trim().parse::<f32>() {
+                    m[i] = v;
+                }
+            }
+            return m;
+        }
+    }
+    band_of(quality, &BAND_LOW, &BAND_HIGH)
+}
+
+fn band_table(q: &mut [f32; 64], m: &[f32; 10]) {
+    if m.iter().all(|&v| v == 1.0) {
+        return;
+    }
+    for i in 0..64 {
+        let at = ZIGZAG[i];
+        q[at] = (q[at] * m[class_of(i)]).max(1.0);
+    }
+}
+
+/// Uniform scale on both tables. During a fit it is the knob that holds the
+/// distortion at the target while the band shape moves.
+fn global_scale() -> f32 {
+    std::env::var("PYRA_GSCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v: &f32| *v > 0.0)
+        .unwrap_or(1.0)
+}
+
 fn quantisers(quality: i32, chroma_mult: f32, knobs: bool) -> ([f32; 64], [f32; 64]) {
     let mut qy = quant_table(&BASE_LUMA, quality);
     let mut qc = scaled(&chroma_base(), quality, chroma_mult);
@@ -749,8 +838,13 @@ fn quantisers(quality: i32, chroma_mult: f32, knobs: bool) -> ([f32; 64], [f32; 
     };
     tilt_table(&mut qy, tilt, bend);
     tilt_table(&mut qc, tilt, bend);
+    let bands = band_mults(quality);
+    band_table(&mut qy, &bands);
+    band_table(&mut qc, &bands);
+    let gs = global_scale();
     let yq = if knobs { luma_qmult() } else { LUMA_QMULT };
-    table_scale(&mut qy, yq);
+    table_scale(&mut qy, yq * gs);
+    table_scale(&mut qc, gs);
     (qy, qc)
 }
 
