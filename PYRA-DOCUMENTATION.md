@@ -1276,6 +1276,10 @@ değil.
 | Blok içi enerji bağlamı | Nötr ile negatif arası |
 | Büyüklük için ikili ağaç | Kesikli unary'den kötü |
 | Kroma adımı kaba (`PYRA_CS`/`PYRA_CQ` > 1) | Hepsi kaybettirdi; en iyisi 0,72, yani daha *ince* kroma |
+| 5 alternatif DC tahmincisi (`PYRA_DCP` 1–5) | LOCO-I `med3` her hedefte kazandı; planar ve ortalamalar 2–4 KB daha büyük |
+| Exp-golomb kalan bitlerini modelleme (`PYRA_REM`) | Sınıf içi kalan bitler düzgün dağılmış: 70 KB'lik düzlemde 23 bayt |
+| Üst-sağ komşuyu bağlama ekleme (`PYRA_NR`) | 34 dB'de nötr/kötü, diğerlerinde fark yok |
+| 16×16 DCT bloğu | Province +0,3/+3,0/+4,7 %, Rainbow −3,3/−1,0/−1,3 % (34/38/42 dB) — zayıf noktayı derinleştiriyor |
 
 Aralık kodlayıcının kendisi optimal: `PYRA_STATS` her kalitede gerçek çıktıyı
 ideal maliyetle (∑−log₂p) karşılaştırıyor ve oran %100,0. Yani darboğaz

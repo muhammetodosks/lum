@@ -80,6 +80,46 @@ in the same harness.
   finer 9-state neighbour context all measured neutral or worse.
 * A within-block energy context for significance: neutral to negative.
 * Coarser chroma (`PYRA_CQ` 1.1 and 1.25, `PYRA_CS` 1.4/2.0/2.8): always larger.
+* Five alternative DC predictors (average of left+above, planar
+  `l+u-ul`, median of the two and the planar guess, above-only, left-only).
+  LOCO-I's median edge detector won at every operating point:
+
+  ```
+  med3        16.5 / 32.4 / 63.4 / 113.8 / 190.3 KB at 30/34/38/42/46 dB
+  average     17.5 / 33.8 / 65.3 / 116.1 / 193.1
+  planar      17.4 / 33.5 / 64.6 / 115.1 / 191.7
+  med3+planar 18.8 / 35.4 / 67.1 / 118.2 / 195.2
+  above only  18.7 / 35.3 / 67.0 / 118.0 / 195.1
+  left only   16.8 / 32.8 / 63.8 / 114.2 / 190.8
+  ```
+
+  The block DC is the local mean, and `med3` is already the tightest
+  clamp on it. Nothing to gain there.
+* Modelling the exp-golomb remainder bits with adaptive probabilities
+  instead of direct bits. The prefix fixes the magnitude class `k`, and the
+  theory was that values bunch up at the bottom of each class, biasing the
+  top remainder bit towards zero. They do not: a full bit-budget dump at
+  46 dB on Province shows `raw` 12 828 B -> 0 B while `dc` 2 015 -> 4 776
+  and `esc` 8 554 -> 18 598, i.e. the modelled bits cost almost exactly
+  what the direct bits did. Total ideal 70 447 -> 70 425 B on a 70 KB
+  plane: 23 bytes. Inside a magnitude class the remainder is uniform, so
+  there is no information to extract.
+* Above-right as a third neighbour in the significance and magnitude
+  context. It is already reconstructed when the block is coded, so it is
+  free information -- and it is still neutral at 34 dB and no better
+  anywhere else (16.5 / 32.5 / 63.4 / 113.8 / 190.3).
+* 16x16 DCT blocks. A standalone two-transform experiment at matched PSNR
+  (orthonormal 8x8 vs 16x16 DCT, same quantiser, zero-order entropy bound
+  plus per-block side costs) splits exactly along the existing weakness:
+
+  ```
+              34 dB    38 dB    42 dB
+  Province   +0.3 %   +3.0 %   +4.7 %     (already our weak spot)
+  Rainbow    -3.3 %   -1.0 %   -1.3 %     (already our strong spot)
+  ```
+
+  Doubling the transform is a wash on ratio but makes the weakness
+  deeper, so it is not taken.
 
 ## v0.10.0 — near-lossless PYRM
 
