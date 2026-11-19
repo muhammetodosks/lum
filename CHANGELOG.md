@@ -9,6 +9,59 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.14.0 — independent corpus: Kodak, measured and published
+
+Every rate comparison in this project until now used the six photographs the
+quantiser was tuned on. That is a biased sample and it was reported as if it
+were not. This release adds the standard independent corpus, measures it, and
+publishes the result even though it is worse.
+
+**Corpus and method**
+
+`benchmarks/bench_kodak.py` downloads nothing and tunes nothing: it takes a
+directory of PNGs, encodes each image on both codecs' own curves (PYRA q=10..100
+in steps of 5, JPEG XL through `libjxl -effort 7` at 17 distances from -1.0 to
+15.0), and interpolates the size at a target RGB PSNR between the two nearest
+measured points. A target one curve never reaches is dropped for that image
+instead of being clamped, because clamping silently manufactures wins.
+
+The corpus is the Kodak PhotoCD set — 24 images, 768x512 or 512x768 —
+cloned from
+`github.com/MohamedBakrAli/Kodak-Lossless-True-Color-Image-Suite`. Nothing in
+the repository was fitted on it.
+
+**Result**
+
+| PSNR | n | PYRA KB/MP | JXL KB/MP | PYRA/JXL mean | median | PYRA wins |
+|------|---|------------|-----------|---------------|--------|-----------|
+| 34 dB | 24 | 128.37 | 118.76 | 107.9 % | 109.8 % | 4/24 |
+| 38 dB | 24 | 216.65 | 218.97 | 100.1 % | 103.8 % | 9/24 |
+| 42 dB | 24 | 341.37 | 359.46 | 93.9 % | 95.5 % | 20/24 |
+
+On content the encoder has not seen, PYRA is **7.9 % larger than JXL at 34 dB**,
+level at 38 dB, and 6.1 % smaller at 42 dB. The six-photo table in the README
+said "smaller at every target"; that sentence is now scoped to the set it was
+measured on.
+
+The loss is not one bad image. At 34 dB the median (109.8 %) is worse than the
+mean (107.9 %), so it is spread across the corpus, and PYRA wins on only four of
+the 24 images at that rate.
+
+**Why it is published rather than tuned away**
+
+Fitting the band table against Kodak would turn the independent corpus into a
+second training set and destroy the only unbiased number in the project. The
+next step is to fix the cause, not the sample: the rate term is plain squared
+error over DCT coefficients, so at low rate it pays for detail a perceptual
+metric would throw away. That is a hypothesis and is recorded as one — it has
+not been isolated by measurement yet.
+
+**Reproducibility**
+
+Two complete runs of the benchmark produce identical tables. `--limit 2`
+reproduces the first two per-image rows exactly, which is how the script was
+checked after being moved out of `/tmp` into `benchmarks/`.
+
 ## v0.13.0 — encoder 6.4x faster, byte-identical
 
 v0.12.0 claimed ~19 MP/s. Measuring it properly on a 1920x1080 photograph gave

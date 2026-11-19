@@ -220,10 +220,47 @@ per megapixel at matched PSNR:
 | 42 dB | 97.6 % | 6 |
 | 46 dB | 88.2 % | 6 |
 
-PYRA is smaller than JXL at every target. The 30 and 34 dB rows cover four
-images rather than six: JXL cannot go below 34.64 dB on Clouds or 35.68 dB on
-Fuji at any distance. Where all six are covered the absolute rates are
-61.15 / 109.66 / 183.36 KB per megapixel at 38 / 42 / 46 dB.
+On this set PYRA is smaller than JXL at every target, but these six photos are
+the ones the quantiser was tuned on, so the table flatters it. The 30 and 34 dB
+rows cover four images rather than six: JXL cannot go below 34.64 dB on Clouds
+or 35.68 dB on Fuji at any distance. Where all six are covered the absolute
+rates are 61.15 / 109.66 / 183.36 KB per megapixel at 38 / 42 / 46 dB.
+
+### Independent corpus: Kodak PhotoCD (24 images)
+
+The standard corpus every codec reports on, and nothing in this repository was
+tuned on it. It is here to show what happens on content the encoder has never
+seen.
+
+```bash
+git clone --depth 1 https://github.com/MohamedBakrAli/Kodak-Lossless-True-Color-Image-Suite.git /tmp/kodak
+python3 benchmarks/bench_kodak.py --corpus /tmp/kodak/PhotoCD_PCD0992
+```
+
+Each image is measured on both codecs' own curves — PYRA at q=10…100 in steps of
+5, JXL through `libjxl -effort 7` at 17 distances from -1.0 to 15.0 — and the
+size at the target PSNR is linearly interpolated between the two nearest
+measured points. A target one curve never reaches is dropped for that image
+rather than clamped to the closest point.
+
+| PSNR | n | PYRA KB/MP | JXL KB/MP | PYRA/JXL mean | median | PYRA wins |
+|------|---|------------|-----------|---------------|--------|-----------|
+| 34 dB | 24 | 128.37 | 118.76 | 107.9 % | 109.8 % | 4/24 |
+| 38 dB | 24 | 216.65 | 218.97 | 100.1 % | 103.8 % | 9/24 |
+| 42 dB | 24 | 341.37 | 359.46 | 93.9 % | 95.5 % | 20/24 |
+
+On unfamiliar content PYRA is **7.9 % larger than JXL at 34 dB**, level at
+38 dB and 6.1 % smaller at 42 dB — a much weaker result than the six-photo
+table above, and it is reported as measured rather than rounded into a win. The
+gap is not an artefact of the harness: same images, same RGB PSNR, same JXL
+settings, and it is spread across the corpus rather than caused by an outlier —
+at 34 dB the median image loses more than the mean (109.8 % vs 107.9 %). It sits
+at the low-rate end; the likely cause is that the rate term is plain squared
+error over DCT coefficients, so detail a perceptual metric would discard is
+still paid for. That explanation is a hypothesis — it has not been isolated by
+measurement yet.
+
+Two runs of the benchmark produce byte-identical tables.
 
 Measured on a 1920×1080 photograph (2.07 MP, four cores, five iterations after
 a warm-up), qualities 50/85/95:
