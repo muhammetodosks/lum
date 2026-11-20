@@ -9,6 +9,66 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
+## v0.15.0 — AV1 conformance vectors: fetched, verified, measured
+
+The request was to test against `github.com/AOMediaCodec/av1-cts`. That
+repository does not exist: `https://github.com/AOMediaCodec/av1-cts` returns 404,
+`https://api.github.com/repos/AOMediaCodec/av1-cts` returns
+`{"message": "Not Found", "status": "404"}`, and the AOMediaCodec organisation
+lists 29 public repositories with no `av1-cts` among them. The conformance
+vectors are public anyway, in the `aom-test-data` bucket that libaom's own pinned
+manifest (`test/test-data.sha1`) references, so that is what is used here.
+
+**Fetch and verification**
+
+`benchmarks/fetch_av1_cts.py` lists the bucket, pulls 242 `.ivf` streams plus
+their `.ivf.md5` siblings (6.4 MB), decodes each with libaom, and hashes every
+decoded frame in its native 4:2:0 buffer.
+
+```
+streams with every frame digest matching: 242/242
+frames matching:                          587/587
+streams matching libaom test-data.sha1:   240/240 pinned (2 SVC streams not yet pinned)
+FAILED: none
+```
+
+Getting there required one real fix in the verifier: libaom's digests are always
+over a 4:2:0 frame buffer, so monochrome streams must be decoded to `yuv420p`
+with neutral chroma, not to `gray`. Decoding them as `gray` matched 0 of 20
+frames; decoding to `yuv420p` matched all of them.
+
+**Measured**
+
+One decoded frame per stream, 105 distinct sizes from 16x16 to 1920x1080, RGB:
+
+| PSNR | n | PYRA KB/MP | JXL KB/MP | mean | median | PYRA wins |
+|------|---|------------|-----------|------|--------|-----------|
+| 34 dB | 239 | 112.27 | 110.78 | 100.2 % | 102.2 % | 95/239 |
+| 38 dB | 241 | 165.48 | 157.31 | 107.1 % | 104.1 % | 64/241 |
+| 42 dB | 241 | 236.88 | 226.51 | 105.3 % | 102.3 % | 97/241 |
+
+Level at 34 dB, about 6 % larger at 38 and 42 dB. Conformance streams are
+synthetic edge cases (quantizer sweeps, film grain, intra block copy, SVC
+layers, frame sizes down to 16x16), so this is not a photograph comparison and
+is labelled as such.
+
+**Natural footage from the same bucket** — 10 frames each of three SDR
+sequences, 30 frames total:
+
+| PSNR | n | PYRA KB/MP | JXL KB/MP | mean | median | PYRA wins |
+|------|---|------------|-----------|------|--------|-----------|
+| 34 dB | 22 | 97.98 | 91.87 | 97.8 % | 103.8 % | 10/22 |
+| 38 dB | 30 | 117.99 | 117.26 | 98.2 % | 106.8 % | 10/30 |
+| 42 dB | 30 | 176.88 | 194.16 | 96.4 % | 99.9 % | 16/30 |
+
+Per sequence at 38 dB: Animal 109.1 %, Health 116.7 %, Dance 68.9 %. The mean is
+carried by Dance; the median is worse than the mean at 34 and 38 dB, which is
+stated in the README rather than rounded away. The weakness is smooth content at
+moderate rate — the same direction as the Kodak result.
+
+Speed on the 1080x1920 frames: 13.2 s for the full PYRA sweep against 31.4 s
+for the JXL sweep, a factor of 2.4.
+
 ## v0.14.0 — independent corpus: Kodak, measured and published
 
 Every rate comparison in this project until now used the six photographs the

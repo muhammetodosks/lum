@@ -1380,3 +1380,71 @@ pikseller: 16/16 aynı. `ref_q50` / `ref_q85` referansları da aynı hash'i veri
 
 JXL sayıları ffmpeg'in kendi açılışını ve PPM giriş/çıkışını içeriyor, yani
 JXL'in hızı için bir üst sınır; oran olduğundan küçük, abartılı değil.
+
+### 27.11 Bağımsız korpuslar: Kodak ve AV1 test vektörleri
+
+Bugüne kadarki bütün oran tabloları, nicemleyicinin üzerinde ayarlandığı altı
+fotoğraftan geliyordu. Bu, taraflı bir örneklem ve öyle sunulmaması gerekiyordu.
+İki bağımsız korpus eklendi ve sonuçlar olduğu gibi yayınlandı.
+
+**Kodak PhotoCD (24 görüntü, 768×512 / 512×768).** `benchmarks/bench_kodak.py`
+her iki codec'i kendi eğrisi üzerinde örnekliyor — PYRA q=10…100 (adım 5), JXL
+`libjxl -effort 7` ile -1,0…15,0 arası 17 mesafe — ve hedef PSNR'deki boyutu iki
+komşu ölçüm noktası arasında doğrusal interpole ediyor. Bir eğrinin hiç
+ulaşmadığı hedef o görüntü için **düşürülüyor**, en yakın noktaya kırpılmıyor;
+kırpmak bir kez var olmayan %11'lik bir "kazanç" üretmişti.
+
+| PSNR | n | PYRA KB/MP | JXL KB/MP | ortalama | medyan | PYRA |
+|------|---|------------|-----------|----------|--------|------|
+| 34 dB | 24 | 128,37 | 118,76 | %107,9 | %109,8 | 4/24 |
+| 38 dB | 24 | 216,65 | 218,97 | %100,1 | %103,8 | 9/24 |
+| 42 dB | 24 | 341,37 | 359,46 | %93,9 | %95,5 | 20/24 |
+
+Yani tanınmayan içerikte 34 dB'de JXL'den **%7,9 büyük**, 38 dB'de başabaş,
+42 dB'de %6,1 küçük. 34 dB'de medyanın ortalamadan kötü olması, kaybın tek bir
+aykırı görüntüden değil korpusun genelinden geldiğini gösteriyor.
+
+**AV1 conformance vektörleri.** İstenen adres
+`github.com/AOMediaCodec/av1-cts` **404** dönüyor; AOMediaCodec organizasyonunun
+29 deposu arasında böyle bir repo yok. Vektörler zaten kamuya açık:
+`gs://aom-test-data` kovası, libaom'un kendi sabitlediği `test/test-data.sha1`
+manifestosunun işaret ettiği yer. `benchmarks/fetch_av1_cts.py` bu kovayı
+kullanıp 242 `.ivf` akışını ve `.ivf.md5` kardeşlerini indiriyor, her akışı
+libaom ile çözüp her kareyi yerel 4:2:0 tamponunda hash'liyor. Sonuç:
+
+| kontrol | sonuç |
+|---|---|
+| her kare özeti tutan akış | 242 / 242 |
+| tutan kare | 587 / 587 |
+| SHA-1'i libaom manifestosuna uyan | 240 / 240 sabitlenmiş (2 SVC akışı henüz sabit değil) |
+
+Doğrulayıcıda gerçek bir hata çıktı: libaom özetleri **her zaman** 4:2:0 kare
+tamponu üzerinden hesaplıyor, bu yüzden monokrom akışlar `gray` olarak değil
+nötr kromalı `yuv420p` olarak çözülmeli. `gray` ile 20 karenin 0'ı, `yuv420p`
+ile 20'sinin tamamı tutuyor.
+
+Conformance karelerinde (akış başına bir kare, 16×16'dan 1920×1080'e 105 farklı
+boyut) PYRA 34 dB'de başabaş, 38 ve 42 dB'de ~%6 büyük. Bu korpus bir görüntü
+codec'i için zayıf bir örneklem: suite decoder uç durumlarını (nicemleyici
+taramaları, film grain, intra block copy, SVC katmanları, 16×16 kareler)
+denemek için kurulmuş, fotoğrafa benzemek için değil. 16×16'da KB/MP rakamı
+dosya başlığı gürültüsünden ibaret.
+
+Aynı kovadaki **doğal** SDR sekansları (Animal 608×1080, Health 720×1280, Dance
+1080×1920; her birinden 10 kare) daha anlamlı:
+
+| PSNR | n | PYRA KB/MP | JXL KB/MP | ortalama | medyan | PYRA |
+|------|---|------------|-----------|----------|--------|------|
+| 34 dB | 22 | 97,98 | 91,87 | %97,8 | %103,8 | 10/22 |
+| 38 dB | 30 | 117,99 | 117,26 | %98,2 | %106,8 | 10/30 |
+| 42 dB | 30 | 176,88 | 194,16 | %96,4 | %99,9 | 16/30 |
+
+Ortalama PYRA'yı birkaç puan önde gösteriyor, medyan 34 ve 38 dB'de geride.
+İkisi de doğru ve ayrım sekans bazında: 38 dB'de Animal %109,1, Health %116,7,
+Dance %68,9. Ortalamayı Dance taşıyor. Sadece ortalamayı yazmak, encoder'ın
+düz/pürüzsüz içerikte daha kötü olduğunu gizlerdi.
+
+Her iki korpusta da tek bir ayar yapılmadı. İşaret ettikleri yön aynı: zayıflık
+düşük-orta bit hızında pürüzsüz içerikte, yani oran teriminin DCT katsayıları
+üzerinde düz karesel hata olmasının en çok acıttığı yerde. Bu bir hipotez;
+ölçümle izole edilmedi.

@@ -281,6 +281,90 @@ against a build with parallelism forced off. Details, the exact tuning that was
 measured, and the ideas that were rejected are in
 [PYRA-DOCUMENTATION.md](PYRA-DOCUMENTATION.md#27-kayıplı-codec--pyra-v6).
 
+### AV1 conformance streams and natural footage (AOM test vectors)
+
+The ask was to test against the "AOMedia AV1 Codec Test Suite" at
+`github.com/AOMediaCodec/av1-cts`. That URL does not exist — it answers 404 both
+from the web front end and from the REST API, and `av1-cts` is not among the 29
+repositories the AOMediaCodec organisation publishes. The conformance vectors
+themselves are public and live in the bucket `gs://aom-test-data`, which is what
+the reference decoder's own pinned manifest (`test/test-data.sha1` in the libaom
+tree) points at. `benchmarks/fetch_av1_cts.py` uses that bucket.
+
+```bash
+python3 benchmarks/fetch_av1_cts.py --out /tmp/av1cts \
+        --natural /tmp/av1cts/natural
+python3 benchmarks/bench_kodak.py --corpus /tmp/av1cts/png
+python3 benchmarks/bench_kodak.py --corpus /tmp/av1cts/natural/png
+```
+
+The second script is corpus-generic despite its name: it takes any directory of
+PNGs and reports KB per megapixel at matched RGB PSNR.
+
+The script is not a download wrapper with a trust assumption: it lists the
+bucket, fetches the 242 `.ivf` streams and their `.ivf.md5` siblings, decodes
+each stream with libaom, and hashes every decoded frame in its native 4:2:0
+buffer. That digest is the conformance contract — a decoder either reproduces it
+bit for bit or it does not.
+
+| check | result |
+|---|---|
+| streams with every frame digest matching | 242 / 242 |
+| frames matching | 587 / 587 |
+| streams whose SHA-1 matches libaom's pinned manifest | 240 / 240 pinned (2 SVC streams are on the bucket but not yet pinned) |
+
+**Result on the conformance frames** (one decoded frame per stream, 105 distinct
+sizes from 16×16 to 1920×1080, encoded as RGB):
+
+| PSNR | n | PYRA KB/MP | JXL KB/MP | PYRA/JXL mean | median | PYRA wins |
+|------|---|------------|-----------|---------------|--------|-----------|
+| 34 dB | 239 | 112.27 | 110.78 | 100.2 % | 102.2 % | 95/239 |
+| 38 dB | 241 | 165.48 | 157.31 | 107.1 % | 104.1 % | 64/241 |
+| 42 dB | 241 | 236.88 | 226.51 | 105.3 % | 102.3 % | 97/241 |
+
+PYRA is level at 34 dB and about 6 % larger at 38 and 42 dB. This is a weak
+corpus for an image codec by construction: the suite is built to exercise
+decoder edge cases — 64×16 and 66×34 frame sizes, quantizer sweeps, film grain,
+intra block copy, SVC layers — not to look like photographs, and at 16×16 the
+KB-per-megapixel figure is dominated by per-file overhead rather than rate
+control. The numbers are reported as measured, not as a headline.
+
+**Result on natural footage** from the same bucket (`--natural` above pulls the
+three `.y4m` clips and extracts all 30 frames), which is photo-like content and
+therefore the more meaningful comparison — 10 frames each of three SDR
+sequences (30 frames, 608×1080, 720×1280, 1080×1920):
+
+| PSNR | n | PYRA KB/MP | JXL KB/MP | PYRA/JXL mean | median | PYRA wins |
+|------|---|------------|-----------|---------------|--------|-----------|
+| 34 dB | 22 | 97.98 | 91.87 | 97.8 % | 103.8 % | 10/22 |
+| 38 dB | 30 | 117.99 | 117.26 | 98.2 % | 106.8 % | 10/30 |
+| 42 dB | 30 | 176.88 | 194.16 | 96.4 % | 99.9 % | 16/30 |
+
+The mean says PYRA is a few percent smaller; the median says it is larger at 34
+and 38 dB. Both are true, and the split is per-sequence rather than noise:
+
+| sequence | 34 dB | 38 dB | 42 dB |
+|---|---|---|---|
+| Animal (608×1080, portrait) | 110.8 % | 109.1 % | 101.8 % |
+| Health (720×1280) | 136.6 % | 116.7 % | 130.0 % |
+| Dance (1080×1920) | 77.0 % | 68.9 % | 57.4 % |
+
+PYRA loses by 10-37 % on the two smoother sequences and wins by 23-43 % on
+Dance, which carries far more high-frequency detail. The mean is carried by
+Dance; reporting only the mean would hide that the encoder is worse on smooth
+content at these rates. On the 1080×1920 frames one full quality sweep costs
+13.2 s against 31.4 s for JXL, so PYRA spends 2.4× less time per image at the
+same number of rate points.
+
+Nothing here was tuned on. These are the first measurements on AV1 test
+material, and they point the same way as the Kodak result: the weakness is at
+smooth, low-detail content at moderate rate, which is where paid-for squared
+error over DCT coefficients hurts most.
+
+Both tables were produced twice on independently downloaded copies of the
+corpus — once from the original download, once from a fresh run of
+`fetch_av1_cts.py` — and the two runs agree digit for digit.
+
 ## Security Limits and Fuzz Properties
 
 | Limit | Value |
