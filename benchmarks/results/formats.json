@@ -1,0 +1,780 @@
+{
+  "generated": "2026-11-23",
+  "corpus": "Kodak PhotoCD (independent)",
+  "images": [
+    {
+      "name": "01.png",
+      "width": 768,
+      "height": 512,
+      "bytes": 780430
+    },
+    {
+      "name": "03.png",
+      "width": 768,
+      "height": 512,
+      "bytes": 548857
+    },
+    {
+      "name": "05.png",
+      "width": 768,
+      "height": 512,
+      "bytes": 814138
+    },
+    {
+      "name": "07.png",
+      "width": 768,
+      "height": 512,
+      "bytes": 571598
+    },
+    {
+      "name": "13.png",
+      "width": 768,
+      "height": 512,
+      "bytes": 896618
+    },
+    {
+      "name": "23.png",
+      "width": 768,
+      "height": 512,
+      "bytes": 560949
+    }
+  ],
+  "quality": 90,
+  "mean_megapixels": 0.393216,
+  "notes": [
+    "Nominal quality 90 means each encoder's own knob; the measured PSNR is what makes the comparison honest.",
+    "PYRA lossless/lossy numbers come from this Python package; the other formats come from ImageMagick 6.9 and ffmpeg+libjxl 7 at their default settings plus the flags shown.",
+    "Encode time includes process startup for external tools and is not an algorithm-only benchmark.",
+    "The corpus is the Kodak PhotoCD set; nothing in this repository was tuned on it."
+  ],
+  "formats": [
+    {
+      "key": "pyra-lossless",
+      "label": "PYRA lossless",
+      "family": "lossless",
+      "lossless": true,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 293970,
+          "psnr": 99.0,
+          "encode_ms": 215.56036499998754,
+          "decode_ms": 69.37620000002198
+        },
+        {
+          "image": "03.png",
+          "bytes": 289742,
+          "psnr": 99.0,
+          "encode_ms": 195.95006099996226,
+          "decode_ms": 60.532113000022036
+        },
+        {
+          "image": "05.png",
+          "bytes": 294230,
+          "psnr": 99.0,
+          "encode_ms": 187.61124999997492,
+          "decode_ms": 71.55242200002476
+        },
+        {
+          "image": "07.png",
+          "bytes": 291871,
+          "psnr": 99.0,
+          "encode_ms": 191.2220140000045,
+          "decode_ms": 66.44486300001518
+        },
+        {
+          "image": "13.png",
+          "bytes": 294055,
+          "psnr": 99.0,
+          "encode_ms": 201.98680800001512,
+          "decode_ms": 65.45611500001769
+        },
+        {
+          "image": "23.png",
+          "bytes": 292613,
+          "psnr": 99.0,
+          "encode_ms": 192.047174000038,
+          "decode_ms": 69.40686699999787
+        }
+      ],
+      "mean_bytes": 292746.8333333333,
+      "kb_per_mp": 727.0446254147423,
+      "mean_encode_ms": 197.39627866666373,
+      "mean_psnr": null,
+      "min_bytes": 289742,
+      "max_bytes": 294230
+    },
+    {
+      "key": "jxl-lossless",
+      "label": "JPEG XL lossless",
+      "family": "lossless",
+      "lossless": true,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 470121,
+          "psnr": 99.0,
+          "encode_ms": 2000.1267439999992,
+          "decode_ms": 456.0901410000042
+        },
+        {
+          "image": "03.png",
+          "bytes": 333955,
+          "psnr": 99.0,
+          "encode_ms": 1131.314878000012,
+          "decode_ms": 451.3637769999832
+        },
+        {
+          "image": "05.png",
+          "bytes": 501608,
+          "psnr": 99.0,
+          "encode_ms": 1451.709519000019,
+          "decode_ms": 436.326538000003
+        },
+        {
+          "image": "07.png",
+          "bytes": 363569,
+          "psnr": 99.0,
+          "encode_ms": 1230.6454829999893,
+          "decode_ms": 450.040142999967
+        },
+        {
+          "image": "13.png",
+          "bytes": 560150,
+          "psnr": 99.0,
+          "encode_ms": 1392.067037000004,
+          "decode_ms": 435.2148800000464
+        },
+        {
+          "image": "23.png",
+          "bytes": 382053,
+          "psnr": 99.0,
+          "encode_ms": 1321.8015779999632,
+          "decode_ms": 445.0072170000112
+        }
+      ],
+      "mean_bytes": 435242.6666666667,
+      "kb_per_mp": 1080.9368557400173,
+      "mean_encode_ms": 1421.2775398333313,
+      "mean_psnr": null,
+      "min_bytes": 333955,
+      "max_bytes": 560150
+    },
+    {
+      "key": "webp-lossless",
+      "label": "WebP lossless",
+      "family": "lossless",
+      "lossless": true,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 502628,
+          "psnr": 99.0,
+          "encode_ms": 552.8677599999696,
+          "decode_ms": 223.67984499999238
+        },
+        {
+          "image": "03.png",
+          "bytes": 391472,
+          "psnr": 99.0,
+          "encode_ms": 601.0875720000399,
+          "decode_ms": 307.35837800000354
+        },
+        {
+          "image": "05.png",
+          "bytes": 570786,
+          "psnr": 99.0,
+          "encode_ms": 562.8278730000034,
+          "decode_ms": 200.01662399999987
+        },
+        {
+          "image": "07.png",
+          "bytes": 422140,
+          "psnr": 99.0,
+          "encode_ms": 549.1432519999648,
+          "decode_ms": 293.45294399996646
+        },
+        {
+          "image": "13.png",
+          "bytes": 606452,
+          "psnr": 99.0,
+          "encode_ms": 483.5363720000032,
+          "decode_ms": 169.71163599998818
+        },
+        {
+          "image": "23.png",
+          "bytes": 426464,
+          "psnr": 99.0,
+          "encode_ms": 438.0360530000189,
+          "decode_ms": 310.4443870000182
+        }
+      ],
+      "mean_bytes": 486657.0,
+      "kb_per_mp": 1208.6257338523865,
+      "mean_encode_ms": 531.2498136666667,
+      "mean_psnr": null,
+      "min_bytes": 391472,
+      "max_bytes": 606452
+    },
+    {
+      "key": "png",
+      "label": "PNG (zlib 9)",
+      "family": "lossless",
+      "lossless": true,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 778673,
+          "psnr": 99.0,
+          "encode_ms": 360.4138169999942,
+          "decode_ms": 213.95711799999617
+        },
+        {
+          "image": "03.png",
+          "bytes": 540262,
+          "psnr": 99.0,
+          "encode_ms": 601.3612890000104,
+          "decode_ms": 299.51417099999844
+        },
+        {
+          "image": "05.png",
+          "bytes": 806876,
+          "psnr": 99.0,
+          "encode_ms": 208.06346500000927,
+          "decode_ms": 204.2583410000134
+        },
+        {
+          "image": "07.png",
+          "bytes": 565535,
+          "psnr": 99.0,
+          "encode_ms": 453.21272000001045,
+          "decode_ms": 305.1650230000291
+        },
+        {
+          "image": "13.png",
+          "bytes": 889667,
+          "psnr": 99.0,
+          "encode_ms": 160.80097399998294,
+          "decode_ms": 170.77146099995844
+        },
+        {
+          "image": "23.png",
+          "bytes": 557046,
+          "psnr": 99.0,
+          "encode_ms": 396.35328100001743,
+          "decode_ms": 319.8974090000206
+        }
+      ],
+      "mean_bytes": 689676.5,
+      "kb_per_mp": 1712.8301163514454,
+      "mean_encode_ms": 363.3675910000041,
+      "mean_psnr": null,
+      "min_bytes": 540262,
+      "max_bytes": 889667
+    },
+    {
+      "key": "tiff-lzw",
+      "label": "TIFF (LZW)",
+      "family": "lossless",
+      "lossless": true,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 847642,
+          "psnr": 99.0,
+          "encode_ms": 64.85942999995586,
+          "decode_ms": 218.51877299997113
+        },
+        {
+          "image": "03.png",
+          "bytes": 578754,
+          "psnr": 99.0,
+          "encode_ms": 54.458595000028254,
+          "decode_ms": 306.88682800001743
+        },
+        {
+          "image": "05.png",
+          "bytes": 917398,
+          "psnr": 99.0,
+          "encode_ms": 59.99709900004291,
+          "decode_ms": 202.1785779999732
+        },
+        {
+          "image": "07.png",
+          "bytes": 643034,
+          "psnr": 99.0,
+          "encode_ms": 56.87210599995751,
+          "decode_ms": 286.5756850000025
+        },
+        {
+          "image": "13.png",
+          "bytes": 973814,
+          "psnr": 99.0,
+          "encode_ms": 61.087267000004886,
+          "decode_ms": 170.21089700000402
+        },
+        {
+          "image": "23.png",
+          "bytes": 666022,
+          "psnr": 99.0,
+          "encode_ms": 51.88425400001506,
+          "decode_ms": 306.2087589999578
+        }
+      ],
+      "mean_bytes": 771110.6666666666,
+      "kb_per_mp": 1915.0740570492212,
+      "mean_encode_ms": 58.193125166667414,
+      "mean_psnr": null,
+      "min_bytes": 578754,
+      "max_bytes": 973814
+    },
+    {
+      "key": "bmp",
+      "label": "BMP (uncompressed)",
+      "family": "lossless",
+      "lossless": true,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 1179786,
+          "psnr": 99.0,
+          "encode_ms": 35.555168999962916,
+          "decode_ms": 201.72172200000205
+        },
+        {
+          "image": "03.png",
+          "bytes": 1179786,
+          "psnr": 99.0,
+          "encode_ms": 28.7650750000239,
+          "decode_ms": 292.2325570000339
+        },
+        {
+          "image": "05.png",
+          "bytes": 1179786,
+          "psnr": 99.0,
+          "encode_ms": 31.031396999992467,
+          "decode_ms": 198.52806300002612
+        },
+        {
+          "image": "07.png",
+          "bytes": 1179786,
+          "psnr": 99.0,
+          "encode_ms": 30.975589999968633,
+          "decode_ms": 295.6756379999774
+        },
+        {
+          "image": "13.png",
+          "bytes": 1179786,
+          "psnr": 99.0,
+          "encode_ms": 29.716501999985212,
+          "decode_ms": 155.8028219999983
+        },
+        {
+          "image": "23.png",
+          "bytes": 1179786,
+          "psnr": 99.0,
+          "encode_ms": 29.327446000024793,
+          "decode_ms": 301.2584570000172
+        }
+      ],
+      "mean_bytes": 1179786.0,
+      "kb_per_mp": 2930.0302267074585,
+      "mean_encode_ms": 30.895196499992988,
+      "mean_psnr": null,
+      "min_bytes": 1179786,
+      "max_bytes": 1179786
+    },
+    {
+      "key": "webp",
+      "label": "WebP q90",
+      "family": "lossy",
+      "lossless": false,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 77422,
+          "psnr": 34.14990832972394,
+          "encode_ms": 111.09402000005275,
+          "decode_ms": 222.926952000023
+        },
+        {
+          "image": "03.png",
+          "bytes": 25558,
+          "psnr": 36.89174701212509,
+          "encode_ms": 86.7187979999926,
+          "decode_ms": 202.48591300003227
+        },
+        {
+          "image": "05.png",
+          "bytes": 80714,
+          "psnr": 33.59707257180743,
+          "encode_ms": 112.63042699999914,
+          "decode_ms": 208.02662500000224
+        },
+        {
+          "image": "07.png",
+          "bytes": 32518,
+          "psnr": 36.429207809695654,
+          "encode_ms": 92.2551820000308,
+          "decode_ms": 627.6773249999792
+        },
+        {
+          "image": "13.png",
+          "bytes": 107044,
+          "psnr": 33.022797983399236,
+          "encode_ms": 113.47811299998511,
+          "decode_ms": 198.19732000001977
+        },
+        {
+          "image": "23.png",
+          "bytes": 23544,
+          "psnr": 36.74551098367003,
+          "encode_ms": 84.41047499997012,
+          "decode_ms": 235.88866900001904
+        }
+      ],
+      "mean_bytes": 57800.0,
+      "kb_per_mp": 143.54785283406576,
+      "mean_encode_ms": 100.09783583333842,
+      "mean_psnr": 35.13937411507023,
+      "min_bytes": 23544,
+      "max_bytes": 107044
+    },
+    {
+      "key": "jxl",
+      "label": "JPEG XL d1.0",
+      "family": "lossy",
+      "lossless": false,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 117773,
+          "psnr": 37.762697008091536,
+          "encode_ms": 211.123740000005,
+          "decode_ms": 201.73828000002914
+        },
+        {
+          "image": "03.png",
+          "bytes": 55933,
+          "psnr": 39.210323654510916,
+          "encode_ms": 187.14493699997092,
+          "decode_ms": 181.54691899997033
+        },
+        {
+          "image": "05.png",
+          "bytes": 121886,
+          "psnr": 36.23697379211651,
+          "encode_ms": 199.6876919999977,
+          "decode_ms": 195.5330570000342
+        },
+        {
+          "image": "07.png",
+          "bytes": 65090,
+          "psnr": 39.255190295721874,
+          "encode_ms": 201.24109100004262,
+          "decode_ms": 181.10731199999464
+        },
+        {
+          "image": "13.png",
+          "bytes": 142393,
+          "psnr": 35.40769591227346,
+          "encode_ms": 199.4993339999951,
+          "decode_ms": 190.599313000007
+        },
+        {
+          "image": "23.png",
+          "bytes": 52337,
+          "psnr": 38.8337571017565,
+          "encode_ms": 266.8265450000149,
+          "decode_ms": 180.6559259999858
+        }
+      ],
+      "mean_bytes": 92568.66666666667,
+      "kb_per_mp": 229.89677058325873,
+      "mean_encode_ms": 210.92055650000438,
+      "mean_psnr": 37.7844396274118,
+      "min_bytes": 52337,
+      "max_bytes": 142393
+    },
+    {
+      "key": "avif",
+      "label": "AVIF q90",
+      "family": "lossy",
+      "lossless": false,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 177451,
+          "psnr": 41.93480993860079,
+          "encode_ms": 716.6109150000466,
+          "decode_ms": 313.90943799999604
+        },
+        {
+          "image": "03.png",
+          "bytes": 73064,
+          "psnr": 41.74367711847333,
+          "encode_ms": 318.18524199997,
+          "decode_ms": 265.8311800000206
+        },
+        {
+          "image": "05.png",
+          "bytes": 178344,
+          "psnr": 39.530938442637485,
+          "encode_ms": 517.0474820000095,
+          "decode_ms": 295.1063060000365
+        },
+        {
+          "image": "07.png",
+          "bytes": 86928,
+          "psnr": 41.67430857130015,
+          "encode_ms": 385.3116120000095,
+          "decode_ms": 364.75386000000753
+        },
+        {
+          "image": "13.png",
+          "bytes": 223433,
+          "psnr": 40.39723775273308,
+          "encode_ms": 607.5544219999642,
+          "decode_ms": 368.40406799996117
+        },
+        {
+          "image": "23.png",
+          "bytes": 80568,
+          "psnr": 40.413795002498944,
+          "encode_ms": 296.32561500000065,
+          "decode_ms": 302.0833230000335
+        }
+      ],
+      "mean_bytes": 136631.33333333334,
+      "kb_per_mp": 339.32758702172174,
+      "mean_encode_ms": 473.50588133333343,
+      "mean_psnr": 40.949127804373965,
+      "min_bytes": 73064,
+      "max_bytes": 223433
+    },
+    {
+      "key": "jpeg",
+      "label": "JPEG q90",
+      "family": "lossy",
+      "lossless": false,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 172957,
+          "psnr": 37.34140600238713,
+          "encode_ms": 47.38757699999496,
+          "decode_ms": 219.5703649999814
+        },
+        {
+          "image": "03.png",
+          "bytes": 94079,
+          "psnr": 41.16867299577382,
+          "encode_ms": 36.45345399996813,
+          "decode_ms": 248.72754900002292
+        },
+        {
+          "image": "05.png",
+          "bytes": 190177,
+          "psnr": 37.65680543136727,
+          "encode_ms": 40.95891299999721,
+          "decode_ms": 189.419891
+        },
+        {
+          "image": "07.png",
+          "bytes": 110008,
+          "psnr": 40.94061312123987,
+          "encode_ms": 38.327908999974625,
+          "decode_ms": 266.96153799997546
+        },
+        {
+          "image": "13.png",
+          "bytes": 213384,
+          "psnr": 36.0542872130351,
+          "encode_ms": 40.90634799996451,
+          "decode_ms": 179.4950699999731
+        },
+        {
+          "image": "23.png",
+          "bytes": 97369,
+          "psnr": 41.35152896606623,
+          "encode_ms": 35.543862999986686,
+          "decode_ms": 278.9242169999966
+        }
+      ],
+      "mean_bytes": 146329.0,
+      "kb_per_mp": 363.4120027224223,
+      "mean_encode_ms": 39.92967733331435,
+      "mean_psnr": 39.08555228831157,
+      "min_bytes": 94079,
+      "max_bytes": 213384
+    },
+    {
+      "key": "pyra-lossy",
+      "label": "PYRA lossy q90",
+      "family": "lossy",
+      "lossless": false,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 195929,
+          "psnr": 43.38231778716377,
+          "encode_ms": 63.90525400001934,
+          "decode_ms": 38.47984700001916
+        },
+        {
+          "image": "03.png",
+          "bytes": 101580,
+          "psnr": 44.81522806435403,
+          "encode_ms": 41.544077000025936,
+          "decode_ms": 26.163956999994298
+        },
+        {
+          "image": "05.png",
+          "bytes": 219471,
+          "psnr": 42.94717770629027,
+          "encode_ms": 59.92232700003797,
+          "decode_ms": 35.96483400002626
+        },
+        {
+          "image": "07.png",
+          "bytes": 119755,
+          "psnr": 44.394580984204154,
+          "encode_ms": 40.298438000036185,
+          "decode_ms": 26.358560000005582
+        },
+        {
+          "image": "13.png",
+          "bytes": 251798,
+          "psnr": 42.49619763938429,
+          "encode_ms": 60.71700100000044,
+          "decode_ms": 40.2896470000087
+        },
+        {
+          "image": "23.png",
+          "bytes": 103857,
+          "psnr": 44.16813970200281,
+          "encode_ms": 39.14661500004968,
+          "decode_ms": 26.06869999999617
+        }
+      ],
+      "mean_bytes": 165398.33333333334,
+      "kb_per_mp": 410.7712043656243,
+      "mean_encode_ms": 50.92228533336159,
+      "mean_psnr": 43.700606980566555,
+      "min_bytes": 101580,
+      "max_bytes": 251798
+    },
+    {
+      "key": "gif",
+      "label": "GIF 256 colours",
+      "family": "lossy",
+      "lossless": false,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 328655,
+          "psnr": 40.324888462713815,
+          "encode_ms": 285.0307460000181,
+          "decode_ms": 227.195657999971
+        },
+        {
+          "image": "03.png",
+          "bytes": 180656,
+          "psnr": 37.606428642584945,
+          "encode_ms": 287.0755409999788,
+          "decode_ms": 218.44696499999827
+        },
+        {
+          "image": "05.png",
+          "bytes": 318226,
+          "psnr": 35.31146789303492,
+          "encode_ms": 316.55570399999533,
+          "decode_ms": 240.06319500000473
+        },
+        {
+          "image": "07.png",
+          "bytes": 234973,
+          "psnr": 38.47227318557409,
+          "encode_ms": 282.7587879999669,
+          "decode_ms": 229.26051700000016
+        },
+        {
+          "image": "13.png",
+          "bytes": 353367,
+          "psnr": 37.37056302524857,
+          "encode_ms": 292.47757699999966,
+          "decode_ms": 259.9305999999615
+        },
+        {
+          "image": "23.png",
+          "bytes": 195025,
+          "psnr": 34.65298567786059,
+          "encode_ms": 300.3292399999964,
+          "decode_ms": 233.74619800000573
+        }
+      ],
+      "mean_bytes": 268483.6666666667,
+      "kb_per_mp": 666.7863991525438,
+      "mean_encode_ms": 294.0379326666592,
+      "mean_psnr": 37.289767814502824,
+      "min_bytes": 180656,
+      "max_bytes": 353367
+    },
+    {
+      "key": "jpeg2000",
+      "label": "JPEG 2000 q90",
+      "family": "lossy",
+      "lossless": false,
+      "per_image": [
+        {
+          "image": "01.png",
+          "bytes": 510310,
+          "psnr": 81.95523937471295,
+          "encode_ms": 209.0580779999982,
+          "decode_ms": 378.48697399999764
+        },
+        {
+          "image": "03.png",
+          "bytes": 397609,
+          "psnr": 83.10801528867196,
+          "encode_ms": 182.40099199999804,
+          "decode_ms": 459.3583649999573
+        },
+        {
+          "image": "05.png",
+          "bytes": 531575,
+          "psnr": 83.09644951667254,
+          "encode_ms": 234.0658850000068,
+          "decode_ms": 381.6748680000046
+        },
+        {
+          "image": "07.png",
+          "bytes": 417871,
+          "psnr": 82.27776943737811,
+          "encode_ms": 181.9411109999578,
+          "decode_ms": 652.9552740000213
+        },
+        {
+          "image": "13.png",
+          "bytes": 582900,
+          "psnr": 82.60550700759246,
+          "encode_ms": 225.33963600000106,
+          "decode_ms": 346.03836700000556
+        },
+        {
+          "image": "23.png",
+          "bytes": 417927,
+          "psnr": 82.47343067082404,
+          "encode_ms": 180.47589500002914,
+          "decode_ms": 455.0882789999946
+        }
+      ],
+      "mean_bytes": 476365.3333333333,
+      "kb_per_mp": 1183.0661031934949,
+      "mean_encode_ms": 202.2135994999985,
+      "mean_psnr": 82.58606854930868,
+      "min_bytes": 397609,
+      "max_bytes": 582900
+    }
+  ]
+}
