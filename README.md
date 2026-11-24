@@ -16,9 +16,9 @@ the hot paths 10-30x faster without changing a single output bit.
 tuned on: on an independent photo corpus LUMEN lossless needs **727 KB per
 megapixel against PNG's 1713 KB (2.36x smaller) and JPEG XL's 1081 KB (1.49x
 smaller)**, decodes 3.6x faster than PNG and 6.4x faster than JPEG XL; the
-lossy mode reaches **43.7 dB RGB PSNR at quality 90**, which no other codec in
-the comparison reaches at that setting, and stays level with JPEG XL at
-matched fidelity. Every number in this README comes with the harness that
+lossy mode reaches **43.7 dB RGB PSNR at quality 90** — higher than JPEG,
+WebP, AVIF, JPEG XL and GIF at their own q90 — and stays level with JPEG XL
+at matched fidelity. Every number in this README comes with the harness that
 produced it.
 
 The magic value is `b"LUMA\r\n\x1A\n"` — a recognizable 8-byte signature
@@ -94,9 +94,11 @@ What the table means, without rounding it into a win:
   count, six images.
 - **Lossy at the same nominal setting.** Quality 90 is each encoder's own knob,
   not a common currency, which is why the PSNR column exists. LUMEN lands at
-  43.70 dB, the highest fidelity of the eight lossy formats, and the scatter
-  plot shows the price: at *matched* fidelity it is larger than JPEG XL and
-  AVIF at the low end and smaller at the high end.
+  43.70 dB, above JPEG (39.09), AVIF (40.95), JPEG XL (37.78), WebP (35.14)
+  and GIF (37.29); JPEG 2000's q90 is effectively a near-lossless setting and
+  sits at 82.59 dB while costing 2.9x the bytes, so it is not a q90 peer. The
+  scatter plot shows the price of LUMEN's fidelity: at *matched* fidelity it
+  is larger than JPEG XL and AVIF at the low end and smaller at the high end.
 - **Lossy at matched fidelity.** That is the fair question, so it is measured
   separately on the full corpus (see [Independent corpus](#independent-corpus-kodak-photocd-24-images)):
   level with JPEG XL at 38 dB, 7.9 % larger at 34 dB, 6.1 % smaller at 42 dB.

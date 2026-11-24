@@ -1514,8 +1514,10 @@ satırda gerçekte ulaşılan PSNR de var.
 | GIF 256 renk | 262,2 KB | 666,8 | 37,29 dB |
 | JPEG 2000 q90 | 465,2 KB | 1 183,1 | 82,59 dB |
 
-LUMEN q90, sekiz kayıplı format arasında en yüksek sadakati üretiyor. Ama q90
-adil soru değil: asıl soru **eşit sadakatte** kimin daha küçük olduğu. O ölçüm
+LUMEN q90, kendi q90'ında JPEG (39,09), AVIF (40,95), JPEG XL (37,78), WebP
+(35,14) ve GIF'ten (37,29) daha yüksek sadakat üretiyor. JPEG 2000'in q90'ı
+pratikte kayıpsıza yakın bir ayar (82,59 dB, ama 2,9 kat bayt), yani q90 dengi
+değil. Ama q90 adil soru değil: asıl soru **eşit sadakatte** kimin daha küçük olduğu. O ölçüm
 24 fotoğrafın tamamında, her codec'in kendi eğrisi üzerinde yapıldı (bkz. 27.
 bölüm ve README): 38 dB'de JPEG XL ile başabaş, 34 dB'de %7,9 daha büyük,
 42 dB'de %6,1 daha küçük. Bu, altı fotoğraflık tablodan daha zayıf bir sonuç ve

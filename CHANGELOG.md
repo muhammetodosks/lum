@@ -79,7 +79,9 @@ Lossy at each encoder's quality 90, with the fidelity it really reached:
 Nominal quality is not a common currency across codecs, which is why the PSNR
 column is there. The honest reading: LUMEN lossless is the smallest container
 in the comparison and beats JPEG XL by 24 % on photos it was not tuned on; the
-lossy mode at q90 reaches the highest fidelity of the eight lossy formats, and
+lossy mode at q90 reaches 43.70 dB — above JPEG, WebP, AVIF, JPEG XL and GIF
+at their own q90, with JPEG 2000's q90 being a near-lossless setting at 82.59 dB
+for 2.9x the bytes — and
 on the matched-fidelity curves over the full 24-image corpus it is level with
 JPEG XL at 38 dB, 7.9 % larger at 34 dB and 6.1 % smaller at 42 dB. Those
 curves were already in the README and are unchanged.
