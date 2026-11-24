@@ -1,5 +1,5 @@
 # Format comparison renderer test suite.
-# Run:  python3 -m pyra.tests.test_format_report
+# Run:  python3 -m lum.tests.test_format_report
 #
 # The renderer turns measured rows into the SVGs and the HTML gallery that the
 # README embeds. It is standard library only on purpose, so these checks can

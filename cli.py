@@ -5,7 +5,7 @@ import time
 import tempfile
 
 from .api import encode_file, decode_file, _parse_pnm
-from .container import PyraContainer
+from .container import LumenContainer
 from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
                         MAGIC,
                         PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE,
@@ -13,7 +13,7 @@ from .constants import (CS_GRAY, CS_RGB, CS_RGBA,
                         METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX,
                         TRANSFORM_YCOCG, TRANSFORM_NONE,
                         FILTER_GLOBAL, FILTER_ADAPTIVE,
-                        PyraError, CorruptedFileError)
+                        LumenError, CorruptedFileError)
 from .pngbench import encode_png
 from . import cloud as _cloud
 from .medical import codec as _med_codec
@@ -40,7 +40,7 @@ _CS_BY_NAME = {v: k for k, v in _CS_NAMES.items()}
 _TRANSFORM_BY_NAME = {v: k for k, v in _TRANSFORM_NAMES.items()}
 _FILTER_BY_NAME = {v: k for k, v in _FILTER_NAMES.items()}
 
-# ------------------------------------------------------------ medical (PYRM)
+# ------------------------------------------------------------ medical (LUMM)
 _MED_FORMAT_NAMES = {0: "u8", 1: "u16", 2: "u32", 3: "i16", 4: "i32", 5: "f32"}
 _MED_PRED_NAMES = {0: "none", 1: "left", 2: "up", 3: "average", 4: "paeth",
                    5: "gradient", 6: "median", 7: "slice"}
@@ -49,7 +49,7 @@ _MED_FORMAT_BY_NAME = {v: k for k, v in _MED_FORMAT_NAMES.items()}
 _MED_PRED_BY_NAME = {v: k for k, v in _MED_PRED_NAMES.items()}
 _MED_METHOD_BY_NAME = {v: k for k, v in _MED_METHOD_NAMES.items()}
 
-# ------------------------------------------------------------- cloud (PYRC)
+# ------------------------------------------------------------- cloud (LUMC)
 _CLOUD_FORMAT_NAMES = {0: "u8", 1: "u16", 2: "u32", 3: "i16", 4: "i32",
                        5: "f32"}
 _CLOUD_PRED_NAMES = {0: "none", 1: "left", 2: "up", 3: "average", 4: "paeth",
@@ -64,10 +64,10 @@ _CLOUD_BAND_TYPES = ("reflectance", "radiance", "brightness_temperature",
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pyra", description="PYRA image format tool")
+    p = argparse.ArgumentParser(prog="lum", description="LUMEN image format tool")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    e = sub.add_parser("encode", help="encode a PNM image into a .pyra file")
+    e = sub.add_parser("encode", help="encode a PNM image into a .lum file")
     e.add_argument("input")
     e.add_argument("output")
     e.add_argument("--method", choices=["auto", "raw", "rle", "lz", "mix"], default="auto")
@@ -83,7 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="chroma subsampling for the lossy codec "
                         "(auto = 4:4:4, which measures smaller at equal PSNR)")
 
-    d = sub.add_parser("decode", help="decode a .pyra file into a PNM image")
+    d = sub.add_parser("decode", help="decode a .lum file into a PNM image")
     d.add_argument("input")
     d.add_argument("output")
 
@@ -101,10 +101,10 @@ def _build_parser() -> argparse.ArgumentParser:
     b.add_argument("--filter", choices=["auto"] + list(_FILTER_BY_NAME), default="auto")
     b.add_argument("--tile", type=int, default=256)
 
-    med = sub.add_parser("med", help="PYRM medical container tools")
+    med = sub.add_parser("med", help="LUMM medical container tools")
     med_sub = med.add_subparsers(dest="med_cmd", required=True)
 
-    me = med_sub.add_parser("encode", help="encode raw samples into a .pyrm file")
+    me = med_sub.add_parser("encode", help="encode raw samples into a .lumm file")
     me.add_argument("input", help="raw sample file (little-endian)")
     me.add_argument("output")
     me.add_argument("--width", type=int, required=True)
@@ -151,7 +151,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="timestamp for the provenance block (breaks the "
                          "byte-exact reproducibility)")
 
-    md = med_sub.add_parser("decode", help="decode a .pyrm file into raw samples")
+    md = med_sub.add_parser("decode", help="decode a .lumm file into raw samples")
     md.add_argument("input")
     md.add_argument("output")
     md.add_argument("--verify-key", default=None, metavar="FILE",
@@ -166,12 +166,12 @@ def _build_parser() -> argparse.ArgumentParser:
     mi.add_argument("input")
 
     mdc = med_sub.add_parser("to-dicom",
-                             help="convert a .pyrm container into a DICOM file")
+                             help="convert a .lumm container into a DICOM file")
     mdc.add_argument("input")
     mdc.add_argument("output")
 
     mdf = med_sub.add_parser("from-dicom",
-                             help="convert a DICOM file into a .pyrm container")
+                             help="convert a DICOM file into a .lumm container")
     mdf.add_argument("input")
     mdf.add_argument("output")
     mdf.add_argument("--tile", type=int, default=256)
@@ -197,12 +197,12 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="display window (default: the WindowWidth of the metadata)")
     mv.add_argument("--level", type=float, default=None,
                     help="display level (default: the WindowCenter of the metadata)")
-    cloud = sub.add_parser("cloud", help="PYRC cloud/EO container tools")
+    cloud = sub.add_parser("cloud", help="LUMC cloud/EO container tools")
     cloud_sub = cloud.add_subparsers(dest="cloud_cmd", required=True)
 
     ce = cloud_sub.add_parser("encode",
-                              help="encode a raw cube into a .pyrc file")
-    ce.add_argument("input", help="raw cube file (PYRX)")
+                              help="encode a raw cube into a .lumc file")
+    ce.add_argument("input", help="raw cube file (LUMX)")
     ce.add_argument("output")
     ce.add_argument("--width", type=int, required=True)
     ce.add_argument("--height", type=int, required=True)
@@ -234,7 +234,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="metadata entry (repeatable)")
 
     cd = cloud_sub.add_parser("decode",
-                              help="decode a .pyrc file into raw samples")
+                              help="decode a .lumc file into raw samples")
     cd.add_argument("input")
     cd.add_argument("output")
     cd.add_argument("--scene", type=int, default=None,
@@ -247,7 +247,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     cs = cloud_sub.add_parser("stats",
                                help="per band statistics of a cube")
-    cs.add_argument("input", help="a .pyrc file or a raw cube (PYRX)")
+    cs.add_argument("input", help="a .lumc file or a raw cube (LUMX)")
     cs.add_argument("--band", type=int, default=None,
                     help="only this band (default: every band)")
     cs.add_argument("--histogram", action="store_true",
@@ -274,9 +274,9 @@ def _inspect(input_path: str) -> None:
         from . import lossy
         meta = lossy.info(data)
         if meta is None:
-            print(f"VERIFICATION FAILED: malformed PYRA v6 container")
+            print(f"VERIFICATION FAILED: malformed LUMEN v6 container")
             return
-        print(f"=== PYRA Image Inspection: {input_path} ===")
+        print(f"=== LUMEN Image Inspection: {input_path} ===")
         print(f"  version: 5 (lossy DCT)")
         print(f"  dimensions: {meta['width']}x{meta['height']} @ "
               f"{meta['bit_depth']}-bit")
@@ -286,8 +286,8 @@ def _inspect(input_path: str) -> None:
         print(f"  planes: {meta['num_planes']}")
         print(f"  file_size: {len(data)} bytes")
         return
-    meta, tiles = PyraContainer.unpack_file(data)
-    print(f"=== PYRA Image Inspection: {input_path} ===")
+    meta, tiles = LumenContainer.unpack_file(data)
+    print(f"=== LUMEN Image Inspection: {input_path} ===")
     print(f"  version: {meta['version']}")
     print(f"  dimensions: {meta['width']}x{meta['height']} @ {meta['bit_depth']}-bit")
     cs_name = _CS_NAMES.get(meta["color_space"], str(meta["color_space"]))
@@ -322,20 +322,20 @@ def _benchmark(args) -> int:
     transform = _TRANSFORM_BY_NAME.get(args.transform, -1)
     filter_mode = _FILTER_BY_NAME.get(args.filter, -1)
 
-    with tempfile.NamedTemporaryFile(suffix=".pyra") as tmp_pyra, \
+    with tempfile.NamedTemporaryFile(suffix=".lum") as tmp_lum, \
          tempfile.NamedTemporaryFile(suffix=".ppm" if magic == b"P6" else ".pgm") as tmp_out:
         t0 = time.perf_counter()
-        encode_file(args.input, tmp_pyra.name, color_space=color_space,
+        encode_file(args.input, tmp_lum.name, color_space=color_space,
                     pred_type=pred, tile_size=args.tile, method=method,
                     transform=transform, filter_mode=filter_mode)
         t_enc = time.perf_counter() - t0
 
-        with open(tmp_pyra.name, "rb") as f:
-            pyra_bytes = f.read()
-        meta, _tiles = PyraContainer.unpack_file(pyra_bytes)
+        with open(tmp_lum.name, "rb") as f:
+            lum_bytes = f.read()
+        meta, _tiles = LumenContainer.unpack_file(lum_bytes)
 
         t0 = time.perf_counter()
-        decode_file(tmp_pyra.name, tmp_out.name)
+        decode_file(tmp_lum.name, tmp_out.name)
         t_dec = time.perf_counter() - t0
 
         # Roundtrip check (byte-exact only when maxval is the full range)
@@ -350,20 +350,20 @@ def _benchmark(args) -> int:
         print(f"  encode: {t_enc:.3f} s ({raw_size / t_enc / 1024:.0f} KiB/s)")
         print(f"  decode: {t_dec:.3f} s ({raw_size / t_dec / 1024:.0f} KiB/s)")
         print(f"  raw size:   {raw_cmp:>9} bytes")
-        print(f"  PYRA size:  {len(pyra_bytes):>9} bytes  "
+        print(f"  LUMEN size:  {len(lum_bytes):>9} bytes  "
               f"(method {_METHOD_NAMES.get(meta['method'], meta['method'])}, "
-              f"ratio {raw_cmp / max(1, len(pyra_bytes)):.2f}x)")
+              f"ratio {raw_cmp / max(1, len(lum_bytes)):.2f}x)")
         print(f"  PNG size:   {len(png_bytes):>9} bytes  (ratio {raw_cmp / max(1, len(png_bytes)):.2f}x, "
               f"png encode {t_png:.3f} s, C zlib deflate)")
         if full_range:
-            delta = len(pyra_bytes) - len(png_bytes)
+            delta = len(lum_bytes) - len(png_bytes)
             pct = 100.0 * delta / max(1, len(png_bytes))
-            print(f"  PYRA vs PNG: {delta:+d} bytes ({pct:+.1f}%)")
+            print(f"  LUMEN vs PNG: {delta:+d} bytes ({pct:+.1f}%)")
         print(f"  roundtrip: {roundtrip}")
     return 0
 
 
-# ------------------------------------------------------------- medical (PYRM)
+# ------------------------------------------------------------- medical (LUMM)
 
 def _med_meta(pairs: list[str]) -> dict:
     """Parse `KEY=VALUE` metadata arguments."""
@@ -431,7 +431,7 @@ def _med_encode(args) -> int:
             fmt, strict=True)
         if problems:
             for problem in problems:
-                print(f"pyra: error: metadata: {problem}", file=sys.stderr)
+                print(f"lum: error: metadata: {problem}", file=sys.stderr)
             return 1
 
     blob = _med_codec.encode(samples, args.width, args.height, args.depth,
@@ -468,11 +468,11 @@ def _med_decode(args) -> int:
         try:
             parts = [int(p) for p in args.region.split(",")]
         except ValueError:
-            print("pyra: error: --region needs six integers "
+            print("lum: error: --region needs six integers "
                   "X,Y,Z,W,H,D", file=sys.stderr)
             return 1
         if len(parts) != 6:
-            print("pyra: error: --region needs six integers "
+            print("lum: error: --region needs six integers "
                   "X,Y,Z,W,H,D", file=sys.stderr)
             return 1
         rx, ry, rz, rw, rh, rd = parts
@@ -498,7 +498,7 @@ def _med_info(args) -> int:
     with open(args.input, "rb") as f:
         blob = f.read()
     info = _med_codec.info(blob)
-    print(f"=== PYRM Medical Inspection: {args.input} ===")
+    print(f"=== LUMM Medical Inspection: {args.input} ===")
     for key in ("width", "height", "depth", "channels", "sample_format",
                 "bits", "tile_size", "num_tiles"):
         print(f"  {key}: {info[key]}")
@@ -597,7 +597,7 @@ def _med_dump(args) -> int:
     report = _med_codec.verify(blob)
     document = {
         "container": {
-            "magic": "PYRM",
+            "magic": "LUMM",
             "version": report.get("version"),
             "width": info["width"],
             "height": info["height"],
@@ -635,7 +635,7 @@ def _med_preview(args) -> int:
         info["channels"], info["sample_format"], metadata, args.slice,
         window, level)
     if pixels is None:
-        print("pyra: error: cannot render this slice", file=sys.stderr)
+        print("lum: error: cannot render this slice", file=sys.stderr)
         return 1
     header = f"P5\n{info['width']} {info['height']}\n255\n".encode()
     with open(args.output, "wb") as f:
@@ -650,10 +650,10 @@ def _med_preview(args) -> int:
     return 0
 
 
-# ------------------------------------------------------------- cloud (PYRC)
+# ------------------------------------------------------------- cloud (LUMC)
 
 def _cloud_load_cube(path: str):
-    """Load a cube either from a PYRC container or from a raw PYRX file.
+    """Load a cube either from a LUMC container or from a raw LUMX file.
 
     Returns (samples, width, height, bands, scenes, sample_format).
     """
@@ -671,12 +671,12 @@ def _cloud_encode(args) -> int:
     samples, width, height, bands, scenes, fmt = _cloud_load_cube(args.input)
     if (width, height, bands, scenes) != (args.width, args.height, args.bands,
                                          args.scenes):
-        print(f"pyra: error: the file holds {width}x{height} x{bands} bands "
+        print(f"lum: error: the file holds {width}x{height} x{bands} bands "
               f"x{scenes} scenes, not {args.width}x{args.height} x{args.bands} "
               f"x{args.scenes}", file=sys.stderr)
         return 1
     if _CLOUD_FORMAT_NAMES.get(fmt, "?") != args.format:
-        print(f"pyra: error: the file holds "
+        print(f"lum: error: the file holds "
               f"{_CLOUD_FORMAT_NAMES.get(fmt, '?')} samples, not {args.format}",
               file=sys.stderr)
         return 1
@@ -738,7 +738,7 @@ def _cloud_info(args) -> int:
     with open(args.input, "rb") as f:
         blob = f.read()
     info = _cloud.info(blob)
-    print(f"=== PYRC Cloud Inspection: {args.input} ===")
+    print(f"=== LUMC Cloud Inspection: {args.input} ===")
     for key in ("version", "width", "height", "bands", "scenes",
                 "sample_format", "bits", "tile_size", "tiles_x", "tiles_y",
                 "num_entries", "predictor"):
@@ -788,7 +788,7 @@ def _cloud_stats(args) -> int:
 def _cloud_render(args) -> int:
     samples, width, height, bands, scenes, fmt = _cloud_load_cube(args.input)
     if args.scene >= scenes:
-        print(f"pyra: error: scene {args.scene} is outside the cube "
+        print(f"lum: error: scene {args.scene} is outside the cube "
               f"({scenes} scenes)", file=sys.stderr)
         return 1
     rgb = _cloud.render_rgb(samples, width, height, bands, scenes, fmt,
@@ -835,7 +835,7 @@ def main(argv=None) -> int:
                         transform=transform, filter_mode=filter_mode)
             with open(args.output, "rb") as f:
                 out_bytes = f.read()
-            stored, _ = PyraContainer.unpack_file(out_bytes)
+            stored, _ = LumenContainer.unpack_file(out_bytes)
             print(f"  size: {len(out_bytes)} bytes, "
                   f"method: {_METHOD_NAMES.get(stored['method'], stored['method'])}, "
                   f"transform: {_TRANSFORM_NAMES.get(stored.get('transform'), stored.get('transform'))}, "
@@ -858,8 +858,8 @@ def main(argv=None) -> int:
             with open(args.input, "rb") as f:
                 data = f.read()
             try:
-                PyraContainer.unpack_file(data)
-            except PyraError as e:
+                LumenContainer.unpack_file(data)
+            except LumenError as e:
                 print(f"VERIFICATION FAILED: {e}")
                 return 1
             print(f"VERIFICATION SUCCESSFUL: {args.input} is valid.")
@@ -904,11 +904,11 @@ def main(argv=None) -> int:
 
         print(f"Unknown command: {args.cmd}", file=sys.stderr)
         return 2
-    except (PyraError, MedicalError, OSError, ValueError) as e:
-        print(f"pyra: error: {e}", file=sys.stderr)
+    except (LumenError, MedicalError, OSError, ValueError) as e:
+        print(f"lum: error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("pyra: interrupted", file=sys.stderr)
+        print("lum: interrupted", file=sys.stderr)
         return 130
 
 

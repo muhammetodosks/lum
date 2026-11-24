@@ -1,4 +1,4 @@
-//! PYRC — the PYRA Cloud container.
+//! LUMC — the LUMEN Cloud container.
 //!
 //! A lossless container for earth observation data: multi-band scenes over
 //! time, with per-band radiometric metadata and per-scene georeferencing.
@@ -30,13 +30,13 @@
 
 use std::collections::HashMap;
 
-use super::pyra_image::crc32;
-use super::pyra_med::sha256;
+use super::lum_image::crc32;
+use super::lum_med::sha256;
 use super::{CtxRangeDec, CtxRangeEnc, LzMatcher, LzTok, RangeDec, RangeEnc};
 
 // ------------------------------------------------------------------ format
 
-const CLOUD_MAGIC: [u8; 8] = [0x50, 0x59, 0x52, 0x43, 0x0D, 0x0A, 0x1A, 0x0A];
+const CLOUD_MAGIC: [u8; 8] = [0x4C, 0x55, 0x4D, 0x43, 0x0D, 0x0A, 0x1A, 0x0A];
 const CLOUD_VERSION: u32 = 1;
 
 const HEADER_SIZE: usize = 192;
@@ -1052,12 +1052,12 @@ where
 
 // ----------------------------------------------------------------- encoder
 
-/// Encode a multi-band, multi-scene cube into a PYRC container.
+/// Encode a multi-band, multi-scene cube into a LUMC container.
 ///
 /// The band and scene tables are passed verbatim (48 and 40 bytes per
 /// entry); the metadata block is stored as given.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_cloud_encode(
+pub unsafe extern "C" fn lum_cloud_encode(
     samples: *const u8,
     len: usize,
     width: u32,
@@ -1398,12 +1398,12 @@ fn parse_header(data: &[u8]) -> Result<CloudHeader, isize> {
     })
 }
 
-/// Decode a PYRC container into the raw samples.
+/// Decode a LUMC container into the raw samples.
 ///
 /// The samples are returned scene by scene, band by band, each band as a
 /// plane of `width * height` little endian samples.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_cloud_decode(
+pub unsafe extern "C" fn lum_cloud_decode(
     data: *const u8,
     len: usize,
     out_ptr: *mut *mut u8,
@@ -1587,7 +1587,7 @@ pub unsafe extern "C" fn pyra_cloud_decode(
 
 /// Read the header of a container without decoding the samples.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_cloud_info(
+pub unsafe extern "C" fn lum_cloud_info(
     data: *const u8,
     len: usize,
     meta_out: *mut i32,
@@ -1759,7 +1759,7 @@ unsafe fn decode_plane_cached(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pyra_cloud_read_band(
+pub unsafe extern "C" fn lum_cloud_read_band(
     data: *const u8,
     len: usize,
     scene: u32,
@@ -1826,7 +1826,7 @@ pub unsafe extern "C" fn pyra_cloud_read_band(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pyra_image::pyra_free_buf;
+    use crate::lum_image::lum_free_buf;
 
     /// A band table with `count` entries, as the encoder expects it.
     fn band_table(count: usize) -> Vec<u8> {
@@ -1890,7 +1890,7 @@ mod tests {
         let mut out_ptr: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = unsafe {
-            pyra_cloud_encode(
+            lum_cloud_encode(
                 samples.as_ptr(),
                 samples.len(),
                 w as u32,
@@ -1913,7 +1913,7 @@ mod tests {
         };
         assert_eq!(rc, 0, "encode failed: {}", rc);
         let data = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
-        unsafe { pyra_free_buf(out_ptr, out_len) };
+        unsafe { lum_free_buf(out_ptr, out_len) };
         data
     }
 
@@ -1947,11 +1947,11 @@ mod tests {
         let mut out_len: usize = 0;
         let mut meta = [0i32; 21];
         let rc = unsafe {
-            pyra_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
+            lum_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
         };
         assert_eq!(rc, 0, "decode failed: {}", rc);
         let back = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
-        unsafe { pyra_free_buf(out_ptr, out_len) };
+        unsafe { lum_free_buf(out_ptr, out_len) };
 
         assert_eq!(back, raw, "decoded cube differs");
         assert_eq!(meta[2] as usize, w);
@@ -1968,7 +1968,7 @@ mod tests {
         let raw = cube(w, h, bands, scenes, 2);
         let blob = encode_cube(&raw, w, h, bands, scenes, SFMT_U16 as u32, -1);
         let mut meta = [0i32; 21];
-        let rc = unsafe { pyra_cloud_info(blob.as_ptr(), blob.len(), meta.as_mut_ptr()) };
+        let rc = unsafe { lum_cloud_info(blob.as_ptr(), blob.len(), meta.as_mut_ptr()) };
         assert_eq!(rc, 0);
         assert_eq!(meta[0], 1, "version");
         assert_eq!(meta[2] as usize, w);
@@ -1986,11 +1986,11 @@ mod tests {
         let mut out_ptr: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = unsafe {
-            pyra_cloud_read_band(blob.as_ptr(), blob.len(), 1, 2, &mut out_ptr, &mut out_len)
+            lum_cloud_read_band(blob.as_ptr(), blob.len(), 1, 2, &mut out_ptr, &mut out_len)
         };
         assert_eq!(rc, 0, "read_band failed: {}", rc);
         let band = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
-        unsafe { pyra_free_buf(out_ptr, out_len) };
+        unsafe { lum_free_buf(out_ptr, out_len) };
 
         let plane = w * h * 2;
         let start = (1 * bands + 2) * plane;
@@ -2019,7 +2019,7 @@ mod tests {
         let mut out_len: usize = 0;
         let mut meta = [0i32; 21];
         let rc = unsafe {
-            pyra_cloud_decode(damaged.as_ptr(), damaged.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
+            lum_cloud_decode(damaged.as_ptr(), damaged.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
         };
         assert!(rc < 0, "a damaged container must not decode");
     }
@@ -2030,7 +2030,7 @@ mod tests {
         let raw = cube(w, h, bands, scenes, 2);
         let blob = encode_cube(&raw, w, h, bands, scenes, SFMT_U16 as u32, -1);
         let mut meta = [0i32; 21];
-        let rc = unsafe { pyra_cloud_info(blob.as_ptr(), 10, meta.as_mut_ptr()) };
+        let rc = unsafe { lum_cloud_info(blob.as_ptr(), 10, meta.as_mut_ptr()) };
         assert!(rc < 0, "a truncated header must be rejected");
     }
 
@@ -2044,11 +2044,11 @@ mod tests {
             let mut out_len: usize = 0;
             let mut meta = [0i32; 21];
             let rc = unsafe {
-                pyra_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
+                lum_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
             };
             assert_eq!(rc, 0, "predictor {} failed", pred);
             let back = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
-            unsafe { pyra_free_buf(out_ptr, out_len) };
+            unsafe { lum_free_buf(out_ptr, out_len) };
             assert_eq!(back, raw, "predictor {} round trip", pred);
         }
     }
@@ -2069,11 +2069,11 @@ mod tests {
             let mut out_len: usize = 0;
             let mut meta = [0i32; 21];
             let rc = unsafe {
-                pyra_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
+                lum_cloud_decode(blob.as_ptr(), blob.len(), &mut out_ptr, &mut out_len, meta.as_mut_ptr())
             };
             assert_eq!(rc, 0, "format {} failed: {}", fmt, rc);
             let back = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
-            unsafe { pyra_free_buf(out_ptr, out_len) };
+            unsafe { lum_free_buf(out_ptr, out_len) };
             assert_eq!(back, raw, "format {} round trip", fmt);
         }
     }

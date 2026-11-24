@@ -12,7 +12,7 @@ _HEADER_V1_SIZE = struct.calcsize(_HEADER_V1)
 _HEADER_V2_SIZE = struct.calcsize(_HEADER_V2)
 
 
-class PyraContainer:
+class LumenContainer:
     @staticmethod
     def pack_file(width: int, height: int, bit_depth: int, color_space: int,
                   pred_type: int, method: int, tile_size: int,
@@ -68,7 +68,7 @@ class PyraContainer:
         validate_file_size(len(data), 36)
 
         if not data.startswith(MAGIC):
-            raise CorruptedFileError("Invalid magic number: not a PYRA file")
+            raise CorruptedFileError("Invalid magic number: not a LUMEN file")
 
         # Verify trailing CRC32
         body = data[:-4]
@@ -85,7 +85,7 @@ class PyraContainer:
             header_fmt = _HEADER_V2
             header_size = _HEADER_V2_SIZE
         else:
-            raise CorruptedFileError(f"unsupported PYRA version: {version}")
+            raise CorruptedFileError(f"unsupported LUMEN version: {version}")
 
         if len(data) < header_size:
             raise CorruptedFileError("Truncated file while reading header")

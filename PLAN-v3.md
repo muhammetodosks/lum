@@ -1,4 +1,4 @@
-# PYRA v3 — 6–7× Hız Planı (Rust + C++)
+# LUMEN v3 — 6–7× Hız Planı (Rust + C++)
 
 > **Durum: TAMAMLANDI ✓** — bu plan tarihsel bir kayıttır.
 > Sonuç: encode 503 → 127 ms (100x saf Python), decode 85 → 31 ms (102x),
@@ -39,19 +39,19 @@ pack/unpack (v1 legacy, v2 düzeltilmiş).
 
 ## Uygulama adımları
 
-### A. Rust çekirdek (`rust/pyra_core.rs`)
-- **A1** `pyra_pipe_forward_adaptive_into`: 7 aday × tam satır geçişi (8 geçiş) →
+### A. Rust çekirdek (`rust/lum_core.rs`)
+- **A1** `lum_pipe_forward_adaptive_into`: 7 aday × tam satır geçişi (8 geçiş) →
   **tek geçişte 7 skorer** (7 accumulator, tek döngü) ⇒ ~4× hızlı.
 - **A2** LZ eşleme tablosu: `HashMap<u32, Vec<u32>>` + `Vec::remove(0)` (128 B memmove/insert)
   → **halka tamponlu** sabit 32 slot (FIFO eviction + newest-first sırası korunur) ⇒ ~1,5–2×.
-- **A3** `pyra_crc32` (zlib uyumlu, IEEE tablo) — container Rust'ta kurulacak.
-- **A4** `pyra_encode_image(pixels, …) -> bytes`: **tek çağrıda tüm görsel**:
+- **A3** `lum_crc32` (zlib uyumlu, IEEE tablo) — container Rust'ta kurulacak.
+- **A4** `lum_encode_image(pixels, …) -> bytes`: **tek çağrıda tüm görsel**:
   plan → tile'lar × method adayları **`std::thread::scope` ile paralel** → container.
-- **A5** `pyra_decode_image(data, len) -> pixels`: container parse + paralel tile decode + canvas.
-- **A6** `pyra_plan` adayları da paralel hesaplanır (16 bağımsız maliyet).
+- **A5** `lum_decode_image(data, len) -> pixels`: container parse + paralel tile decode + canvas.
+- **A6** `lum_plan` adayları da paralel hesaplanır (16 bağımsız maliyet).
 
-### B. C++ çekirdek (`cpp/pyra_fast.cpp`)
-- **B1** `pyra_ppm_read(path)` / `pyra_ppm_write(path, …)`: PNM parse/yazma **Python listesine
+### B. C++ çekirdek (`cpp/lum_fast.cpp`)
+- **B1** `lum_ppm_read(path)` / `lum_ppm_write(path, …)`: PNM parse/yazma **Python listesine
   hiç uğramadan** (dosya seviyesi encode/decode tamamen C++).
 - **B2** Mevcut adaptive residual/reconstruct korunur (fallback hızı).
 
@@ -64,7 +64,7 @@ pack/unpack (v1 legacy, v2 düzeltilmiş).
 
 ### D. Doğrulama
 - Native/pure **byte paritesi** (2520+ kombinasyon), v1 legacy okuma, bozuk dosya testleri.
-- Test paketi: native + `PYRA_DISABLE_NATIVE=1` fallback.
+- Test paketi: native + `LUMEN_DISABLE_NATIVE=1` fallback.
 - Oran + hız benchmark'ı; README güncelleme.
 
 ### E. GitHub

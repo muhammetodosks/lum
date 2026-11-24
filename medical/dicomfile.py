@@ -1,6 +1,6 @@
 """DICOM Part 10 file support (reading and writing).
 
-The PYRM container is the native format of this project, but a clinical
+The LUMM container is the native format of this project, but a clinical
 system has to speak DICOM: a scanner writes DICOM, a PACS stores DICOM, and
 a radiologist looks at DICOM. This module therefore reads and writes real
 DICOM Part 10 files (the "DICM" wrapper) with the *Explicit VR Little
@@ -19,7 +19,7 @@ Only what an imaging archive needs is implemented:
   instance, the geometry, the calibration and the display window.
 
 Everything that is read is checked, and everything that is written is
-derived from the PYRM metadata, so a round trip through DICOM keeps both
+derived from the LUMM metadata, so a round trip through DICOM keeps both
 the pixels and the meaning.
 """
 
@@ -122,7 +122,7 @@ def write_dicom(samples: bytes, width: int, height: int, depth: int = 1,
                 sop_class_uid: str | None = None) -> bytes:
     """Build a DICOM Part 10 file from raw samples and a metadata block.
 
-    The metadata block is the same one the PYRM container carries, so the
+    The metadata block is the same one the LUMM container carries, so the
     clinical meaning travels unchanged. Attributes that the geometry
     determines are always derived here, never taken from the metadata.
     """
@@ -208,7 +208,7 @@ def write_dicom(samples: bytes, width: int, height: int, depth: int = 1,
     meta_group.add(0x0002, 0x0010, "UI",
                    EXPLICIT_VR_LITTLE_ENDIAN.encode("ascii"))
     meta_group.add(0x0002, 0x0012, "UI", b"1.2.840.10008.5.1.4.1.1.7")
-    meta_group.add(0x0002, 0x0013, "SH", b"PYRA-PYRM")
+    meta_group.add(0x0002, 0x0013, "SH", b"LUMEN-LUMM")
     group_bytes = meta_group.build()
 
     out = bytearray()
@@ -315,7 +315,7 @@ def read_dicom(blob: bytes) -> tuple[bytes, dict]:
     """Read a DICOM Part 10 file.
 
     Returns (raw samples, metadata block) where the metadata block uses the
-    same attribute names as the PYRM container, so a DICOM file can be
+    same attribute names as the LUMM container, so a DICOM file can be
     re-encoded without renaming anything.
     """
     if len(blob) < 132 or blob[128:132] != b"DICM":

@@ -2,11 +2,11 @@
 # Run every verification suite of the project.
 #
 #   scripts/run_tests.sh            # the Python suites (native + fallback)
-#   PYRA_BUILD_TESTS=1 scripts/run_tests.sh
+#   LUMEN_BUILD_TESTS=1 scripts/run_tests.sh
 #                                   # ... and the native harnesses
 #
 # The Python suites are run from the *parent* of the package directory,
-# because the package is imported as `pyra`.
+# because the package is imported as `lum`.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -14,28 +14,30 @@ PARENT="$(dirname "$ROOT")"
 
 echo "== Python suites (native core) =="
 cd "$PARENT"
-python3 -m pyra.tests.test_lossless
-python3 -m pyra.tests.test_medical
-python3 -m pyra.tests.test_cloud
+python3 -m lum.tests.test_lossless
+python3 -m lum.tests.test_lossy
+python3 -m lum.tests.test_medical
+python3 -m lum.tests.test_cloud
+python3 -m lum.tests.test_format_report
 
 echo
 echo "== Python suites (pure Python fallback) =="
-PYRA_DISABLE_NATIVE=1 python3 -m pyra.tests.test_lossless
-PYRA_DISABLE_NATIVE=1 python3 -m pyra.tests.test_medical
+LUMEN_DISABLE_NATIVE=1 python3 -m lum.tests.test_lossless
+LUMEN_DISABLE_NATIVE=1 python3 -m lum.tests.test_medical
 
-if [ "${PYRA_BUILD_TESTS:-0}" = "1" ]; then
+if [ "${LUMEN_BUILD_TESTS:-0}" = "1" ]; then
     echo
     echo "== Rust unit tests =="
     cd "$ROOT"
-    rustc --test --edition 2021 -O -o /tmp/pyra_rust_test rust/pyra_core.rs
-    /tmp/pyra_rust_test
+    rustc --test --edition 2021 -O -o /tmp/lum_rust_test rust/lum_core.rs
+    /tmp/lum_rust_test
 
     echo
     echo "== C++ self test =="
     if command -v g++ >/dev/null 2>&1; then
-        g++ -O2 -std=c++20 -DPYRA_CLOUD_SELFTEST -o /tmp/pyra_cloud_selftest \
-            cpp/pyra_cloud.cpp
-        /tmp/pyra_cloud_selftest
+        g++ -O2 -std=c++20 -DLUMEN_CLOUD_SELFTEST -o /tmp/lum_cloud_selftest \
+            cpp/lum_cloud.cpp
+        /tmp/lum_cloud_selftest
     else
         echo "g++ not found - skipping the C++ self test" >&2
     fi

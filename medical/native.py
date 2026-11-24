@@ -1,7 +1,7 @@
-"""Native loader of the PYRM medical core.
+"""Native loader of the LUMM medical core.
 
-The medical core lives in the same shared library as the rest of PYRA
-(`_libpyra_core.so`). Every wrapper returns ``None`` when the backend is
+The medical core lives in the same shared library as the rest of LUMEN
+(`_liblum_core.so`). Every wrapper returns ``None`` when the backend is
 unavailable or refuses the input, so the caller can fall back to the
 pure-Python reference implementation, which produces identical bytes.
 """
@@ -17,13 +17,13 @@ _LOADED = False
 
 
 def _load():
-    """Load `_libpyra_core.so` once; returns None when it is missing."""
+    """Load `_liblum_core.so` once; returns None when it is missing."""
     global _LIB, _LOADED
     if _LOADED:
         return _LIB
     _LOADED = True
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "_libpyra_core.so")
+                        "_liblum_core.so")
     try:
         lib = ctypes.CDLL(path)
     except OSError:
@@ -35,28 +35,28 @@ def _load():
     _sz = ctypes.c_size_t
     _isize = ctypes.c_long if ctypes.sizeof(ctypes.c_long) == 8 else ctypes.c_int
     try:
-        lib.pyra_med_encode.restype = _isize
-        lib.pyra_med_encode.argtypes = [
+        lib.lum_med_encode.restype = _isize
+        lib.lum_med_encode.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, _u32, _u32, _u32, _u32,
             _u32, ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _i32, _i32, _u32,
             ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
             ctypes.POINTER(_sz)]
-        lib.pyra_med_decode.restype = _isize
-        lib.pyra_med_decode.argtypes = [
+        lib.lum_med_decode.restype = _isize
+        lib.lum_med_decode.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz,
             ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
             ctypes.POINTER(_sz)]
-        lib.pyra_med_info.restype = _isize
-        lib.pyra_med_info.argtypes = [
+        lib.lum_med_info.restype = _isize
+        lib.lum_med_info.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, ctypes.POINTER(_i32)]
-        lib.pyra_med_decode_region.restype = _isize
-        lib.pyra_med_decode_region.argtypes = [
+        lib.lum_med_decode_region.restype = _isize
+        lib.lum_med_decode_region.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz,
             _i32, _i32, _i32, _i32, _i32, _i32,
             ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
             ctypes.POINTER(_sz)]
-        lib.pyra_free_buf.restype = None
-        lib.pyra_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
+        lib.lum_free_buf.restype = None
+        lib.lum_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
     except OSError:
         _LIB = None
         return None
@@ -66,9 +66,9 @@ def _load():
 
 def enabled() -> bool:
     """Runtime dispatch flag (read at call time)."""
-    if os.environ.get("PYRA_DISABLE_NATIVE"):
+    if os.environ.get("LUMEN_DISABLE_NATIVE"):
         return False
-    if os.environ.get("PYRA_NATIVE") == "0":
+    if os.environ.get("LUMEN_NATIVE") == "0":
         return False
     return True
 
@@ -102,7 +102,7 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
     msrc = ctypes.cast(mbuf, ctypes.POINTER(ctypes.c_ubyte))
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
     out_len = ctypes.c_size_t()
-    rc = lib.pyra_med_encode(
+    rc = lib.lum_med_encode(
         src, need, width, height, depth, channels, sample_format,
         ctypes.cast(msrc, ctypes.POINTER(ctypes.c_ubyte)), len(metadata),
         tile_size, predictor, method, step,
@@ -112,7 +112,7 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
     try:
         return ctypes.string_at(out_p, out_len.value)
     finally:
-        lib.pyra_free_buf(out_p, out_len.value)
+        lib.lum_free_buf(out_p, out_len.value)
 
 
 def decode(blob: bytes) -> bytes | None:
@@ -129,14 +129,14 @@ def decode(blob: bytes) -> bytes | None:
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
     out_len = ctypes.c_size_t()
-    rc = lib.pyra_med_decode(src, len(blob), ctypes.byref(out_p),
+    rc = lib.lum_med_decode(src, len(blob), ctypes.byref(out_p),
                               ctypes.byref(out_len))
     if rc != 0 or not out_p:
         return None
     try:
         return ctypes.string_at(out_p, out_len.value)
     finally:
-        lib.pyra_free_buf(out_p, out_len.value)
+        lib.lum_free_buf(out_p, out_len.value)
 
 
 def decode_region(blob: bytes, x: int, y: int, z: int, width: int,
@@ -155,7 +155,7 @@ def decode_region(blob: bytes, x: int, y: int, z: int, width: int,
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
     out_len = ctypes.c_size_t()
-    rc = lib.pyra_med_decode_region(src, len(blob), x, y, z, width, height,
+    rc = lib.lum_med_decode_region(src, len(blob), x, y, z, width, height,
                                     depth, ctypes.byref(out_p),
                                     ctypes.byref(out_len))
     if rc != 0 or not out_p:
@@ -163,7 +163,7 @@ def decode_region(blob: bytes, x: int, y: int, z: int, width: int,
     try:
         return ctypes.string_at(out_p, out_len.value)
     finally:
-        lib.pyra_free_buf(out_p, out_len.value)
+        lib.lum_free_buf(out_p, out_len.value)
 
 
 def info(blob: bytes) -> dict | None:
@@ -174,7 +174,7 @@ def info(blob: bytes) -> dict | None:
     buf = ctypes.create_string_buffer(bytes(blob), len(blob))
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
     meta = (ctypes.c_int32 * 9)()
-    rc = lib.pyra_med_info(src, len(blob), meta)
+    rc = lib.lum_med_info(src, len(blob), meta)
     if rc != 0:
         return None
     return {

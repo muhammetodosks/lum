@@ -1,5 +1,5 @@
-# PYRA - Pure Python reversible image format & codec (stdlib only).
-__version__ = "0.15.0"
+# LUMEN - Pure Python reversible image format & codec (stdlib only).
+__version__ = "1.0.0"
 
 from .constants import (
     MAGIC, VERSION, VERSION_LEGACY,
@@ -7,10 +7,10 @@ from .constants import (
     PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE, PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN,
     METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX, METHOD_COUNT,
     TRANSFORM_YCOCG, TRANSFORM_NONE, FILTER_GLOBAL, FILTER_ADAPTIVE,
-    PyraError, SecurityError, CorruptedFileError,
+    LumenError, SecurityError, CorruptedFileError,
 )
-from .codec import PyraCodec
-from .container import PyraContainer
+from .codec import LumenCodec
+from .container import LumenContainer
 from .tile import Tile, split_into_tiles, assemble_from_tiles
 from .security import validate_dimensions, validate_chunk_size, validate_file_size
 from .api import (
@@ -25,8 +25,8 @@ __all__ = [
     "PRED_NONE", "PRED_LEFT", "PRED_UP", "PRED_AVERAGE", "PRED_PAETH", "PRED_GRADIENT", "PRED_MEDIAN",
     "METHOD_RAW", "METHOD_RLE", "METHOD_LZ", "METHOD_MIX", "METHOD_COUNT",
     "TRANSFORM_YCOCG", "TRANSFORM_NONE", "FILTER_GLOBAL", "FILTER_ADAPTIVE",
-    "PyraError", "SecurityError", "CorruptedFileError",
-    "PyraCodec", "PyraContainer",
+    "LumenError", "SecurityError", "CorruptedFileError",
+    "LumenCodec", "LumenContainer",
     "Tile", "split_into_tiles", "assemble_from_tiles",
     "validate_dimensions", "validate_chunk_size", "validate_file_size",
     "encode", "decode", "encode_file", "decode_file",

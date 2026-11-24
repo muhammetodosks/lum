@@ -195,7 +195,7 @@ def render_bars_svg(data: dict) -> str:
     parts.append(
         f'<text x="24" y="{height - 10}" font-size="11" fill="{_MUTED}">'
         f'Measured {html.escape(data["generated"])} \u00b7 '
-        f'PYRA bars are highlighted \u00b7 lower is better</text>'
+        f'LUMEN bars are highlighted \u00b7 lower is better</text>'
     )
     parts.append("</svg>")
     return "".join(parts)
@@ -306,7 +306,7 @@ def render_html(data: dict, previews: dict | None = None) -> str:
     return f"""<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<title>PYRA format comparison</title>
+<title>LUMEN format comparison</title>
 <style>
  body {{ margin: 0; font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
         color: {_TEXT}; background: #fbfbfd; }}
@@ -328,7 +328,7 @@ def render_html(data: dict, previews: dict | None = None) -> str:
  ul {{ font-size: 13px; color: {_MUTED}; }}
 </style>
 <main>
- <h1>PYRA vs the image formats that ship everywhere</h1>
+ <h1>LUMEN vs the image formats that ship everywhere</h1>
  <p class="sub">{html.escape(data['corpus'])} &middot; {len(data['images'])}
  images &middot; mean {data['mean_megapixels']:.2f} MP &middot; measured
  {html.escape(data['generated'])}</p>

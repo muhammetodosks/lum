@@ -1,14 +1,14 @@
-# PYRA native core loader — optional Rust-backed hot paths (stdlib only).
+# LUMEN native core loader — optional Rust-backed hot paths (stdlib only).
 #
 # `scripts/build_native.sh` (rustc, std-only cdylib) produces
-# `_libpyra_core.so` next to this module. Every wrapper here returns None
+# `_liblum_core.so` next to this module. Every wrapper here returns None
 # when the backend is unavailable OR disabled, and the caller in compress.py
 # falls back to the byte-identical pure-Python reference — so results are
 # bit-exact either way and the codec works without Rust installed.
 #
 # Runtime dispatch flags (checked at call time, not import time):
-#   PYRA_DISABLE_NATIVE=1   force the pure-Python path
-#   PYRA_NATIVE=0           force the pure-Python path
+#   LUMEN_DISABLE_NATIVE=1   force the pure-Python path
+#   LUMEN_NATIVE=0           force the pure-Python path
 #
 # Rust error convention: every fn returns isize; < 0 is an error code that
 # is mapped here to the same exception/message the Python reference raises.
@@ -17,7 +17,7 @@ import ctypes
 import os
 from array import array as _array
 
-from .constants import (CorruptedFileError, PyraError, METHOD_RAW, METHOD_RLE,
+from .constants import (CorruptedFileError, LumenError, METHOD_RAW, METHOD_RLE,
                        METHOD_LZ)
 
 # LZ/RLE token alphabet size (0..255 literal, 256 MATCH, 257 EOF).
@@ -68,7 +68,7 @@ def _u32_view(buf) -> ctypes.Array:
         return None
     return (ctypes.c_uint32 * n).from_buffer(buf)
 
-# --- Rust error codes (must match rust/pyra_core.rs) ---
+# --- Rust error codes (must match rust/lum_core.rs) ---
 _E_RLE_TRUNC = -1
 _E_RLE_ESCAPE_TRUNC = -2
 _E_RLE_OVERSHOOT = -3
@@ -115,7 +115,7 @@ def _load():
     if not _load_attempted:
         _load_attempted = True
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "_libpyra_core.so")
+                            "_liblum_core.so")
         try:
             lib = ctypes.CDLL(path)
             _isize = ctypes.c_ssize_t
@@ -123,123 +123,123 @@ def _load():
             _u32 = ctypes.c_uint32
             _u64 = ctypes.c_uint64
             _i64 = ctypes.c_int64
-            lib.pyra_pack_residuals.restype = _isize
-            lib.pyra_pack_residuals.argtypes = [
+            lib.lum_pack_residuals.restype = _isize
+            lib.lum_pack_residuals.argtypes = [
                 ctypes.POINTER(_u32), _sz, _sz, _u64,
                 ctypes.POINTER(ctypes.c_ubyte)]
-            lib.pyra_unpack_residuals.restype = _isize
-            lib.pyra_unpack_residuals.argtypes = [
+            lib.lum_unpack_residuals.restype = _isize
+            lib.lum_unpack_residuals.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz, _u64,
                 ctypes.POINTER(_u32)]
-            lib.pyra_rle_encode.restype = _isize
-            lib.pyra_rle_encode.argtypes = [
+            lib.lum_rle_encode.restype = _isize
+            lib.lum_rle_encode.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz,
                 ctypes.POINTER(ctypes.c_ubyte)]
-            lib.pyra_rle_decode.restype = _isize
-            lib.pyra_rle_decode.argtypes = [
+            lib.lum_rle_decode.restype = _isize
+            lib.lum_rle_decode.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz, _sz,
                 ctypes.POINTER(ctypes.c_ubyte)]
-            lib.pyra_lz_encode.restype = _isize
-            lib.pyra_lz_encode.argtypes = [
+            lib.lum_lz_encode.restype = _isize
+            lib.lum_lz_encode.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz, ctypes.POINTER(_u32)]
-            lib.pyra_lz_decode_tokens.restype = _isize
-            lib.pyra_lz_decode_tokens.argtypes = [
+            lib.lum_lz_decode_tokens.restype = _isize
+            lib.lum_lz_decode_tokens.argtypes = [
                 ctypes.POINTER(_u32), _sz, _sz,
                 ctypes.POINTER(ctypes.c_ubyte)]
             _i32 = ctypes.c_int32
-            lib.pyra_apply_predictor_row.restype = _isize
-            lib.pyra_apply_predictor_row.argtypes = [
+            lib.lum_apply_predictor_row.restype = _isize
+            lib.lum_apply_predictor_row.argtypes = [
                 ctypes.POINTER(_i32), _sz, ctypes.POINTER(_i32), _sz,
                 _i32, _sz, _i64, ctypes.POINTER(_i32)]
-            lib.pyra_reconstruct_row.restype = _isize
-            lib.pyra_reconstruct_row.argtypes = [
+            lib.lum_reconstruct_row.restype = _isize
+            lib.lum_reconstruct_row.argtypes = [
                 ctypes.POINTER(_i32), _sz, ctypes.POINTER(_i32), _sz,
                 _i32, _sz, _i64, ctypes.POINTER(_i32)]
-            lib.pyra_transform_forward.restype = _isize
-            lib.pyra_transform_forward.argtypes = [
+            lib.lum_transform_forward.restype = _isize
+            lib.lum_transform_forward.argtypes = [
                 ctypes.POINTER(_i32), _sz, _i32, ctypes.POINTER(_i32)]
-            lib.pyra_transform_inverse.restype = _isize
-            lib.pyra_transform_inverse.argtypes = [
+            lib.lum_transform_inverse.restype = _isize
+            lib.lum_transform_inverse.argtypes = [
                 ctypes.POINTER(_i32), _sz, _i32, ctypes.POINTER(_i32)]
-            lib.pyra_pipe_forward.restype = _isize
-            lib.pyra_pipe_forward.argtypes = [
+            lib.lum_pipe_forward.restype = _isize
+            lib.lum_pipe_forward.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
                 _i32, _sz, ctypes.POINTER(_i32), _i32]
-            lib.pyra_pipe_reconstruct.restype = _isize
-            lib.pyra_pipe_reconstruct.argtypes = [
+            lib.lum_pipe_reconstruct.restype = _isize
+            lib.lum_pipe_reconstruct.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
                 _i32, _sz, ctypes.POINTER(_i32), _i32]
-            lib.pyra_range_encode.restype = _isize
-            lib.pyra_range_encode.argtypes = [
+            lib.lum_range_encode.restype = _isize
+            lib.lum_range_encode.argtypes = [
                 ctypes.POINTER(_u32), _sz, _sz,
                 ctypes.POINTER(ctypes.c_ubyte), _sz]
-            lib.pyra_range_decode.restype = _isize
-            lib.pyra_range_decode.argtypes = [
+            lib.lum_range_decode.restype = _isize
+            lib.lum_range_decode.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz,
                 ctypes.POINTER(_u32)]
-            lib.pyra_decode_rle_method.restype = _isize
-            lib.pyra_decode_rle_method.argtypes = [
+            lib.lum_decode_rle_method.restype = _isize
+            lib.lum_decode_rle_method.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz, _sz, _u64,
                 _sz, ctypes.POINTER(_u32), ctypes.POINTER(_i32)]
-            lib.pyra_decode_lz_method.restype = _isize
-            lib.pyra_decode_lz_method.argtypes = [
+            lib.lum_decode_lz_method.restype = _isize
+            lib.lum_decode_lz_method.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz, _sz, _sz, _u64,
                 _sz, ctypes.POINTER(_u32), ctypes.POINTER(_u32),
                 ctypes.POINTER(_i32)]
-            lib.pyra_extract_tile.restype = _isize
-            lib.pyra_extract_tile.argtypes = [
+            lib.lum_extract_tile.restype = _isize
+            lib.lum_extract_tile.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _sz, _sz, _sz, _sz,
                 ctypes.POINTER(_i32)]
-            lib.pyra_pipe_reconstruct_into.restype = _isize
-            lib.pyra_pipe_reconstruct_into.argtypes = [
+            lib.lum_pipe_reconstruct_into.restype = _isize
+            lib.lum_pipe_reconstruct_into.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
                 _i32, _sz, ctypes.POINTER(_i32), _sz, _i32]
-            lib.pyra_encode_raw_method.restype = _isize
-            lib.pyra_encode_raw_method.argtypes = [
+            lib.lum_encode_raw_method.restype = _isize
+            lib.lum_encode_raw_method.argtypes = [
                 ctypes.POINTER(_i32), _sz, _u64,
                 ctypes.POINTER(ctypes.c_ubyte), _sz]
-            lib.pyra_encode_rle_method.restype = _isize
-            lib.pyra_encode_rle_method.argtypes = [
+            lib.lum_encode_rle_method.restype = _isize
+            lib.lum_encode_rle_method.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz,
                 ctypes.POINTER(ctypes.c_ubyte), _sz]
-            lib.pyra_encode_lz_method.restype = _isize
-            lib.pyra_encode_lz_method.argtypes = [
+            lib.lum_encode_lz_method.restype = _isize
+            lib.lum_encode_lz_method.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz,
                 ctypes.POINTER(ctypes.c_ubyte), _sz]
-            lib.pyra_plan.restype = _isize
-            lib.pyra_plan.argtypes = [
+            lib.lum_plan.restype = _isize
+            lib.lum_plan.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _sz, _sz, ctypes.c_uint32,
                 _i32, _sz, _i32, _i32, _i32, ctypes.POINTER(_i32)]
-            lib.pyra_pipe_forward_adaptive_into.restype = _isize
-            lib.pyra_pipe_forward_adaptive_into.argtypes = [
+            lib.lum_pipe_forward_adaptive_into.restype = _isize
+            lib.lum_pipe_forward_adaptive_into.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
                 _sz, _i32, ctypes.POINTER(_i32), ctypes.POINTER(ctypes.c_ubyte)]
-            lib.pyra_pipe_reconstruct_adaptive_into.restype = _isize
-            lib.pyra_pipe_reconstruct_adaptive_into.argtypes = [
+            lib.lum_pipe_reconstruct_adaptive_into.restype = _isize
+            lib.lum_pipe_reconstruct_adaptive_into.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _i32, _i64, _i64,
                 _sz, _i32, ctypes.POINTER(ctypes.c_ubyte), _sz,
                 ctypes.POINTER(_i32), _sz]
-            lib.pyra_encode_image.restype = _isize
-            lib.pyra_encode_image.argtypes = [
+            lib.lum_encode_image.restype = _isize
+            lib.lum_encode_image.argtypes = [
                 ctypes.POINTER(_i32), _sz, _sz, _sz, _sz, ctypes.c_uint32,
                 _i32, _i32, _i32, _sz, _i32, _i32, _sz,
                 ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
                 ctypes.POINTER(_sz)]
-            lib.pyra_decode_image.restype = _isize
-            lib.pyra_decode_image.argtypes = [
+            lib.lum_decode_image.restype = _isize
+            lib.lum_decode_image.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz,
                 ctypes.POINTER(ctypes.POINTER(_i32)), ctypes.POINTER(_sz),
                 ctypes.POINTER(_i32)]
-            lib.pyra_encode_image_bytes.restype = _isize
-            lib.pyra_encode_image_bytes.argtypes = [
+            lib.lum_encode_image_bytes.restype = _isize
+            lib.lum_encode_image_bytes.argtypes = [
                 ctypes.POINTER(ctypes.c_ubyte), _sz, _sz, _sz, _sz,
                 ctypes.c_uint32, _i32, _i32, _i32, _sz, _i32, _i32, _sz,
                 ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
                 ctypes.POINTER(_sz)]
-            lib.pyra_free_buf.restype = None
-            lib.pyra_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
-            lib.pyra_free_buf_i32.restype = None
-            lib.pyra_free_buf_i32.argtypes = [ctypes.POINTER(_i32), _sz]
+            lib.lum_free_buf.restype = None
+            lib.lum_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
+            lib.lum_free_buf_i32.restype = None
+            lib.lum_free_buf_i32.argtypes = [ctypes.POINTER(_i32), _sz]
             _lib = lib
         except OSError:
             _lib = None
@@ -248,9 +248,9 @@ def _load():
 
 def enabled() -> bool:
     """Runtime dispatch flag (read at call time so tests can toggle it)."""
-    if os.environ.get("PYRA_DISABLE_NATIVE"):
+    if os.environ.get("LUMEN_DISABLE_NATIVE"):
         return False
-    if os.environ.get("PYRA_NATIVE") == "0":
+    if os.environ.get("LUMEN_NATIVE") == "0":
         return False
     return True
 
@@ -262,7 +262,7 @@ def available() -> bool:
 
 def build_path() -> str | None:
     return (os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "_libpyra_core.so")
+                         "_liblum_core.so")
             if _load() is not None else None)
 
 
@@ -279,7 +279,7 @@ def pack_residuals(residuals: list[int], mod: int,
     n = len(residuals)
     a, syms = _u32_ptr(residuals)
     out = (ctypes.c_ubyte * (n * width))()
-    rc = lib.pyra_pack_residuals(syms, n, width, mod, out)
+    rc = lib.lum_pack_residuals(syms, n, width, mod, out)
     if rc < 0:
         # -100 - idx: first out-of-range symbol
         raise ValueError(f"residual symbol out of range at index {-rc - _E_PACK_RANGE}")
@@ -296,7 +296,7 @@ def unpack_residuals(data: bytes, mod: int, count: int,
         raise CorruptedFileError("truncated packed residual stream")
     buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
     out = (ctypes.c_uint32 * count)()
-    rc = lib.pyra_unpack_residuals(buf, len(data), count, width, mod, out)
+    rc = lib.lum_unpack_residuals(buf, len(data), count, width, mod, out)
     if rc < 0:
         if rc == _E_UNPACK_TRUNC:
             raise CorruptedFileError("truncated packed residual stream")
@@ -312,7 +312,7 @@ def rle_encode(data: bytes) -> bytes | None:
         return None
     buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data or b"\x00")
     out = (ctypes.c_ubyte * (2 * len(data) + 16))()
-    rc = lib.pyra_rle_encode(buf, len(data), out)
+    rc = lib.lum_rle_encode(buf, len(data), out)
     if rc < 0:
         raise CorruptedFileError("native RLE encoder failure")
     return bytes(memoryview(out)[:rc])
@@ -324,7 +324,7 @@ def rle_decode(data: bytes, target_len: int) -> bytes | None:
         return None
     buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data or b"\x00")
     out = (ctypes.c_ubyte * target_len)()
-    rc = lib.pyra_rle_decode(buf, len(data), target_len, out)
+    rc = lib.lum_rle_decode(buf, len(data), target_len, out)
     if rc < 0:
         raise CorruptedFileError(_RLE_MESSAGES.get(rc, "corrupted RLE stream"))
     return bytes(memoryview(out))
@@ -336,7 +336,7 @@ def lz_encode(data: bytes) -> list[int] | None:
         return None
     buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data or b"\x00")
     out = (ctypes.c_uint32 * (len(data) + 2))()
-    rc = lib.pyra_lz_encode(buf, len(data), out)
+    rc = lib.lum_lz_encode(buf, len(data), out)
     if rc < 0:
         raise CorruptedFileError("native LZ encoder failure")
     return list(out[:rc])
@@ -352,7 +352,7 @@ def lz_decode_tokens(tokens: list[int], target_len: int) -> bytes | None:
     n = len(tokens)
     a, buf = _u32_ptr(tokens)
     out = (ctypes.c_ubyte * target_len)()
-    rc = lib.pyra_lz_decode_tokens(buf, n, target_len, out)
+    rc = lib.lum_lz_decode_tokens(buf, n, target_len, out)
     if rc < 0:
         if rc in _LZ_MESSAGES:
             raise CorruptedFileError(_LZ_MESSAGES[rc])
@@ -378,7 +378,7 @@ def apply_predictor_row(row: list[int], prev_row: list[int] | None,
     else:
         pa, prow, plen = None, None, 0
     out = (ctypes.c_int32 * n)()
-    rc = lib.pyra_apply_predictor_row(buf, n, prow, plen, pred_type, channels, mod, out)
+    rc = lib.lum_apply_predictor_row(buf, n, prow, plen, pred_type, channels, mod, out)
     if rc < 0:
         raise ValueError("native predictor failure (invalid channels)")
     return list(out)
@@ -398,7 +398,7 @@ def reconstruct_row(residuals: list[int], prev_row: list[int] | None,
     else:
         pa, prow, plen = None, None, 0
     out = (ctypes.c_int32 * n)()
-    rc = lib.pyra_reconstruct_row(buf, n, prow, plen, pred_type, channels, mod, out)
+    rc = lib.lum_reconstruct_row(buf, n, prow, plen, pred_type, channels, mod, out)
     if rc < 0:
         raise ValueError("native predictor failure (invalid channels)")
     return list(out)
@@ -412,7 +412,7 @@ def transform_forward(pixels: list[int], color_space: int) -> list[int] | None:
     n = len(pixels)
     a, buf = _i32_ptr(pixels)
     out = (ctypes.c_int32 * n)()
-    rc = lib.pyra_transform_forward(buf, n, color_space, out)
+    rc = lib.lum_transform_forward(buf, n, color_space, out)
     if rc < 0:
         raise ValueError("native YCoCg transform failure")
     return list(out)
@@ -426,14 +426,14 @@ def transform_inverse(pixels: list[int], color_space: int) -> list[int] | None:
     n = len(pixels)
     a, buf = _i32_ptr(pixels)
     out = (ctypes.c_int32 * n)()
-    rc = lib.pyra_transform_inverse(buf, n, color_space, out)
+    rc = lib.lum_transform_inverse(buf, n, color_space, out)
     if rc < 0:
         raise ValueError("native YCoCg transform failure")
     return list(out)
 
 
 # ------------------------------------------------------- fused pipelines
-# Single-conversion counterparts of PyraCodec._residual_stream (color
+# Single-conversion counterparts of LumenCodec._residual_stream (color
 # transform + canonicalization + row prediction) and the decode-side tail
 # (row reconstruction + descaling + inverse transform). Returns None on
 # shape mismatch so the caller falls back to the reference composition.
@@ -452,7 +452,7 @@ def pipe_residuals(data: list[int], stride: int, offset: int, mod: int,
     except (OverflowError, TypeError):
         return None
     out = (ctypes.c_int32 * n)()
-    rc = lib.pyra_pipe_forward(buf, n, stride, color_space, offset, mod,
+    rc = lib.lum_pipe_forward(buf, n, stride, color_space, offset, mod,
                                pred_type, channels, out, transform)
     if rc < 0:
         if rc == _E_PIPE_SHAPE:
@@ -475,7 +475,7 @@ def pipe_reconstruct(residuals: list[int], stride: int, offset: int, mod: int,
     except (OverflowError, TypeError):
         return None
     out = (ctypes.c_int32 * n)()
-    rc = lib.pyra_pipe_reconstruct(buf, n, stride, color_space, offset, mod,
+    rc = lib.lum_pipe_reconstruct(buf, n, stride, color_space, offset, mod,
                                    pred_type, channels, out, transform)
     if rc < 0:
         if rc == _E_PIPE_SHAPE:
@@ -499,7 +499,7 @@ def range_encode(symbols: list[int], n_symbols: int) -> bytes | None:
     if lib is None or not enabled():
         return None
     if n_symbols < 1:
-        raise PyraError("model needs at least 1 symbol")
+        raise LumenError("model needs at least 1 symbol")
     n = len(symbols)
     a, buf = _u32_ptr(symbols)
     # Worst-case output size: the range coder emits at most
@@ -508,7 +508,7 @@ def range_encode(symbols: list[int], n_symbols: int) -> bytes | None:
     bits_per = max(15, n_symbols.bit_length() + 1) + 1
     cap = (n * bits_per) // 8 + 64
     out = (ctypes.c_ubyte * cap)()
-    rc = lib.pyra_range_encode(buf, n, n_symbols, out, cap)
+    rc = lib.lum_range_encode(buf, n, n_symbols, out, cap)
     if rc < 0:
         return None
     return bytes(memoryview(out)[:rc])
@@ -520,10 +520,10 @@ def range_decode(data: bytes, n_symbols: int, count: int) -> list[int] | None:
     if lib is None or not enabled():
         return None
     if n_symbols < 1:
-        raise PyraError("model needs at least 1 symbol")
+        raise LumenError("model needs at least 1 symbol")
     buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
     out = (ctypes.c_uint32 * count)()
-    rc = lib.pyra_range_decode(buf, len(data), n_symbols, count, out)
+    rc = lib.lum_range_decode(buf, len(data), n_symbols, count, out)
     if rc < 0:
         return None
     return list(out)
@@ -546,7 +546,7 @@ def decode_rle_method(data: bytes, count: int, mod: int,
     buf = (ctypes.c_ubyte * max(len(data), 1)).from_buffer_copy(data or b"\x00")
     out = (ctypes.c_uint32 * count)()
     detail = ctypes.c_int32(0)
-    rc = lib.pyra_decode_rle_method(buf, len(data), _TOKEN_SYMBOLS,
+    rc = lib.lum_decode_rle_method(buf, len(data), _TOKEN_SYMBOLS,
                                     packed_len, width, ctypes.c_uint64(mod),
                                     count, out, ctypes.byref(detail))
     if rc < 0:
@@ -567,7 +567,7 @@ def decode_lz_method(data: bytes, count: int, mod: int,
     out = (ctypes.c_uint32 * count)()
     rle_len = ctypes.c_uint32(0)
     detail = ctypes.c_int32(0)
-    rc = lib.pyra_decode_lz_method(buf, len(data), _TOKEN_SYMBOLS,
+    rc = lib.lum_decode_lz_method(buf, len(data), _TOKEN_SYMBOLS,
                                    max_rle_len, packed_len, width,
                                    ctypes.c_uint64(mod), count, out,
                                    ctypes.byref(rle_len), ctypes.byref(detail))
@@ -596,7 +596,7 @@ def extract_tile(src_buf, src_stride: int, x: int, y: int, tw: int, th: int,
     dst_view = _view(dst_buf)
     if src_view is None or dst_view is None:
         return False
-    rc = lib.pyra_extract_tile(src_view, src_stride, x, y, tw, th, channels,
+    rc = lib.lum_extract_tile(src_view, src_stride, x, y, tw, th, channels,
                                 dst_view)
     return rc >= 0
 
@@ -618,7 +618,7 @@ def pipe_reconstruct_into(res_buf, stride: int, offset: int, mod: int,
         return False
     dst_ptr = ctypes.cast(ctypes.addressof(dst_view) + dst_offset * 4,
                           ctypes.POINTER(ctypes.c_int32))
-    rc = lib.pyra_pipe_reconstruct_into(
+    rc = lib.lum_pipe_reconstruct_into(
         res_view, n, stride, color_space, offset, mod, pred_type, channels,
         dst_ptr, dst_stride, transform)
     return rc >= 0
@@ -637,7 +637,7 @@ def decode_rle_method_into(data: bytes, count: int, mod: int,
     if out is None:
         return False
     detail = ctypes.c_int32(0)
-    rc = lib.pyra_decode_rle_method(buf, len(data), _TOKEN_SYMBOLS,
+    rc = lib.lum_decode_rle_method(buf, len(data), _TOKEN_SYMBOLS,
                                     packed_len, width, ctypes.c_uint64(mod),
                                     count, out, ctypes.byref(detail))
     return rc >= 0
@@ -658,7 +658,7 @@ def decode_lz_method_into(data: bytes, count: int, mod: int,
         return False
     rle_len = ctypes.c_uint32(0)
     detail = ctypes.c_int32(0)
-    rc = lib.pyra_decode_lz_method(buf, len(data), _TOKEN_SYMBOLS,
+    rc = lib.lum_decode_lz_method(buf, len(data), _TOKEN_SYMBOLS,
                                    max_rle_len, packed_len, width,
                                    ctypes.c_uint64(mod), count, out,
                                    ctypes.byref(rle_len), ctypes.byref(detail))
@@ -676,7 +676,7 @@ def pack_residuals_buf(res_buf, mod: int) -> bytes | None:
     if syms is None:
         return b""
     out = (ctypes.c_ubyte * max(count * width, 1))()
-    rc = lib.pyra_pack_residuals(syms, count, width, ctypes.c_uint64(mod), out)
+    rc = lib.lum_pack_residuals(syms, count, width, ctypes.c_uint64(mod), out)
     if rc < 0:
         return None
     return bytes(memoryview(out)[:count * width])
@@ -693,7 +693,7 @@ def encode_raw_method(res_buf, mod: int) -> bytes | None:
         return b""
     cap = _enc_cap(count, mod)
     out = (ctypes.c_ubyte * cap)()
-    rc = lib.pyra_encode_raw_method(syms, count, ctypes.c_uint64(mod), out, cap)
+    rc = lib.lum_encode_raw_method(syms, count, ctypes.c_uint64(mod), out, cap)
     if rc < 0:
         return None
     return bytes(memoryview(out)[:rc])
@@ -708,7 +708,7 @@ def encode_rle_method(rle_bytes: bytes) -> bytes | None:
     src = (ctypes.c_ubyte * max(n, 1)).from_buffer_copy(rle_bytes or b"\x00")
     cap = _enc_cap(n + 1, _TOKEN_SYMBOLS)
     out = (ctypes.c_ubyte * cap)()
-    rc = lib.pyra_encode_rle_method(src, n, out, cap)
+    rc = lib.lum_encode_rle_method(src, n, out, cap)
     if rc < 0:
         return None
     return bytes(memoryview(out)[:rc])
@@ -724,7 +724,7 @@ def encode_lz_method(rle_bytes: bytes) -> bytes | None:
     # worst case: every byte is a literal (n tokens) plus 4 header bytes
     cap = _enc_cap(n + 5, _TOKEN_SYMBOLS)
     out = (ctypes.c_ubyte * cap)()
-    rc = lib.pyra_encode_lz_method(src, n, out, cap)
+    rc = lib.lum_encode_lz_method(src, n, out, cap)
     if rc < 0:
         return None
     return bytes(memoryview(out)[:rc])
@@ -752,7 +752,7 @@ def pipe_forward_into(src_buf, stride: int, offset: int, mod: int,
     n = len(src_buf)
     if n != len(out_buf) or n % stride:
         return False
-    rc = lib.pyra_pipe_forward(src_view, n, stride, color_space, offset, mod,
+    rc = lib.lum_pipe_forward(src_view, n, stride, color_space, offset, mod,
                                pred_type, channels, out_view, transform)
     return rc >= 0
 
@@ -772,7 +772,7 @@ def pipe_forward_adaptive_into(src_buf, stride: int, offset: int, mod: int,
     if n != len(res_buf) or n % stride:
         return False
     bits = (ctypes.c_ubyte * max(len(bits_buf), 1)).from_buffer(bits_buf)
-    rc = lib.pyra_pipe_forward_adaptive_into(
+    rc = lib.lum_pipe_forward_adaptive_into(
         src_view, n, stride, color_space, offset, mod, channels, transform,
         out_view, bits)
     return rc >= 0
@@ -797,7 +797,7 @@ def pipe_reconstruct_adaptive_into(res_buf, stride: int, offset: int,
         filter_bits or b"\x00")
     dst_ptr = ctypes.cast(ctypes.addressof(dst_view) + dst_offset * 4,
                           ctypes.POINTER(ctypes.c_int32))
-    rc = lib.pyra_pipe_reconstruct_adaptive_into(
+    rc = lib.lum_pipe_reconstruct_adaptive_into(
         res_view, n, stride, color_space, offset, mod, channels, transform,
         bits, len(filter_bits), dst_ptr, dst_stride)
     return rc >= 0
@@ -813,7 +813,7 @@ def range_decode_into(data: bytes, n_symbols: int, count: int,
     out = _u32_view(out_buf)
     if out is None:
         return False
-    rc = lib.pyra_range_decode(buf, len(data), n_symbols, count, out)
+    rc = lib.lum_range_decode(buf, len(data), n_symbols, count, out)
     return rc >= 0
 
 
@@ -825,7 +825,7 @@ def rle_encode_bytes(data: bytes) -> bytes | None:
     n = len(data)
     src = (ctypes.c_ubyte * max(n, 1)).from_buffer_copy(data or b"\x00")
     out = (ctypes.c_ubyte * (2 * n + 16))()
-    rc = lib.pyra_rle_encode(src, n, out)
+    rc = lib.lum_rle_encode(src, n, out)
     if rc < 0:
         return None
     return bytes(memoryview(out)[:rc])
@@ -857,7 +857,7 @@ def plan(pixels: list[int], width: int, height: int, channels: int,
     out_ptr = ctypes.cast(out_buf.buffer_info()[0],
                           ctypes.POINTER(ctypes.c_int32))
     try:
-        rc = lib.pyra_plan(px_ptr, count, width, height, channels,
+        rc = lib.lum_plan(px_ptr, count, width, height, channels,
                            bit_depth, color_space, sample_rows,
                            fixed_transform, fixed_filter, fixed_pred,
                            out_ptr)
@@ -998,7 +998,7 @@ def encode_image(pixels, width: int, height: int, channels: int,
     src = ctypes.cast(buf.buffer_info()[0], ctypes.POINTER(ctypes.c_int32))
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
     out_len = ctypes.c_size_t()
-    rc = lib.pyra_encode_image(
+    rc = lib.lum_encode_image(
         src, n, width, height, channels, bit_depth, color_space, pred_type,
         method, tile_size, transform, filter_mode, sample_rows,
         ctypes.byref(out_p), ctypes.byref(out_len))
@@ -1007,7 +1007,7 @@ def encode_image(pixels, width: int, height: int, channels: int,
     try:
         return ctypes.string_at(out_p, out_len.value)
     finally:
-        lib.pyra_free_buf(out_p, out_len.value)
+        lib.lum_free_buf(out_p, out_len.value)
 
 
 def encode_image_bytes(raw: bytes, width: int, height: int, channels: int,
@@ -1033,7 +1033,7 @@ def encode_image_bytes(raw: bytes, width: int, height: int, channels: int,
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
     out_len = ctypes.c_size_t()
-    rc = lib.pyra_encode_image_bytes(
+    rc = lib.lum_encode_image_bytes(
         src, need, width, height, channels, bit_depth, color_space, pred_type,
         method, tile_size, transform, filter_mode, sample_rows,
         ctypes.byref(out_p), ctypes.byref(out_len))
@@ -1042,7 +1042,7 @@ def encode_image_bytes(raw: bytes, width: int, height: int, channels: int,
     try:
         return ctypes.string_at(out_p, out_len.value)
     finally:
-        lib.pyra_free_buf(out_p, out_len.value)
+        lib.lum_free_buf(out_p, out_len.value)
 
 
 def decode_image(data: bytes):
@@ -1060,7 +1060,7 @@ def decode_image(data: bytes):
     out_p = ctypes.POINTER(ctypes.c_int32)()
     out_len = ctypes.c_size_t()
     meta = (ctypes.c_int32 * 12)()
-    rc = lib.pyra_decode_image(src, len(data), ctypes.byref(out_p),
+    rc = lib.lum_decode_image(src, len(data), ctypes.byref(out_p),
                                 ctypes.byref(out_len), meta)
     if rc != 0 or not out_p:
         return None
@@ -1068,7 +1068,7 @@ def decode_image(data: bytes):
         pixels = _array("i")
         pixels.frombytes(ctypes.string_at(out_p, out_len.value * 4))
     finally:
-        lib.pyra_free_buf_i32(out_p, out_len.value)
+        lib.lum_free_buf_i32(out_p, out_len.value)
     m = list(meta)
     meta_dict = {
         "version": m[0],

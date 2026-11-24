@@ -1,4 +1,4 @@
-//! PYRA v4 — lossy codec.
+//! LUMEN v4 — lossy codec.
 //!
 //! Architecture: RGB(A) → YCbCr (optional 4:2:0 chroma subsampling) → 8x8
 //! DCT → perceptual quantization → context-modelled adaptive binary range
@@ -15,7 +15,7 @@
 //! Container (version 6), big endian:
 //!
 //! ```text
-//!   0..8    magic  "PYRA\r\n\x1a\n"
+//!   0..8    magic  "LUMA\r\n\x1a\n"
 //!   8..12   version = 6
 //!  12..16   width
 //!  16..20   height
@@ -33,7 +33,7 @@
 //!  end-4..  CRC-32 of everything before it
 //! ```
 
-pub const MAGIC: &[u8; 8] = b"PYRA\r\n\x1A\n";
+pub const MAGIC: &[u8; 8] = b"LUMA\r\n\x1A\n";
 pub const VERSION: u32 = 6;
 const HDR: usize = 36;
 
@@ -68,7 +68,7 @@ struct REnc {
     cache_size: u64,
     out: Vec<u8>,
     /// Ideal code length in bits at the probabilities actually used, split by
-    /// symbol class. Only maintained when `PYRA_STATS` is set; comparing it
+    /// symbol class. Only maintained when `LUMEN_STATS` is set; comparing it
     /// with the real output size says whether the *model* or the *coder* is
     /// the bottleneck.
     st: [f64; 8],
@@ -87,7 +87,7 @@ const ST_DIRECT: usize = 6;
 impl REnc {
     fn new() -> Self {
         REnc { low: 0, range: 0xFFFF_FFFF, cache: 0, cache_size: 1, out: Vec::new(),
-               st: [0f64; 8], stats_on: std::env::var("PYRA_STATS").is_ok() }
+               st: [0f64; 8], stats_on: std::env::var("LUMEN_STATS").is_ok() }
     }
 
     fn shift_low(&mut self) {
@@ -588,7 +588,7 @@ fn rate_est(l: i32) -> f32 {
 
 /// Lagrangian multiplier for RDOQ: `lam = LAMBDA * step * step`.
 fn lam() -> f32 {
-    let k: f32 = std::env::var("PYRA_LAM")
+    let k: f32 = std::env::var("LUMEN_LAM")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(LAMBDA);
@@ -607,7 +607,7 @@ const LAMBDA: f32 = 1.6;
 /// sharpness for a lot of bytes. Swept before being baked in; read by encoder
 /// and decoder alike.
 fn hf_shape() -> f32 {
-    std::env::var("PYRA_HF")
+    std::env::var("LUMEN_HF")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(HF_SHAPE)
@@ -637,14 +637,14 @@ fn shape_table(q: &mut [f32; 64], k: f32) {
 /// high frequencies is not necessarily JPEG's. `tilt` scales the step linearly
 /// in `(u + v)`: positive spends less on detail, negative spends more.
 fn spectral_tilt(quality: i32) -> f32 {
-    if let Some(v) = std::env::var("PYRA_TILT").ok().and_then(|v| v.parse().ok()) {
+    if let Some(v) = std::env::var("LUMEN_TILT").ok().and_then(|v| v.parse().ok()) {
         return v;
     }
-    let lo = std::env::var("PYRA_T0")
+    let lo = std::env::var("LUMEN_T0")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(TILT_LOW);
-    let hi = std::env::var("PYRA_T1")
+    let hi = std::env::var("LUMEN_T1")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(TILT_HIGH);
@@ -681,7 +681,7 @@ fn tilt_table(q: &mut [f32; 64], t: f32, t2: f32) {
 /// band, where most of the visible structure lives, while leaving the noisiest
 /// corner of the spectrum alone.
 fn tilt_bend() -> f32 {
-    std::env::var("PYRA_T2")
+    std::env::var("LUMEN_T2")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(TILT_BEND)
@@ -707,14 +707,14 @@ fn table_scale(q: &mut [f32; 64], s: f32) {
 }
 
 fn chroma_qmult() -> f32 {
-    std::env::var("PYRA_CQ")
+    std::env::var("LUMEN_CQ")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(CHROMA_QMULT)
 }
 
 fn luma_qmult() -> f32 {
-    std::env::var("PYRA_YQ")
+    std::env::var("LUMEN_YQ")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(LUMA_QMULT)
@@ -790,7 +790,7 @@ fn band_of(quality: i32, _lo: &[f32; 10], _hi: &[f32; 10]) -> [f32; 10] {
 }
 
 fn band_mults(quality: i32) -> [f32; 10] {
-    if let Ok(s) = std::env::var("PYRA_QBAND") {
+    if let Ok(s) = std::env::var("LUMEN_QBAND") {
         if !s.is_empty() {
             let mut m = [1f32; 10];
             for (i, part) in s.split(',').take(10).enumerate() {
@@ -817,7 +817,7 @@ fn band_table(q: &mut [f32; 64], m: &[f32; 10]) {
 /// Uniform scale on both tables. During a fit it is the knob that holds the
 /// distortion at the target while the band shape moves.
 fn global_scale() -> f32 {
-    std::env::var("PYRA_GSCALE")
+    std::env::var("LUMEN_GSCALE")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|v: &f32| *v > 0.0)
@@ -863,7 +863,7 @@ fn chroma_mult_to_byte(m: f32) -> u8 {
 /// in RGB terms and the chroma steps can be coarser for the same quality.
 /// Whether that actually wins is a measurement, not an argument.
 fn use_ycocg() -> bool {
-    std::env::var("PYRA_CT")
+    std::env::var("LUMEN_CT")
         .ok()
         .map(|v| v == "1")
         .unwrap_or(YCOCG)
@@ -880,7 +880,7 @@ const YCOCG: bool = true;
 /// (bigger step = fewer bits) and is swept before being baked in; it is read
 /// by both encoder and decoder so a sweep stays self-consistent.
 fn chroma_stride() -> f32 {
-    std::env::var("PYRA_CS")
+    std::env::var("LUMEN_CS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(CHROMA_STRIDE)
@@ -930,7 +930,7 @@ const DEADZONE: f32 = 0.4;
 /// Deadzone width, overridable for sweeps. Read by the encoder only, so the
 /// decoder is unaffected: the quantiser is not mirrored on decode.
 fn deadzone() -> f32 {
-    std::env::var("PYRA_DZ")
+    std::env::var("LUMEN_DZ")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEADZONE)
@@ -1232,11 +1232,11 @@ fn enc_plane(samples: &[f32], w: usize, h: usize, q: &[f32; 64],
     // Ideal code length per symbol class, versus what the coder really emitted.
     // The gap between the two is pure coder overhead; the totals themselves say
     // where the bits are spent, which is what a modelling change has to fix.
-    if e.stats_on && std::env::var("PYRA_STATS").as_deref() != Ok("quiet") {
+    if e.stats_on && std::env::var("LUMEN_STATS").as_deref() != Ok("quiet") {
         let ideal: f64 = e.st.iter().sum();
         let real = e.out.len() as f64 * 8.0;
         eprintln!(
-            "pyra-stats {:4}x{:<4} sig {:6.0}B mag {:6.0}B esc {:6.0}B sign {:6.0}B \
+            "lum-stats {:4}x{:<4} sig {:6.0}B mag {:6.0}B esc {:6.0}B sign {:6.0}B \
              last {:6.0}B dc {:6.0}B raw {:6.0}B | ideal {:7.0}B real {:7.0}B ({:.1}%)",
             w, h,
             e.st[ST_SIG] / 8.0, e.st[ST_MAG] / 8.0, e.st[ST_ESC] / 8.0,
@@ -1667,9 +1667,9 @@ pub fn decode(blob: &[u8]) -> Result<(usize, usize, i32, Vec<u8>), isize> {
 
 // ------------------------------------------------------------------- API
 
-/// Encode raw interleaved 8 bit samples into a PYRA v4 container.
+/// Encode raw interleaved 8 bit samples into a LUMEN v4 container.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_lossy_encode(
+pub unsafe extern "C" fn lum_lossy_encode(
     data: *const u8,
     len: usize,
     width: usize,
@@ -1698,9 +1698,9 @@ pub unsafe extern "C" fn pyra_lossy_encode(
     }
 }
 
-/// Decode a PYRA v4 container into interleaved 8 bit samples.
+/// Decode a LUMEN v4 container into interleaved 8 bit samples.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_lossy_decode(
+pub unsafe extern "C" fn lum_lossy_decode(
     data: *const u8,
     len: usize,
     out_ptr: *mut *mut u8,
@@ -1723,12 +1723,12 @@ pub unsafe extern "C" fn pyra_lossy_decode(
     }
 }
 
-/// Read the header of a PYRA v4 container.
+/// Read the header of a LUMEN v4 container.
 ///
 /// `meta_out` receives 8 ints: width, height, bit depth, colour space,
 /// quality, subsampling (1 = 4:2:0), plane count, mode.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_lossy_info(
+pub unsafe extern "C" fn lum_lossy_info(
     data: *const u8,
     len: usize,
     meta_out: *mut i32,

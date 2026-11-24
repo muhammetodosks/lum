@@ -1,6 +1,6 @@
 """Loader for the optional C++ fast-path library.
 
-The C++ core (`cpp/pyra_fast.cpp`) implements the two hottest inner loops
+The C++ core (`cpp/lum_fast.cpp`) implements the two hottest inner loops
 of the v2 codec:
 
   * `adaptive_residuals`  - colour transform + per-row predictor selection
@@ -29,39 +29,39 @@ def _load():
     _TRIED = True
     try:
         pkg = os.path.dirname(os.path.abspath(__file__))
-        path = os.path.join(pkg, "_libpyra_fast.so")
+        path = os.path.join(pkg, "_liblum_fast.so")
         lib = ctypes.CDLL(path)
-        lib.pyra_fast_adaptive_residuals.restype = ctypes.c_int
-        lib.pyra_fast_adaptive_residuals.argtypes = [
+        lib.lum_fast_adaptive_residuals.restype = ctypes.c_int
+        lib.lum_fast_adaptive_residuals.argtypes = [
             ctypes.POINTER(ctypes.c_int32), ctypes.c_int, ctypes.c_int,
             ctypes.c_int, ctypes.c_int, ctypes.c_int64, ctypes.c_int64,
             ctypes.c_int32, ctypes.c_int32,
             ctypes.POINTER(ctypes.c_int32),
             ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_int),
         ]
-        lib.pyra_fast_adaptive_reconstruct.restype = ctypes.c_int
-        lib.pyra_fast_adaptive_reconstruct.argtypes = [
+        lib.lum_fast_adaptive_reconstruct.restype = ctypes.c_int
+        lib.lum_fast_adaptive_reconstruct.argtypes = [
             ctypes.POINTER(ctypes.c_int32), ctypes.c_int, ctypes.c_int,
             ctypes.c_int, ctypes.c_int, ctypes.c_int64, ctypes.c_int64,
             ctypes.c_int32, ctypes.c_int32,
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_int32),
         ]
-        lib.pyra_med_preview.restype = ctypes.c_int
-        lib.pyra_med_preview.argtypes = [
+        lib.lum_med_preview.restype = ctypes.c_int
+        lib.lum_med_preview.argtypes = [
             ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t, ctypes.c_int,
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
             ctypes.c_int, ctypes.c_double, ctypes.c_double,
             ctypes.c_double, ctypes.c_double, ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
         ]
-        lib.pyra_pnm_read.restype = ctypes.c_int
-        lib.pyra_pnm_read.argtypes = [
+        lib.lum_pnm_read.restype = ctypes.c_int
+        lib.lum_pnm_read.argtypes = [
             ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
             ctypes.POINTER(ctypes.c_int),
         ]
-        lib.pyra_pnm_write.restype = ctypes.c_int
-        lib.pyra_pnm_write.argtypes = [
+        lib.lum_pnm_write.restype = ctypes.c_int
+        lib.lum_pnm_write.argtypes = [
             ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int,
             ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ]
@@ -73,9 +73,9 @@ def _load():
 
 def available() -> bool:
     """True when the C++ fast path can be used."""
-    if os.environ.get("PYRA_DISABLE_NATIVE"):
+    if os.environ.get("LUMEN_DISABLE_NATIVE"):
         return False
-    if os.environ.get("PYRA_NATIVE") == "0":
+    if os.environ.get("LUMEN_NATIVE") == "0":
         return False
     return _load() is not None
 
@@ -114,7 +114,7 @@ def adaptive_residuals(pixels, width, height, channels, offset, mod,
     bits_buf = bytearray(nbytes)
     bits_view = (ctypes.c_uint8 * nbytes).from_buffer(bits_buf)
     detail = ctypes.c_int(0)
-    rc = lib.pyra_fast_adaptive_residuals(
+    rc = lib.lum_fast_adaptive_residuals(
         src, count, width, height, channels, offset, mod, color_space,
         transform, out_view, bits_view, ctypes.byref(detail))
     if rc != 0:
@@ -142,7 +142,7 @@ def adaptive_reconstruct(residuals, width, height, channels, offset, mod,
     out_buf = array("i", bytes(4 * count))
     out_view = (ctypes.c_int32 * count).from_buffer(out_buf)
     detail = ctypes.c_int(0)
-    rc = lib.pyra_fast_adaptive_reconstruct(
+    rc = lib.lum_fast_adaptive_reconstruct(
         res, count, width, height, channels, offset, mod, color_space,
         transform, bits_view, out_view)
     if rc != 0:
@@ -170,7 +170,7 @@ def medical_preview(samples: bytes, width: int, height: int, depth: int,
                     intercept: float = 0.0, invert: bool = False):
     """Window/level 8 bit preview of one slice of a medical volume.
 
-    The samples are little endian, exactly like in the PYRM container.
+    The samples are little endian, exactly like in the LUMM container.
     `slope`/`intercept` apply the calibration of the modality before the
     window; `invert` selects the MONOCHROME1 convention. Returns one byte
     per pixel (the channels are averaged) or None."""
@@ -186,7 +186,7 @@ def medical_preview(samples: bytes, width: int, height: int, depth: int,
     count = width * height
     out_buf = bytearray(count)
     out_view = (ctypes.c_uint8 * count).from_buffer(out_buf)
-    rc = lib.pyra_med_preview(src_view, len(samples), width, height, depth,
+    rc = lib.lum_med_preview(src_view, len(samples), width, height, depth,
                               channels, sample_format, slice, window, level,
                               float(slope), float(intercept),
                               1 if invert else 0, out_view)
@@ -207,7 +207,7 @@ def pnm_read(path: str):
     buf = bytearray(cap)
     view = (ctypes.c_uint8 * cap).from_buffer(buf)
     info = (ctypes.c_int * 6)()
-    rc = lib.pyra_pnm_read(path.encode("utf-8"), view, cap, info)
+    rc = lib.lum_pnm_read(path.encode("utf-8"), view, cap, info)
     if rc <= 0:
         return None
     return (bytes(buf[:rc]), info[0], info[1], info[2], info[3], info[4])
@@ -223,6 +223,6 @@ def pnm_write(path: str, data: bytes, width: int, height: int, channels: int,
         return False
     src = ctypes.create_string_buffer(bytes(data), len(data))
     src_view = ctypes.cast(src, ctypes.POINTER(ctypes.c_uint8))
-    rc = lib.pyra_pnm_write(path.encode("utf-8"), src_view, width, height,
+    rc = lib.lum_pnm_write(path.encode("utf-8"), src_view, width, height,
                             channels, bit_depth)
     return rc == 0

@@ -1,21 +1,25 @@
-# PYRA & PYRM — Tam Teknik Dokümantasyon
+# LUMEN & LUMM & LUMC — Tam Teknik Dokümantasyon
 
-> **PYRA** — saf Python (stdlib-only) kayıpsız görüntü codec'i, opsiyonel Rust + C++20 çekirdeği ile.
-> **PYRM** — tıp ve sağlık için tasarlanmış klinik container: 3B hacim, geniş örnek alanları,
+> **LUMEN** — saf Python (stdlib-only) görüntü codec'i: kayıpsız container, kayıplı mod
+> ve opsiyonel Rust + C++20 çekirdeği.
+> **LUMM** — tıp ve sağlık için klinik container: 3B hacim, geniş örnek alanları,
 > DICOM uyumlu metadata ve katı bütünlük garantileri.
+> **LUMC** — yer gözlemi için çok bantlı, çok sahneli küp container.
 
 | | |
 |---|---|
-| Sürüm | `0.3.0` (`pyra.__version__`) |
-| PYRA container | **v3** (34 B header, daraltılmış residual paketleme) |
-| PYRM container | **v2** (144 B header, SHA-256 content hash) |
+| Sürüm | `1.0.0` (`lum.__version__`) |
+| Format adı | **LUMEN** · uzantı `.lum` · magic `LUMA\r\n\x1A\n` |
+| LUMEN container | **v3** (34 B header, daraltılmış residual paketleme) · kayıplı **v6** |
+| LUMM container | **v2** (144 B header, SHA-256 content hash) · `.lumm` |
+| LUMC container | **v1** · `.lumc`, ham küp `.lumx` |
 | Kaynak dili | Python 3 (yalnızca stdlib) + Rust (std-only) + C++20 |
 | Kayıpsızlık | **%100** — decode edilen pikseller bayt bayt aynı |
 | Toplam LOC | 14 540 (Rust 5 030 · testler 2 179 · Python 6 838 · C++ 493) |
-| Testler | görsel: native **246** / saf Python **179** · tıbbi: native **67** / saf Python **65** |
+| Testler | görsel **246** · kayıplı **72** · bulut **25** · tıbbi **106** · format raporu **33** kontrol |
 | Parite | **864** tıbbi + **540** görsel native/pure kombinasyon → bayt-aynı |
-| Repo | `/home/mami/pyra` → https://github.com/muhammetodosks/pyra (PRIVATE) |
-| HEAD | `61a6bca` "Medical: a container that contradicts its own metadata is not usable" |
+| Repo | `/home/mami/lum` → https://github.com/muhammetodosks/lum |
+| HEAD | v1.0.0 sürüm commit'i |
 
 ---
 
@@ -23,8 +27,8 @@
 
 1. [Tasarım ilkeleri](#1-tasarım-ilkeleri)
 2. [Depo anatomisi](#2-depo-anatomisi)
-3. [PYRA container formatı (v3)](#3-pyra-container-formatı-v3)
-4. [PYRA codec boru hattı](#4-pyra-codec-boru-hattı)
+3. [LUMEN container formatı (v3)](#3-lum-container-formatı-v3)
+4. [LUMEN codec boru hattı](#4-lum-codec-boru-hattı)
 5. [Renk transformu](#5-renk-transformu)
 6. [Tahmin ediciler](#6-tahmin-ediciler)
 7. [Satır-adaptif filtre](#7-satır-adaptif-filtre)
@@ -34,8 +38,8 @@
 11. [Rust çekirdek](#11-rust-çekirdek)
 12. [C++ çekirdek](#12-c-çekirdek)
 13. [Dispatch ve saf-Python fallback](#13-dispatch-ve-saf-python-fallback)
-14. [PYRM — tıbbi container](#14-pyrm--tıbbi-container)
-15. [PYRM kod birimleri ve escape coding](#15-pyrm-kod-birimleri-ve-escape-coding)
+14. [LUMM — tıbbi container](#14-lumm--tıbbi-container)
+15. [LUMM kod birimleri ve escape coding](#15-lumm-kod-birimleri-ve-escape-coding)
 16. [DICOM uyumluluğu](#16-dicom-uyumluluğu)
 17. [Test paketi](#17-test-paketi)
 18. [Performans](#18-performans)
@@ -47,13 +51,14 @@
 24. [Ölçülüp reddedilen fikirler](#24-ölçülüp-reddedilen-fikirler)
 25. [Sınırlar ve gelecek işler](#25-sınırlar-ve-gelecek-işler)
 26. [Terim sözlüğü](#26-terim-sözlüğü)
-27. [Kayıplı codec — PYRA v6](#27-kayıplı-codec--pyra-v6)
+27. [Kayıplı codec — LUMEN v6](#27-kayıplı-codec--lumen-v6)
+28. [Görsel karşılaştırma — 13 format](#28-görsel-karşılaştırma--13-format)
 
 ---
 
 ## 1. Tasarım ilkeleri
 
-**PYRA** tamamen kayıpsız (reversible) bir görüntü codec'idir. İki şeyi aynı anda yapar:
+**LUMEN** tamamen kayıpsız (reversible) bir görüntü codec'idir. İki şeyi aynı anda yapar:
 
 1. **Saf Python ile tamamen çalışabilir.** `zlib`, `struct`, `ctypes` dışında standart kütüphanenin
    dışına çıkmaz. `rustc` ya da `g++` yoksa her şey yine çalışır.
@@ -64,7 +69,7 @@ Tasarımın temel kuralı:
 > **Native hızlandırma asla çıktıyı değiştirmez.**
 > Native yol ile saf Python yol aynı girdide **birebir aynı container baytlarını** üretir.
 
-**PYRM** aynı çekirdeği tıbbi veri için genişletir: 3B hacim, 8/16/32 bit işaretsiz/işaretli ve
+**LUMM** aynı çekirdeği tıbbi veri için genişletir: 3B hacim, 8/16/32 bit işaretsiz/işaretli ve
 float örnekler, DICOM metadata katmanı ve **decode sırasında doğrulanmayan veri asla
 döndürülmez** ilkesi.
 
@@ -81,12 +86,12 @@ döndürülmez** ilkesi.
 
 ## 2. Depo anatomisi
 
-Repo kökü aynı zamanda paket köküdür (`pyra`).
+Repo kökü aynı zamanda paket köküdür (`lum`).
 
 ```
-pyra/
+lum/
 ├── __init__.py            34    public API
-├── __main__.py             4    python -m pyra girişi
+├── __main__.py             4    python -m lum girişi
 ├── constants.py           58    MAGIC, VERSION, CS_*, PRED_*, METHOD_*, TRANSFORM_*, FILTER_*, hata sınıfları
 ├── security.py            23    boyut/chunk/dosya doğrulama (decompression bomb koruması)
 ├── tile.py                36    Tile, split_into_tiles, assemble_from_tiles
@@ -95,16 +100,18 @@ pyra/
 ├── entropy.py            253    FenwickCDF, RangeEncoder, RangeDecoder (saf Python referansı)
 ├── entropycost.py         44    entropi maliyeti yardımcıları
 ├── compress.py           311    pack_residuals (sürüm-duyarlı), RLE, LZ77
-├── container.py          147    PyraContainer: v1/v2/v3 header, tile index, CRC32
-├── codec.py              799    PyraCodec: planlama, tile adayları, native/fused dispatch
+├── container.py          147    LumenContainer: v1/v2/v3 header, tile index, CRC32
+├── codec.py              799    LumenCodec: planlama, tile adayları, native/fused dispatch
 ├── api.py                186    encode/decode/encode_file/decode_file/decode_region/iter_tiles
-├── cli.py                566    argparse CLI (görsel + `med` grubu)
+├── lossy.py              161    kayıplı mod v6: DCT/nicemleme/entropi, SUBSAMPLE_*, CS_*
+├── cloud.py              610    LUMC binding: encode/decode, raw_write/raw_read, band_stats
+├── cli.py                916    argparse CLI (görsel + `med` + `cloud` grupları)
 ├── native.py            1086    Rust çekirdeğin ctypes yükleyicisi
 ├── fast.py               228    C++ çekirdeğin ctypes yükleyicisi
 ├── pngbench.py           189    stdlib-only PNG okuma/yazma (benchmark referansı)
 │
 ├── medical/
-│   ├── __init__.py        55    PYRM public API
+│   ├── __init__.py        55    LUMM public API
 │   ├── constants.py      132    sample formatları, predictorlar, tile flag'ları, hatalar
 │   ├── container.py      160    144 B header, index, metadata, CRC32
 │   ├── predictors.py     248    9 predictor (7 klasik + slice + MED), filtre tablosu, byte plane
@@ -116,28 +123,42 @@ pyra/
 │   └── native.py         152    tıbbi Rust çekirdeğin ctypes yükleyicisi
 │
 ├── rust/
-│   ├── pyra_core.rs     2233    std-only çekirdek: Fenwick, RangeEnc/RangeDec, LzMatcher, plan
-│   ├── pyra_image.rs    1104    tüm-görsel paralel codec, CRC32, escape tabanlı paketleme
-│   └── pyra_med.rs      1693    PYRM native çekirdeği: SHA-256, paralel tile'lar
+│   ├── lum_core.rs     2233    std-only çekirdek: Fenwick, RangeEnc/RangeDec, LzMatcher, plan
+│   ├── lum_image.rs    1104    tüm-görsel paralel codec, CRC32, escape tabanlı paketleme
+│   ├── lum_lossy.rs      ~     kayıplı mod v6 çekirdeği
+│   ├── lum_med.rs      1693    LUMM native çekirdeği: SHA-256, paralel tile'lar
+│   └── lum_cloud.rs      ~     LUMC çekirdeği: küp sıkıştırma, bant istatistiği
 │
-├── cpp/pyra_fast.cpp     493    C++20: adaptif filtreler, tıbbi önizleme, PNM I/O
+├── cpp/lum_fast.cpp     493    C++20: adaptif filtreler, tıbbi önizleme, PNM I/O
+├── cpp/lum_cloud.cpp     ~     C++20: ham küp I/O, bant istatistiği, yanlış-renk render
 ├── scripts/build_native.sh       Rust + C++ derleme betiği
+├── scripts/run_tests.sh          tüm suite'ler (native + saf Python)
 ├── tests/
-│   ├── test_lossless.py 1315    246 (native) / 179 (fallback) kontrol
-│   └── test_medical.py   864     67 (native) / 65 (fallback) kontrol
+│   ├── test_lossless.py 1315    246 kontrol (saf Python: 179)
+│   ├── test_lossy.py     412     72 kontrol
+│   ├── test_medical.py  1360    106 kontrol
+│   ├── test_cloud.py     362     25 kontrol
+│   └── test_format_report.py 240 33 kontrol (grafik/galeri üreticisi)
+├── benchmarks/
+│   ├── bench_formats.py  273     13 formatı gerçek encoder'larla ölçer
+│   ├── format_report.py  347     stdlib-only: PSNR, SVG çubuklar/saçılım, HTML galeri
+│   ├── bench_kodak.py    189     Kodak korpusu, eşit-sadakat eğrileri
+│   ├── fetch_av1_cts.py  296     AV1 conformance vektörlerini indirir/doğrular
+│   └── results/formats.json      ölçülen ham satırlar
 ├── docs/
-│   ├── FORMAT-PYRM.md   433     PYRM format spesifikasyonu
-│   └── (PYRA container formatı: bu doküman §3 ve README)
-└── README.md             524    kullanıcı dokümantasyonu
+│   ├── FORMAT-LUMM.md    588     LUMM format spesifikasyonu
+│   ├── FORMAT-LUMC.md    401     LUMC format spesifikasyonu
+│   └── assets/                   formats-bars.svg, formats-scatter.svg, formats.html, kırpımlar
+└── README.md             940     kullanıcı dokümantasyonu
 ```
 
-**Katman diyagramı (PYRA):**
+**Katman diyagramı (LUMEN):**
 
 ```
         ┌─────────────────────────────────────────────┐
         │  api.py / cli.py                             │
         ├─────────────────────────────────────────────┤
-        │  codec.py — PyraCodec (planlama, adaylar)    │
+        │  codec.py — LumenCodec (planlama, adaylar)    │
         ├──────────────┬──────────────────────────────┤
         ▼              ▼                              ▼
   container.py    predictors.py                   color.py
@@ -155,13 +176,13 @@ pyra/
       └───────────────────────────────────────────────┘
 ```
 
-**Katman diyagramı (PYRM):**
+**Katman diyagramı (LUMM):**
 
 ```
         ┌─────────────────────────────────────────────┐
-        │  pyra.medical: encode / decode / verify      │
-        │  pyra.medical.dicom: build / validate        │
-        │  pyra.medical.dicomfile: Part 10 I/O         │
+        │  lum.medical: encode / decode / verify      │
+        │  lum.medical.dicom: build / validate        │
+        │  lum.medical.dicomfile: Part 10 I/O         │
         ├─────────────────────────────────────────────┤
         │  medical/codec.py (referans + dispatch)      │
         ├──────────────┬──────────────────────────────┤
@@ -175,12 +196,12 @@ pyra/
                         ┌─────────────┴─────────────┐
                         ▼                           ▼
                  medical/native.py            (saf Python
-                 (Rust pyra_med.rs)            referans yolu)
+                 (Rust lum_med.rs)            referans yolu)
 ```
 
 ---
 
-## 3. PYRA container formatı (v3)
+## 3. LUMEN container formatı (v3)
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -199,7 +220,7 @@ pyra/
 
 | Ofset | Boyut | Alan | Açıklama |
 |---|---|---|---|
-| 0 | 8 | `magic` | `PYRA\r\n\x1A\n` |
+| 0 | 8 | `magic` | `LUMA\r\n\x1A\n` |
 | 8 | 4 | `version` | `3` |
 | 12 | 4 | `width` | piksel genişliği (u32) |
 | 16 | 4 | `height` | piksel yüksekliği (u32) |
@@ -226,7 +247,7 @@ pyra/
 
 ---
 
-## 4. PYRA codec boru hattı
+## 4. LUMEN codec boru hattı
 
 ### 4.1 Encode
 
@@ -336,7 +357,7 @@ birleştiğinde %10'a kadar.
 
 ## 8. Entropi kodlayıcı
 
-`entropy.py` (referans) ↔ `rust/pyra_core.rs` (`Fenwick`, `RangeEnc`, `RangeDec`).
+`entropy.py` (referans) ↔ `rust/lum_core.rs` (`Fenwick`, `RangeEnc`, `RangeDec`).
 
 ### 8.1 Adaptif CDF (Fenwick ağacı)
 
@@ -417,7 +438,7 @@ daha kodlanır. **Çıktı baytları değişmez.**
 
 ## 10. Otomatik planlama
 
-`PyraCodec._plan_encoding` — encode başında **tek seferlik** bir karar:
+`LumenCodec._plan_encoding` — encode başında **tek seferlik** bir karar:
 `transform` (YCoCg/none), `filter_mode` (global/adaptive), `pred_type` (7 aday).
 
 ### 10.1 Maliyet ölçümü: gerçek coder
@@ -453,36 +474,36 @@ N=8 yeterli: 5 gerçek fotoğrafta N=8 ile alınan planlar N=16 ile birebir ayn�
 
 ## 11. Rust çekirdek
 
-`rust/pyra_core.rs` (2 233 satır) + `rust/pyra_image.rs` (1 104 satır) —
+`rust/lum_core.rs` (2 233 satır) + `rust/lum_image.rs` (1 104 satır) —
 **std-only** (`rustc --edition 2021 -O --crate-type cdylib`), dış kütüphane yok.
 
 ### 11.1 Dışa aktarılan işlevler (özet)
 
 | Fonksiyon | İşlev |
 |---|---|
-| `pyra_pack_residuals` / `pyra_unpack_residuals` | residual ↔ paketlenmiş bayt |
-| `pyra_rle_encode` / `pyra_rle_decode` | RLE |
-| `pyra_lz_encode` / `pyra_lz_decode_tokens` | LZ77 |
-| `pyra_transform_forward` / `pyra_transform_inverse` | YCoCg |
-| `pyra_apply_predictor_row` / `pyra_reconstruct_row` | 7 predictor satır çekirdeği |
-| `pyra_pipe_forward` / `pyra_pipe_reconstruct` | fused transform+tahmin |
-| `pyra_pipe_forward_adaptive_into` / `pyra_pipe_reconstruct_adaptive_into` | adaptif satır filtresi |
-| `pyra_range_encode` / `pyra_range_decode` | entropi kodlayıcının kendisi |
-| `pyra_decode_rle_method` / `pyra_decode_lz_method` | fused per-method decoder |
-| `pyra_plan` | otomatik planlayıcı (paralel aday ölçümü) |
-| `pyra_encode_image` | **tüm görseli tek çağrıda kodla** (paralel tile'lar) |
-| `pyra_encode_image_bytes` | ham örnek baytlarından kodlama (liste dönüşümü yok) |
-| `pyra_decode_image` | **tüm container'ı tek çağrıda çöz** (paralel tile'lar) |
-| `pyra_free_buf` / `pyra_free_buf_i32` | Rust'te ayrılan buffer'ı serbest bırak |
+| `lum_pack_residuals` / `lum_unpack_residuals` | residual ↔ paketlenmiş bayt |
+| `lum_rle_encode` / `lum_rle_decode` | RLE |
+| `lum_lz_encode` / `lum_lz_decode_tokens` | LZ77 |
+| `lum_transform_forward` / `lum_transform_inverse` | YCoCg |
+| `lum_apply_predictor_row` / `lum_reconstruct_row` | 7 predictor satır çekirdeği |
+| `lum_pipe_forward` / `lum_pipe_reconstruct` | fused transform+tahmin |
+| `lum_pipe_forward_adaptive_into` / `lum_pipe_reconstruct_adaptive_into` | adaptif satır filtresi |
+| `lum_range_encode` / `lum_range_decode` | entropi kodlayıcının kendisi |
+| `lum_decode_rle_method` / `lum_decode_lz_method` | fused per-method decoder |
+| `lum_plan` | otomatik planlayıcı (paralel aday ölçümü) |
+| `lum_encode_image` | **tüm görseli tek çağrıda kodla** (paralel tile'lar) |
+| `lum_encode_image_bytes` | ham örnek baytlarından kodlama (liste dönüşümü yok) |
+| `lum_decode_image` | **tüm container'ı tek çağrıda çöz** (paralel tile'lar) |
+| `lum_free_buf` / `lum_free_buf_i32` | Rust'te ayrılan buffer'ı serbest bırak |
 
 ### 11.2 Tüm-görsel paralel codec
 
-`pyra_encode_image` planı çalıştırır, tile geometrisini kurar ve **her tile'ı ayrı
+`lum_encode_image` planı çalıştırır, tile geometrisini kurar ve **her tile'ı ayrı
 thread'de** kodlar (`std::thread::scope`). Container (header + index + CRC32) Rust
 tarafında kurulur. Tile'lar birbirinden bağımsız olduğu için çıktı sırası sabittir;
 thread sırası sonucu etkilemez.
 
-`pyra_decode_image` container'ı parse eder, tile'ları paralel çözer ve kanvasa
+`lum_decode_image` container'ı parse eder, tile'ları paralel çözer ve kanvasa
 yerleştirir.
 
 ### 11.3 LZ eşleyicisi (tahsis yapmayan)
@@ -513,20 +534,20 @@ Veriye bağlı dal kalmaz → her kaçırılan dal ~15 sikl tasarrufu.
 
 ### 11.5 SHA-256 (tıbbi çekirdek)
 
-`rust/pyra_med.rs` içinde saf Rust FIPS 180-4 uygulaması — dış kütüphane yok.
+`rust/lum_med.rs` içinde saf Rust FIPS 180-4 uygulaması — dış kütüphane yok.
 
 ---
 
 ## 12. C++ çekirdek
 
-`cpp/pyra_fast.cpp` (493 satır, C++20) — 4 dışa aktarılmış işlev:
+`cpp/lum_fast.cpp` (493 satır, C++20) — 4 dışa aktarılmış işlev:
 
 | Fonksiyon | İşlev |
 |---|---|
-| `pyra_fast_adaptive_residuals` | transform + satır-bazlı 7 aday predictor L1 seçimi |
-| `pyra_fast_adaptive_reconstruct` | satır filtreleriyle rekonstrüksiyon + descale + ters transform |
-| `pyra_med_preview` | pencere/level ile 8-bit tıbbi önizleme (kanal ortalaması + MONOCHROME1 tersine) |
-| `pyra_pnm_read` / `pyra_pnm_write` | binary PGM/PPM I/O (8/16 bit, big-endian) |
+| `lum_fast_adaptive_residuals` | transform + satır-bazlı 7 aday predictor L1 seçimi |
+| `lum_fast_adaptive_reconstruct` | satır filtreleriyle rekonstrüksiyon + descale + ters transform |
+| `lum_med_preview` | pencere/level ile 8-bit tıbbi önizleme (kanal ortalaması + MONOCHROME1 tersine) |
+| `lum_pnm_read` / `lum_pnm_write` | binary PGM/PPM I/O (8/16 bit, big-endian) |
 
 C++ modülü saf Python yolunda da devreye girer; amaç fallback'in de hızlı kalması.
 
@@ -544,8 +565,8 @@ kod saf Python referans yoluna düşer ve **aynı exception sınıflarını ve m
 
 | Değişken | Etki |
 |---|---|
-| `PYRA_DISABLE_NATIVE=1` | native **ve** C++ backend'i kapatır (saf Python) |
-| `PYRA_NATIVE=0` | aynı etki |
+| `LUMEN_DISABLE_NATIVE=1` | native **ve** C++ backend'i kapatır (saf Python) |
+| `LUMEN_NATIVE=0` | aynı etki |
 
 Bayraklar **import time'da değil, call time'da** okunur → test paketi her iki modda
 da tam konteyner yeniden kodlayıp bayt eşitliğini doğrulayabilir.
@@ -564,18 +585,18 @@ da tam konteyner yeniden kodlayıp bayt eşitliğini doğrulayabilir.
 | Adaptif satır filtresi | ✅ | ✅ | ✅ |
 | Otomatik planlama | ✅ | — | ✅ |
 | Tüm-görsel codec | ✅ | — | ✅ |
-| PYRM codec + SHA-256 | ✅ | — | ✅ |
+| LUMM codec + SHA-256 | ✅ | — | ✅ |
 | Tıbbi önizleme | — | ✅ | ✅ |
 | PNM I/O | — | ✅ | ✅ |
 
 ---
 
-## 14. PYRM — tıbbi container
+## 14. LUMM — tıbbi container
 
-`PYRM` klinik veri için tasarlanmış kardeş container'dır: aynı kayıpsız predictor +
+`LUMM` klinik veri için tasarlanmış kardeş container'dır: aynı kayıpsız predictor +
 entropi kodlayıcı çekirdeği, ama hacimler, işaretli örnekler ve denetlenebilirlik için.
 
-Tam spesifikasyon: [`docs/FORMAT-PYRM.md`](docs/FORMAT-PYRM.md).
+Tam spesifikasyon: [`docs/FORMAT-LUMM.md`](docs/FORMAT-LUMM.md).
 
 ### 14.1 Dosya düzeni
 
@@ -595,7 +616,7 @@ Tam spesifikasyon: [`docs/FORMAT-PYRM.md`](docs/FORMAT-PYRM.md).
 
 | Ofset | Boyut | Alan | Anlam |
 |---:|---:|---|---|
-| 0 | 8 | magic | `PYRM\r\n\x1A\n` |
+| 0 | 8 | magic | `LUMM\r\n\x1A\n` |
 | 8 | 4 | version | 2 |
 | 12 | 4 | flags | rezerve, 0 |
 | 16 | 4 | width | satır başına örnek |
@@ -678,7 +699,7 @@ anahtar adlarıyla birebir aynıdır (`PatientID`, `Modality`, `StudyInstanceUID
 
 ---
 
-## 15. PYRM kod birimleri ve escape coding
+## 15. LUMM kod birimleri ve escape coding
 
 ### 15.1 Kod birimleri
 
@@ -720,7 +741,7 @@ Sonuç: 16-bit CT hacminde dosya **%22 küçüldü** (2 000 713 → 1 556 684 B)
 
 ### 16.2 Metadata sadakat sözleşmesi
 
-`PYRM → DICOM → PYRM` zincirinde **nitelik seti birebir aynı kalır**: ne kaybolur
+`LUMM → DICOM → LUMM` zincirinde **nitelik seti birebir aynı kalır**: ne kaybolur
 ne de uydurulur. Doğrulama testi:
 
 ```
@@ -769,7 +790,7 @@ tarafından verilir; `--require-dicom` eksikse dosya **yazılmadan** exit 1 veri
 | Mod | Sonuç |
 |---|---|
 | Native | **246 passed, 0 failed** |
-| Saf Python (`PYRA_DISABLE_NATIVE=1`) | **179 passed, 0 failed** |
+| Saf Python (`LUMEN_DISABLE_NATIVE=1`) | **179 passed, 0 failed** |
 
 Kapsanan gruplar: roundtrip, determinizm, container, güvenlik, ROI, dosya/CLI I/O,
 sıkıştırma sağlığı, animasyon, RLE/LZ bozulma fuzz'ı, zorlu metotlar, PNG roundtrip,
@@ -844,7 +865,7 @@ Toplam: 38 273 024 B → 14 201 844 B (**2.69x**).
 
 ### 19.1 Gerçek fotoğraflar (640 px, 8-bit RGB)
 
-| Görsel | ham | PYRA v1 | **PYRA v3** | PNG (zlib) | v3 vs PNG |
+| Görsel | ham | LUMEN v1 | **LUMEN v3** | PNG (zlib) | v3 vs PNG |
 |---|---|---|---|---|---|
 | Clouds | 691 200 | 226 227 (3.06x) | **210 553 (3.28x)** | 238 846 (2.89x) | −11.8 % |
 | Monument Valley | 687 360 | 178 485 (3.85x) | **153 140 (4.49x)** | 142 754 (4.81x) | +7.3 % |
@@ -890,7 +911,7 @@ Kayıpsız codec'te "hata toleransı" yoktur; her bit bozulması CRC/SHA ile yak
 ### 21.1 Görsel
 
 ```python
-from pyra import encode, decode, encode_file, decode_file
+from lum import encode, decode, encode_file, decode_file
 
 blob = encode(pixels, width=640, height=480, bit_depth=8,
               color_space=2,        # CS_RGB
@@ -909,7 +930,7 @@ Dosya seviyesi, bölge erişimi, tile iterasyonu ve animasyon da mevcut
 ### 21.2 Tıbbi
 
 ```python
-from pyra.medical import (encode, decode, verify, info, preview_slice,
+from lum.medical import (encode, decode, verify, info, preview_slice,
                           build_dicom_metadata, validate_dicom_metadata,
                           generate_uid, SFMT_U16)
 
@@ -931,7 +952,7 @@ png = preview_slice(samples_back, 512, 512, 64, 1, SFMT_U16,
 ### 21.3 Hata sınıfları
 
 ```
-PyraError                     # görsel formatlarının taban hatası
+LumenError                     # görsel formatlarının taban hatası
 ├── SecurityError             # limit aşımı, decompression bomb
 └── CorruptedFileError        # CRC, magic, sürüm, biçim hataları
 
@@ -946,43 +967,43 @@ MedicalError                  # tıbbi formatların taban hatası
 ## 22. CLI
 
 ```
-python3 -m pyra {encode,decode,inspect,verify,benchmark}
-python3 -m pyra med {encode,decode,info,dump,verify,preview,to-dicom,from-dicom}
+python3 -m lum {encode,decode,inspect,verify,benchmark}
+python3 -m lum med {encode,decode,info,dump,verify,preview,to-dicom,from-dicom}
 ```
 
 ### 22.1 Görsel
 
 ```bash
-python3 -m pyra encode in.ppm out.pyra \
+python3 -m lum encode in.ppm out.lum \
     --method auto|raw|rle|lz|mix \
     --predictor auto|none|left|up|average|paeth|gradient|median \
     --transform auto|ycocg|none \
     --filter auto|global|adaptive \
     --tile 256 --colorspace auto|gray|rgb|rgba
-python3 -m pyra inspect out.pyra
-python3 -m pyra verify  out.pyra
-python3 -m pyra decode out.pyra back.ppm
-python3 -m pyra benchmark in.ppm
+python3 -m lum inspect out.lum
+python3 -m lum verify  out.lum
+python3 -m lum decode out.lum back.ppm
+python3 -m lum benchmark in.ppm
 ```
 
 ### 22.2 Tıbbi
 
 ```bash
 # klinik container üret (geometri + DICOM metadata otomatik türetilir)
-python3 -m pyra med encode ct.raw ct.pyrm \
+python3 -m lum med encode ct.raw ct.lumm \
     --width 512 --height 512 --depth 64 --format u16 \
     --dicom --patient-id ANON-1 --modality CT \
     --rescale-intercept -1024 --window-center 40 --window-width 400 \
     --require-dicom
 
-python3 -m pyra med info    ct.pyrm          # geometri + klinik özet
-python3 -m pyra med dump   ct.pyrm          # tam JSON (geometri + integrite + metadata)
-python3 -m pyra med dump   ct.pyrm --metadata-only
-python3 -m pyra med verify ct.pyrm          # bütünlük + klinik tutarlılık
-python3 -m pyra med preview ct.pyrm s30.pgm --slice 30 --window 400 --level 40
-python3 -m pyra med decode ct.pyrm out.raw
-python3 -m pyra med to-dicom   ct.pyrm study.dcm
-python3 -m pyra med from-dicom study.dcm back.pyrm
+python3 -m lum med info    ct.lumm          # geometri + klinik özet
+python3 -m lum med dump   ct.lumm          # tam JSON (geometri + integrite + metadata)
+python3 -m lum med dump   ct.lumm --metadata-only
+python3 -m lum med verify ct.lumm          # bütünlük + klinik tutarlılık
+python3 -m lum med preview ct.lumm s30.pgm --slice 30 --window 400 --level 40
+python3 -m lum med decode ct.lumm out.raw
+python3 -m lum med to-dicom   ct.lumm study.dcm
+python3 -m lum med from-dicom study.dcm back.lumm
 ```
 
 ---
@@ -990,10 +1011,10 @@ python3 -m pyra med from-dicom study.dcm back.pyrm
 ## 23. Derleme ve iş akışı
 
 ```bash
-cd /home/mami/pyra
+cd /home/mami/lum
 bash scripts/build_native.sh
-# -> _libpyra_core.so   (Rust: pyra_core.rs + pyra_image.rs + pyra_med.rs)
-# -> _libpyra_fast.so   (C++20: pyra_fast.cpp)
+# -> _liblum_core.so   (Rust: lum_core.rs + lum_image.rs + lum_med.rs)
+# -> _liblum_fast.so   (C++20: lum_fast.cpp)
 ```
 
 Derleme başarısız olursa betik hata vermez; codec saf Python yoluna düşer.
@@ -1002,17 +1023,17 @@ Derleme başarısız olursa betik hata vermez; codec saf Python yoluna düşer.
 
 ```bash
 cd /home/mami                                  # paket kökünün ÜSTÜ
-timeout 1200 python3 -m pyra.tests.test_lossless                       # 246
-PYRA_DISABLE_NATIVE=1 timeout 1200 python3 -m pyra.tests.test_lossless # 179
-timeout 1200 python3 -m pyra.tests.test_medical                        # 67
-PYRA_DISABLE_NATIVE=1 timeout 1200 python3 -m pyra.tests.test_medical  # 65
+timeout 1200 python3 -m lum.tests.test_lossless                       # 246
+LUMEN_DISABLE_NATIVE=1 timeout 1200 python3 -m lum.tests.test_lossless # 179
+timeout 1200 python3 -m lum.tests.test_medical                        # 67
+LUMEN_DISABLE_NATIVE=1 timeout 1200 python3 -m lum.tests.test_medical  # 65
 ```
 
 ### 23.2 Ölçüm tuzakları
 
 1. **Sentetik standalone micro-benchmark gerçek pipeline'ı yansıtmaz.** Gerçek
    profille interleaved A/B yap.
-2. `PYRA_DISABLE_NATIVE=1` set edilmişken "native" çalıştırmak **sahte hız** üretir.
+2. `LUMEN_DISABLE_NATIVE=1` set edilmişken "native" çalıştırmak **sahte hız** üretir.
 3. Paylaşımlı/aşırı yavaşlayan makinelerde mutlak ms değerleri 3× bozulabilir.
 4. Rust'ta `from_raw_parts(null, 0)` → UB; `count == 0` guard'ları şart.
 5. `array.array("i", im.tobytes())` → bytes 4'er bayt yorumlanır ✗ →
@@ -1055,19 +1076,19 @@ alındı. Kayıt altında tutulur ki tekrar denenmesin:
 
 | Sınır | Detay |
 |---|---|
-| Renk derinliği (PYRA) | 8 ve 16 bit; 1/2/4 bit gri tonlama yok |
-| Sıkıştırma (PYRA) | tek geçişli, context modeli yok, ileri referans yok |
+| Renk derinliği (LUMEN) | 8 ve 16 bit; 1/2/4 bit gri tonlama yok |
+| Sıkıştırma (LUMEN) | tek geçişli, context modeli yok, ileri referans yok |
 | Blok filtreler | satır-bazlı; 2D (blok) filtreler yok |
-| Animasyon (PYRA) | `encode_animation` var ama container'da animation bloğu yok |
+| Animasyon (LUMEN) | `encode_animation` var ama container'da animation bloğu yok |
 | DICOM | sıkıştırmasız (Explicit VR LE) yazılır/okunur; JPEG/JPEG-LS/RLE transfer syntax'ları desteklenmez |
 | DICOM | float örnekler reddedilir (DICOM karşılığı yok) |
 | DICOM | yalnızca Explicit VR Little Endian |
-| Sıkıştırma (PYRM) | JPEG-LS tarzı context modeling yok |
+| Sıkıştırma (LUMM) | JPEG-LS tarzı context modeling yok |
 | Python API | `decode()` piksel listesini döndürür (büyük hacimlerde bellek yoğun) |
 
 ### Gelecek işler (öncelik sırasıyla)
 
-1. **JPEG-LS context modeling** (PYRM) — bağlama göre ayrı modeller, tıbbi veride
+1. **JPEG-LS context modeling** (LUMM) — bağlama göre ayrı modeller, tıbbi veride
    %5-15 kazanç beklenir; format değişikliği gerektiği için Python referansıyla
    birebir eşitlik şart.
 2. **Range coder byte-refill** — renormalizasyonu byte bazlı yapmak; bayt formatı
@@ -1075,7 +1096,7 @@ alındı. Kayıt altında tutulur ki tekrar denenmesin:
    başarılı aday.
 3. **DICOM transfer syntax desteği** — Deflated Explicit VR LE ve RLE Lossless.
 4. **Blok bazlı (2D) filtre adaptasyonu** — satır yerine 8×8 blok.
-5. **Paralel tile işleme (PYRA)** — `multiprocessing` ile tile başına paralel encode.
+5. **Paralel tile işleme (LUMEN)** — `multiprocessing` ile tile başına paralel encode.
 6. **Yerleşik (embedded) decoder** — Rust cdylib'i tek başına C kütüphanesi olarak.
 7. **Çoklu dilimli DICOM doğrulaması** — `SpacingBetweenSlices` /
    `ImagePositionPatient` tutarlılık kontrolü.
@@ -1107,7 +1128,7 @@ alındı. Kayıt altında tutulur ki tekrar denenmesin:
 | **Bit-exact** | İki yolun ürettiği baytların birebir aynı olması |
 | **Native/pure parity** | Rust/C++ yolunun saf Python yoluyla aynı çıktıyı üretmesi |
 | **Fallback** | Native yoksa/başarısızsa saf Python yoluna düşme (`None` sözleşmesi) |
-| **Metadata fidelity** | PYRM ↔ DICOM ↔ PYRM zincirinde nitelik setinin değişmemesi |
+| **Metadata fidelity** | LUMM ↔ DICOM ↔ LUMM zincirinde nitelik setinin değişmemesi |
 | **Clinical consistency** | Metadata'nın container geometrisiyle çelişmemesi |
 | **MONOCHROME1** | Yüksek yoğunluk = siyah olan gri tonlama (görüntüyü tersine çevirir) |
 | **Rescale** | `value * slope + intercept` (CT için HU'ya çevirme) |
@@ -1115,7 +1136,7 @@ alındı. Kayıt altında tutulur ki tekrar denenmesin:
 
 ---
 
-## 27. Kayıplı codec — PYRA v6
+## 27. Kayıplı codec — LUMEN v6
 
 v3 container'ı kayıpsızdır ve PNG ile yarışır. Fotoğraf için gereken şey
 başkadır: kalite/boyut düğmesi, renk dönüşümü, blok dönüşümü ve bağlama
@@ -1140,7 +1161,7 @@ ve kaçış kodları hep aynı aralık kodlayıcısından geçer.
 
 ```
 ┌──────────────────────────────────────────────┐
-│ magic            8B   "PYRA\r\n\x1A\n"       │
+│ magic            8B   "LUMA\r\n\x1A\n"       │
 │ version          I    4B   (6)               │
 │ width            I    4B                     │
 │ height           I    4B                     │
@@ -1227,7 +1248,7 @@ Altı adet 800 px arka plan görüntüsü, eşleşen RGB PSNR'de megapiksel baş
 bayt (JXL: `libjxl --effort 7`, mesafe -1..15 taranmış). Oranlar görüntü
 başına hesaplanıp ortalanır:
 
-| PSNR | PYRA | JXL | JXL'ye oran | n |
+| PSNR | LUMEN | JXL | JXL'ye oran | n |
 |------|------|-----|-------------|---|
 | 30 dB | — | — | %83,2 | 4 |
 | 34 dB | — | — | %87,3 | 4 |
@@ -1237,7 +1258,7 @@ başına hesaplanıp ortalanır:
 
 Hız ve onun nasıl ölçüldüğü 27.10'da.
 
-PYRA beş hedefte de JXL'den küçük. 30 ve 34 dB satırları altı değil dört
+LUMEN beş hedefte de JXL'den küçük. 30 ve 34 dB satırları altı değil dört
 görüntü kapsıyor: JXL hiçbir mesafede Clouds'ta 34,64 dB'in, Fuji'de
 35,68 dB'in altına inemiyor, dolayısıyla orada karşılaştırılacak bir nokta
 yok. Kazancın büyük kısmı eskiden kaybettiğimiz düz fotoğraflardan geliyor:
@@ -1274,7 +1295,7 @@ denendi ve reddedildi: doğru, hiçbir fitin gerekçelendirmediği kadar kaba
 adımlar üretiyor.
 
 Neden iki değil üç çıpa: iki çıpa tek bir doğru parçası demek, ve şekil orta
-kalitede yukarı kabarıyor. 38 dB'de — PYRA'nın JXL'in tek gerisinde kaldığı
+kalitede yukarı kabarıyor. 38 dB'de — LUMEN'nın JXL'in tek gerisinde kaldığı
 nokta — iki çıpalı sürüm Fuji'de hâlâ %2,1 kaybediyordu. Üç çıpa 30 dB'de %1
 daha kötü ama 38 dB'yi düzeltiyor, ve 30 dB zaten rahat kazanılan uç.
 
@@ -1309,16 +1330,16 @@ değil.
 | Fikir | Sonuç |
 |-------|-------|
 | 4:2:0 kroma | Eşleşen PSNR'de her zaman daha büyük |
-| Düz HF şekillendirme (`PYRA_HF`) | Daha kaba adım kaybettiriyor |
-| Kroma stride çarpanı (`PYRA_CS`) | 1,4 / 2,0 / 2,8 hepsi kötü |
-| İkinci derece eğim (`PYRA_T2`) | ±0,6 ve 1,2 hepsi kötü |
+| Düz HF şekillendirme (`LUMEN_HF`) | Daha kaba adım kaybettiriyor |
+| Kroma stride çarpanı (`LUMEN_CS`) | 1,4 / 2,0 / 2,8 hepsi kötü |
+| İkinci derece eğim (`LUMEN_T2`) | ±0,6 ve 1,2 hepsi kötü |
 | 9 durumlu komşu bağlamı | Nötr (69,8 vs 69,7 KB) |
 | Blok içi enerji bağlamı | Nötr ile negatif arası |
 | Büyüklük için ikili ağaç | Kesikli unary'den kötü |
-| Kroma adımı kaba (`PYRA_CS`/`PYRA_CQ` > 1) | Hepsi kaybettirdi; en iyisi 0,72, yani daha *ince* kroma |
-| 5 alternatif DC tahmincisi (`PYRA_DCP` 1–5) | LOCO-I `med3` her hedefte kazandı; planar ve ortalamalar 2–4 KB daha büyük |
-| Exp-golomb kalan bitlerini modelleme (`PYRA_REM`) | Sınıf içi kalan bitler düzgün dağılmış: 70 KB'lik düzlemde 23 bayt |
-| Üst-sağ komşuyu bağlama ekleme (`PYRA_NR`) | 34 dB'de nötr/kötü, diğerlerinde fark yok |
+| Kroma adımı kaba (`LUMEN_CS`/`LUMEN_CQ` > 1) | Hepsi kaybettirdi; en iyisi 0,72, yani daha *ince* kroma |
+| 5 alternatif DC tahmincisi (`LUMEN_DCP` 1–5) | LOCO-I `med3` her hedefte kazandı; planar ve ortalamalar 2–4 KB daha büyük |
+| Exp-golomb kalan bitlerini modelleme (`LUMEN_REM`) | Sınıf içi kalan bitler düzgün dağılmış: 70 KB'lik düzlemde 23 bayt |
+| Üst-sağ komşuyu bağlama ekleme (`LUMEN_NR`) | 34 dB'de nötr/kötü, diğerlerinde fark yok |
 | 16×16 DCT bloğu | Province +0,3/+3,0/+4,7 %, Rainbow −3,3/−1,0/−1,3 % (34/38/42 dB) — zayıf noktayı derinleştiriyor |
 | Tek bant tablosu (38 dB'de fit) | 46 dB'de −%2,7 ama 34 dB'de düz görüntülerde +%5,4 (Fuji) / +%3,2 (Clouds) |
 | İki çıpalı tek doğru (q=10..90) | 30 dB'de %1 daha iyi, ama 38 dB'de Fuji hâlâ +%2,1 — şekil ortada kabarıyor |
@@ -1327,7 +1348,7 @@ değil.
 | `-C target-cpu=native` | %3; yanında 6,4 kat varken taşınabilirliği bozmaya değmez |
 | Ayarları görüntü başına okumak | Düzlem başına okumayla ölçülebilir fark yok, düzlem başına sürüm değişikliği yerel tutuyor |
 
-Aralık kodlayıcının kendisi optimal: `PYRA_STATS` her kalitede gerçek çıktıyı
+Aralık kodlayıcının kendisi optimal: `LUMEN_STATS` her kalitede gerçek çıktıyı
 ideal maliyetle (∑−log₂p) karşılaştırıyor ve oran %100,0. Yani darboğaz
 coder değil, model ve katsayılar.
 
@@ -1375,8 +1396,8 @@ pikseller: 16/16 aynı. `ref_q50` / `ref_q85` referansları da aynı hash'i veri
 `ffmpeg -c:v libjxl -effort 7`, aynı 1920×1080 görüntü, mesafe 2,0/1,0/0,5
 (90/128/185 KB):
 
-* kodlama: JXL 1,92-2,00 MP/s, PYRA 16,3-18,7 MP/s → **~9 kat**
-* çözme: JXL 11,2-12,6 MP/s, PYRA 25,8-31,0 MP/s → **~2,7 kat**
+* kodlama: JXL 1,92-2,00 MP/s, LUMEN 16,3-18,7 MP/s → **~9 kat**
+* çözme: JXL 11,2-12,6 MP/s, LUMEN 25,8-31,0 MP/s → **~2,7 kat**
 
 JXL sayıları ffmpeg'in kendi açılışını ve PPM giriş/çıkışını içeriyor, yani
 JXL'in hızı için bir üst sınır; oran olduğundan küçük, abartılı değil.
@@ -1388,13 +1409,13 @@ fotoğraftan geliyordu. Bu, taraflı bir örneklem ve öyle sunulmaması gerekiy
 İki bağımsız korpus eklendi ve sonuçlar olduğu gibi yayınlandı.
 
 **Kodak PhotoCD (24 görüntü, 768×512 / 512×768).** `benchmarks/bench_kodak.py`
-her iki codec'i kendi eğrisi üzerinde örnekliyor — PYRA q=10…100 (adım 5), JXL
+her iki codec'i kendi eğrisi üzerinde örnekliyor — LUMEN q=10…100 (adım 5), JXL
 `libjxl -effort 7` ile -1,0…15,0 arası 17 mesafe — ve hedef PSNR'deki boyutu iki
 komşu ölçüm noktası arasında doğrusal interpole ediyor. Bir eğrinin hiç
 ulaşmadığı hedef o görüntü için **düşürülüyor**, en yakın noktaya kırpılmıyor;
 kırpmak bir kez var olmayan %11'lik bir "kazanç" üretmişti.
 
-| PSNR | n | PYRA KB/MP | JXL KB/MP | ortalama | medyan | PYRA |
+| PSNR | n | LUMEN KB/MP | JXL KB/MP | ortalama | medyan | LUMEN |
 |------|---|------------|-----------|----------|--------|------|
 | 34 dB | 24 | 128,37 | 118,76 | %107,9 | %109,8 | 4/24 |
 | 38 dB | 24 | 216,65 | 218,97 | %100,1 | %103,8 | 9/24 |
@@ -1424,7 +1445,7 @@ nötr kromalı `yuv420p` olarak çözülmeli. `gray` ile 20 karenin 0'ı, `yuv42
 ile 20'sinin tamamı tutuyor.
 
 Conformance karelerinde (akış başına bir kare, 16×16'dan 1920×1080'e 105 farklı
-boyut) PYRA 34 dB'de başabaş, 38 ve 42 dB'de ~%6 büyük. Bu korpus bir görüntü
+boyut) LUMEN 34 dB'de başabaş, 38 ve 42 dB'de ~%6 büyük. Bu korpus bir görüntü
 codec'i için zayıf bir örneklem: suite decoder uç durumlarını (nicemleyici
 taramaları, film grain, intra block copy, SVC katmanları, 16×16 kareler)
 denemek için kurulmuş, fotoğrafa benzemek için değil. 16×16'da KB/MP rakamı
@@ -1433,13 +1454,13 @@ dosya başlığı gürültüsünden ibaret.
 Aynı kovadaki **doğal** SDR sekansları (Animal 608×1080, Health 720×1280, Dance
 1080×1920; her birinden 10 kare) daha anlamlı:
 
-| PSNR | n | PYRA KB/MP | JXL KB/MP | ortalama | medyan | PYRA |
+| PSNR | n | LUMEN KB/MP | JXL KB/MP | ortalama | medyan | LUMEN |
 |------|---|------------|-----------|----------|--------|------|
 | 34 dB | 22 | 97,98 | 91,87 | %97,8 | %103,8 | 10/22 |
 | 38 dB | 30 | 117,99 | 117,26 | %98,2 | %106,8 | 10/30 |
 | 42 dB | 30 | 176,88 | 194,16 | %96,4 | %99,9 | 16/30 |
 
-Ortalama PYRA'yı birkaç puan önde gösteriyor, medyan 34 ve 38 dB'de geride.
+Ortalama LUMEN'yı birkaç puan önde gösteriyor, medyan 34 ve 38 dB'de geride.
 İkisi de doğru ve ayrım sekans bazında: 38 dB'de Animal %109,1, Health %116,7,
 Dance %68,9. Ortalamayı Dance taşıyor. Sadece ortalamayı yazmak, encoder'ın
 düz/pürüzsüz içerikte daha kötü olduğunu gizlerdi.
@@ -1448,3 +1469,78 @@ Her iki korpusta da tek bir ayar yapılmadı. İşaret ettikleri yön aynı: zay
 düşük-orta bit hızında pürüzsüz içerikte, yani oran teriminin DCT katsayıları
 üzerinde düz karesel hata olmasının en çok acıttığı yerde. Bu bir hipotez;
 ölçümle izole edilmedi.
+
+---
+
+## 28. Görsel karşılaştırma — 13 format
+
+Bu bölümün tamamı, codec'in **hiç ayar yapmadığı** bir korpusta ölçüldü: Kodak
+PhotoCD setinden altı fotoğraf (01, 03, 05, 07, 13, 23; ortalama 0,393 MP).
+Her fotoğraf RGB'ye decode edildi, her formatın **gerçek encoder'ı** ile yeniden
+kodlandı, sonra tekrar decode edilip kaynakla karşılaştırıldı. Ölçülen sayılar
+tahmin değil, encoder'ların ürettiği dosyaların bayt sayısı ve RGB PSNR'i.
+
+Encoder'lar: ImageMagick 6.9.12 (PNG, JPEG, WebP, AVIF, JP2, TIFF, BMP, GIF) ve
+`ffmpeg -c:v libjxl` (JPEG XL). Ölçüm sürücüsü `benchmarks/bench_formats.py`,
+grafik/galeri üreticisi `benchmarks/format_report.py` (yalnızca stdlib), ham
+satırlar `benchmarks/results/formats.json`.
+
+### 28.1 Kayıpsız
+
+| Format | Ortalama boyut | KB/MP | LUMEN'a göre |
+|---|---|---|---|
+| **LUMEN** | **285,9 KB** | **727,0** | — |
+| JPEG XL lossless | 425,0 KB | 1 080,9 | +%48,7 |
+| WebP lossless | 475,3 KB | 1 208,6 | +%66,2 |
+| PNG (zlib 9) | 673,5 KB | 1 712,8 | +%135,6 |
+| TIFF (LZW) | 753,0 KB | 1 915,1 | +%163,4 |
+| BMP | 1 152,1 KB | 2 930,0 | +%303,0 |
+
+Altı fotoğrafın altısında da LUMEN en küçük dosya. JPEG XL'e göre %24, PNG'ye
+göre %58 daha küçük — üstelik sıfır bağımlılıkla ve deterministik.
+
+### 28.2 Kayıplı, her encoder'ın kendi q90 ayarında
+
+Nominal kalite codec'ler arasında ortak para birimi değildir; bu yüzden her
+satırda gerçekte ulaşılan PSNR de var.
+
+| Format | Ortalama boyut | KB/MP | PSNR |
+|---|---|---|---|
+| WebP q90 | 56,4 KB | 143,5 | 35,14 dB |
+| JPEG XL d1.0 | 90,4 KB | 229,9 | 37,78 dB |
+| AVIF q90 | 133,4 KB | 339,3 | 40,95 dB |
+| JPEG q90 | 142,9 KB | 363,4 | 39,09 dB |
+| **LUMEN q90** | **161,5 KB** | **410,8** | **43,70 dB** |
+| GIF 256 renk | 262,2 KB | 666,8 | 37,29 dB |
+| JPEG 2000 q90 | 465,2 KB | 1 183,1 | 82,59 dB |
+
+LUMEN q90, sekiz kayıplı format arasında en yüksek sadakati üretiyor. Ama q90
+adil soru değil: asıl soru **eşit sadakatte** kimin daha küçük olduğu. O ölçüm
+24 fotoğrafın tamamında, her codec'in kendi eğrisi üzerinde yapıldı (bkz. 27.
+bölüm ve README): 38 dB'de JPEG XL ile başabaş, 34 dB'de %7,9 daha büyük,
+42 dB'de %6,1 daha küçük. Bu, altı fotoğraflık tablodan daha zayıf bir sonuç ve
+olduğu gibi yazılıyor.
+
+### 28.3 Hız (0,393 MP başına, dört çekirdek, süreç dahil)
+
+| | encode | decode |
+|---|---|---|
+| LUMEN kayıpsız | 203 ms | 70 ms |
+| LUMEN q90 | 51 ms | 33 ms |
+
+Dış encoder süreleri süreç başlatmayı da içerir; bu LUMEN'ın oranını olduğundan
+iyi gösterir, tersini değil.
+
+### 28.4 Görseller
+
+- `docs/assets/formats-bars.svg` — format başına bayt (kayıpsız + kayıplı paneller)
+- `docs/assets/formats-scatter.svg` — KB/MP ile ulaşılan PSNR düzlemi
+- `docs/assets/formats.html` — 13 formatın aynı merkez kırpımı, tablo ve notlar;
+  tek dosya, çevrimdışı çalışır
+
+Yeniden üretmek için:
+
+```bash
+git clone --depth 1 https://github.com/MohamedBakrAli/Kodak-Lossless-True-Color-Image-Suite.git /tmp/kodak
+python3 benchmarks/bench_formats.py --corpus /tmp/kodak/PhotoCD_PCD0992
+```

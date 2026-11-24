@@ -1,5 +1,5 @@
-# PYRM (PYRA Medical) format test suite.
-# Run:  python3 -m pyra.tests.test_medical
+# LUMM (LUMEN Medical) format test suite.
+# Run:  python3 -m lum.tests.test_medical
 #
 # The medical format is used for clinical data: every check here is about
 # correctness and integrity, never about speed. A damaged container must
@@ -18,18 +18,18 @@ from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from pyra.medical import (METHOD_LZ, METHOD_RAW, PRED_MED, PRED_NONE,
+from lum.medical import (METHOD_LZ, METHOD_RAW, PRED_MED, PRED_NONE,
                           PRED_PAETH, PRED_SLICE, SFMT_F32, SFMT_I16, SFMT_I32,
                           SFMT_U8, SFMT_U16, SFMT_U32, CorruptedFileError,
                           MedicalError, MedicalMetadataError, build_dicom_metadata,
                           decode, encode, is_dicom_compatible, sign,
                           signature_status, verify)
-from pyra.medical import codec as _codec
-from pyra.medical import container as _container
-from pyra.medical import dicom as _dicom
-from pyra.medical import native as _native
-from pyra.medical import preview as _preview
-from pyra import fast as _fast
+from lum.medical import codec as _codec
+from lum.medical import container as _container
+from lum.medical import dicom as _dicom
+from lum.medical import native as _native
+from lum.medical import preview as _preview
+from lum import fast as _fast
 
 PASS = 0
 FAIL = 0
@@ -86,15 +86,15 @@ def make_samples(kind: str, w: int, h: int, d: int, ch: int,
 
 def pure(fn, *args, **kwargs):
     """Run `fn` with the native backend disabled."""
-    old = os.environ.get("PYRA_DISABLE_NATIVE")
-    os.environ["PYRA_DISABLE_NATIVE"] = "1"
+    old = os.environ.get("LUMEN_DISABLE_NATIVE")
+    os.environ["LUMEN_DISABLE_NATIVE"] = "1"
     try:
         return fn(*args, **kwargs)
     finally:
         if old is None:
-            os.environ.pop("PYRA_DISABLE_NATIVE", None)
+            os.environ.pop("LUMEN_DISABLE_NATIVE", None)
         else:
-            os.environ["PYRA_DISABLE_NATIVE"] = old
+            os.environ["LUMEN_DISABLE_NATIVE"] = old
 
 
 # ------------------------------------------------------------------ roundtrip
@@ -249,8 +249,8 @@ def test_native_parity():
     """The native core and the pure-Python reference agree byte for byte."""
     if not _native.available():
         # The backend may be switched off on purpose (the fallback run).
-        disabled = bool(os.environ.get("PYRA_DISABLE_NATIVE")) or \
-            os.environ.get("PYRA_NATIVE") == "0"
+        disabled = bool(os.environ.get("LUMEN_DISABLE_NATIVE")) or \
+            os.environ.get("LUMEN_NATIVE") == "0"
         check("native medical backend present", disabled)
         return
     check("native medical backend present", True)
@@ -528,7 +528,7 @@ def _scan_dicom_tags(blob: bytes) -> list[tuple[int, int]]:
 
 def test_dicom_metadata_fidelity():
     """The clinical metadata survives a DICOM round trip unchanged."""
-    from pyra.medical import dicomfile as _dcmfile
+    from lum.medical import dicomfile as _dcmfile
 
     raw = make_samples("smooth", 24, 16, 3, 1, SFMT_U16)
     meta = _dicom.build_dicom_metadata(
@@ -591,7 +591,7 @@ def test_dicom_metadata_fidelity():
 
 def test_dicom_file():
     """A container survives a round trip through a real DICOM file."""
-    from pyra.medical import dicomfile as _dcmfile
+    from lum.medical import dicomfile as _dcmfile
 
     for sf in (SFMT_U8, SFMT_U16, SFMT_U32, SFMT_I16, SFMT_I32):
         raw = make_samples("smooth", 20, 14, 3, 1, sf)
@@ -644,12 +644,12 @@ def test_dicom_file():
 def test_cli_dicom():
     """The command line can build a clinically valid container."""
     import tempfile
-    from pyra import cli as _cli
+    from lum import cli as _cli
 
     raw = make_samples("smooth", 24, 16, 3, 1, SFMT_U16)
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "vol.raw")
-        dst = os.path.join(tmp, "vol.pyrm")
+        dst = os.path.join(tmp, "vol.lumm")
         with open(src, "wb") as f:
             f.write(raw)
         rc = _cli.main([
@@ -675,7 +675,7 @@ def test_cli_dicom():
     # A container without the required attributes must be refused.
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "vol.raw")
-        dst = os.path.join(tmp, "vol.pyrm")
+        dst = os.path.join(tmp, "vol.lumm")
         with open(src, "wb") as f:
             f.write(raw)
         rc = _cli.main([
@@ -693,12 +693,12 @@ def test_cli_dump():
     import json
     import tempfile
     from contextlib import redirect_stdout
-    from pyra import cli as _cli
+    from lum import cli as _cli
 
     raw = make_samples("smooth", 20, 12, 2, 1, SFMT_U16)
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "vol.raw")
-        dst = os.path.join(tmp, "vol.pyrm")
+        dst = os.path.join(tmp, "vol.lumm")
         with open(src, "wb") as f:
             f.write(raw)
         with redirect_stdout(io.StringIO()):
@@ -733,7 +733,7 @@ def test_cli_dump():
     # --metadata-only prints just the metadata block
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "vol.raw")
-        dst = os.path.join(tmp, "vol.pyrm")
+        dst = os.path.join(tmp, "vol.lumm")
         with open(src, "wb") as f:
             f.write(raw)
         with redirect_stdout(io.StringIO()):
@@ -808,10 +808,10 @@ def test_clinical_consistency():
           and uid_a.startswith("2.25."))
 
     # 7. the command line generates the technical identifiers on its own
-    from pyra import cli as _cli
+    from lum import cli as _cli
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "vol.raw")
-        dst = os.path.join(tmp, "vol.pyrm")
+        dst = os.path.join(tmp, "vol.lumm")
         with open(src, "wb") as f:
             f.write(raw)
         rc = _cli.main(["med", "encode", src, dst,
@@ -845,9 +845,9 @@ def test_dicom_conformance():
         return
     from pydicom.dataset import Dataset, FileMetaDataset
     from pydicom.uid import ExplicitVRLittleEndian
-    from pyra.medical import dicomfile as _dcmfile
+    from lum.medical import dicomfile as _dcmfile
 
-    tmp = tempfile.mkdtemp(prefix="pyra-conf-")
+    tmp = tempfile.mkdtemp(prefix="lum-conf-")
     cases = [
         ("u8", SFMT_U8, 24, 18, 1),
         ("u16", SFMT_U16, 24, 18, 1),
@@ -897,7 +897,7 @@ def test_dicom_conformance():
               str(dcm.file_meta.TransferSyntaxUID) == str(ExplicitVRLittleEndian))
 
         samples, back = _dcmfile.read_dicom(blob)
-        check(f"PYRM reads back its own {label} DICOM",
+        check(f"LUMM reads back its own {label} DICOM",
               samples == raw and str(back.get("PatientID")) == "ANON-CONF-1")
 
     # a file written by pydicom itself
@@ -941,7 +941,7 @@ def test_dicom_conformance():
         samples, meta = None, {}
         ok = False
         print(f"       external: {type(exc).__name__}: {exc}")
-    check("PYRM reads a file written by pydicom itself", ok)
+    check("LUMM reads a file written by pydicom itself", ok)
     if ok:
         check("the external pixels are identical", samples == ext_raw)
         check("the external attributes are read",
@@ -975,7 +975,7 @@ def _conf_volume(w, h, d, fmt, seed=3):
 
 def test_signature():
     """A signed container must prove who produced it and stay unchanged."""
-    from pyra.medical import signature as _sig
+    from lum.medical import signature as _sig
 
     raw = _conf_volume(24, 18, 2, SFMT_U16, seed=11)
     key = b"clinical-signing-key"
@@ -1067,8 +1067,8 @@ def test_audit_block():
               and audit.get("SamplesPerPixel") == 1
               and audit.get("BytesPerSample") == 2)
         check("the audit block names the encoder and the codec",
-              str(audit.get("Encoder", "")).startswith("pyra/")
-              and str(audit.get("Codec", "")).startswith("PYRM-v"))
+              str(audit.get("Encoder", "")).startswith("lum/")
+              and str(audit.get("Codec", "")).startswith("LUMM-v"))
         import hashlib
         check("the audit block carries the source hash",
               audit.get("SourceSHA256")
@@ -1089,15 +1089,15 @@ def test_audit_block():
 
     # the native and the pure-Python backend agree on the signed container
     def pure(fn, *args, **kwargs):
-        old = os.environ.get("PYRA_DISABLE_NATIVE")
-        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        old = os.environ.get("LUMEN_DISABLE_NATIVE")
+        os.environ["LUMEN_DISABLE_NATIVE"] = "1"
         try:
             return fn(*args, **kwargs)
         finally:
             if old is None:
-                os.environ.pop("PYRA_DISABLE_NATIVE", None)
+                os.environ.pop("LUMEN_DISABLE_NATIVE", None)
             else:
-                os.environ["PYRA_DISABLE_NATIVE"] = old
+                os.environ["LUMEN_DISABLE_NATIVE"] = old
     native_blob = encode(raw, 16, 12, 1, 1, SFMT_U16, sign_key=b"k",
                          audit=True)
     pure_blob = pure(encode, raw, 16, 12, 1, 1, SFMT_U16, sign_key=b"k",
@@ -1109,7 +1109,7 @@ def test_audit_block():
 def test_region_decode():
     """A region decode must be the exact crop of the full decode."""
     import tempfile
-    from pyra.medical import decode_region
+    from lum.medical import decode_region
 
     bad = []
     for sf in (SFMT_U8, SFMT_U16, SFMT_I16, SFMT_U32, SFMT_F32):
@@ -1190,14 +1190,14 @@ def test_cli_decode_writes_the_file():
     A missing write in the handler looks like a successful run on the
     console, so it is checked explicitly.
     """
-    from pyra import cli as _cli
+    from lum import cli as _cli
 
-    tmp = tempfile.mkdtemp(prefix="pyra-cli-")
+    tmp = tempfile.mkdtemp(prefix="lum-cli-")
     raw = make_samples("smooth", 12, 9, 2, 1, SFMT_U16)
     src = os.path.join(tmp, "vol.raw")
     with open(src, "wb") as f:
         f.write(raw)
-    container = os.path.join(tmp, "vol.pyrm")
+    container = os.path.join(tmp, "vol.lumm")
     out = os.path.join(tmp, "vol.out")
     region_out = os.path.join(tmp, "vol.region")
 
@@ -1233,7 +1233,7 @@ def test_cli_decode_writes_the_file():
 
 def test_near_lossless():
     """The near-lossless mode bounds the error and stays byte-exact."""
-    from pyra.medical import UnsupportedFormatError
+    from lum.medical import UnsupportedFormatError
 
     worst_ok = True
     parity_ok = True
@@ -1321,7 +1321,7 @@ def test_near_lossless():
 
 
 def main():
-    print("=== PYRM medical format test suite ===")
+    print("=== LUMM medical format test suite ===")
     test_roundtrip_matrix()
     test_metadata()
     test_integrity_checks()

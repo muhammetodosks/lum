@@ -191,7 +191,7 @@ unsafe fn prepare_tile(
     let mut filter_bits: Vec<u8> = Vec::new();
     if filter_mode == FILTER_ADAPTIVE_V {
         filter_bits = vec![0u8; (geom.h * 3 + 7) / 8];
-        let rc = pyra_pipe_forward_adaptive_into(
+        let rc = lum_pipe_forward_adaptive_into(
             tile.as_ptr(),
             count,
             stride,
@@ -207,7 +207,7 @@ unsafe fn prepare_tile(
             return None;
         }
     } else {
-        let rc = pyra_pipe_forward(
+        let rc = lum_pipe_forward(
             tile.as_ptr(),
             count,
             stride,
@@ -226,7 +226,7 @@ unsafe fn prepare_tile(
 
     let width = pack_width_v3(modv as u64);
     let mut packed: Vec<u8> = vec![0; count * width];
-    let rc = pyra_pack_residuals(
+    let rc = lum_pack_residuals(
         residuals.as_ptr() as *const u32,
         count,
         width,
@@ -241,7 +241,7 @@ unsafe fn prepare_tile(
     let mut rle_raw: Vec<u8> = Vec::new();
     if !packed.is_empty() {
         let mut buf = vec![0u8; packed.len() * 2 + 16];
-        let n = pyra_rle_encode(packed.as_ptr(), packed.len(), buf.as_mut_ptr());
+        let n = lum_rle_encode(packed.as_ptr(), packed.len(), buf.as_mut_ptr());
         if n < 0 {
             return None;
         }
@@ -426,7 +426,7 @@ unsafe fn refill_method(
 /// case the planner runs first. The result is byte-identical to the Python
 /// reference path.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_encode_image(
+pub unsafe extern "C" fn lum_encode_image(
     pixels: *const i32,
     count: usize,
     width: usize,
@@ -462,7 +462,7 @@ pub unsafe extern "C" fn pyra_encode_image(
     let mut pred_type = pred_type;
     if pred_type < 0 || transform < 0 || filter_mode < 0 {
         let mut plan = [0i32; 3];
-        let rc = pyra_plan(
+        let rc = lum_plan(
             pixels,
             count,
             width,
@@ -671,7 +671,7 @@ pub unsafe extern "C" fn pyra_encode_image(
     let mut body: Vec<u8> = Vec::with_capacity(
         header_size + 4 + index_size + bodies.iter().map(|b| b.len()).sum::<usize>() + 4,
     );
-    body.extend_from_slice(&[0x50, 0x59, 0x52, 0x41, 0x0D, 0x0A, 0x1A, 0x0A]); // "PYRA\r\n\x1A\n"
+    body.extend_from_slice(&[0x4C, 0x55, 0x4D, 0x41, 0x0D, 0x0A, 0x1A, 0x0A]); // "LUMA\r\n\x1A\n"
     body.extend_from_slice(&3u32.to_be_bytes()); // version
     body.extend_from_slice(&(width as u32).to_be_bytes());
     body.extend_from_slice(&(height as u32).to_be_bytes());
@@ -711,9 +711,9 @@ pub unsafe extern "C" fn pyra_encode_image(
 /// `u16` samples (the PNM order). The samples are widened to the internal
 /// `i32` domain here, which keeps the Python driver from building a list of
 /// ints just to hand it over. The output is byte-identical to
-/// `pyra_encode_image` fed with the same samples.
+/// `lum_encode_image` fed with the same samples.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_encode_image_bytes(
+pub unsafe extern "C" fn lum_encode_image_bytes(
     data: *const u8,
     len: usize,
     width: usize,
@@ -753,7 +753,7 @@ pub unsafe extern "C" fn pyra_encode_image_bytes(
             px.push(((pair[0] as i32) << 8) | (pair[1] as i32));
         }
     }
-    pyra_encode_image(
+    lum_encode_image(
         px.as_ptr(),
         samples,
         width,
@@ -772,16 +772,16 @@ pub unsafe extern "C" fn pyra_encode_image_bytes(
     )
 }
 
-/// Release a buffer returned by `pyra_encode_image` / `pyra_decode_image`.
+/// Release a buffer returned by `lum_encode_image` / `lum_decode_image`.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_free_buf(ptr: *mut u8, len: usize) {
+pub unsafe extern "C" fn lum_free_buf(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {
         drop(Vec::from_raw_parts(ptr, len, len));
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pyra_free_buf_i32(ptr: *mut i32, len: usize) {
+pub unsafe extern "C" fn lum_free_buf_i32(ptr: *mut i32, len: usize) {
     if !ptr.is_null() && len > 0 {
         drop(Vec::from_raw_parts(ptr, len, len));
     }
@@ -795,7 +795,7 @@ pub unsafe extern "C" fn pyra_free_buf_i32(ptr: *mut i32, len: usize) {
 /// color_space, pred_type, method, tile_size, num_tiles, transform,
 /// filter_mode.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_decode_image(
+pub unsafe extern "C" fn lum_decode_image(
     data: *const u8,
     len: usize,
     out_ptr: *mut *mut i32,
@@ -808,7 +808,7 @@ pub unsafe extern "C" fn pyra_decode_image(
     let data = std::slice::from_raw_parts(data, len);
 
     // magic + crc
-    if &data[0..8] != b"PYRA\r\n\x1A\n" {
+    if &data[0..8] != b"LUMA\r\n\x1A\n" {
         return E_IMG_HEADER;
     }
     let body = &data[..len - 4];
@@ -1012,7 +1012,7 @@ unsafe fn decode_tile_pixels(
     let packed_len = count * width_bytes;
     match tile_method {
         METHOD_RAW_V => {
-            let rc = pyra_range_decode(
+            let rc = lum_range_decode(
                 body.as_ptr(),
                 body.len(),
                 modv as usize,
@@ -1025,7 +1025,7 @@ unsafe fn decode_tile_pixels(
         }
         METHOD_RLE_V => {
             let mut detail: i32 = 0;
-            let rc = pyra_decode_rle_method(
+            let rc = lum_decode_rle_method(
                 body.as_ptr(),
                 body.len(),
                 TOKEN_SYMBOLS as usize,
@@ -1043,7 +1043,7 @@ unsafe fn decode_tile_pixels(
         _ => {
             let mut detail: i32 = 0;
             let mut rle_len: u32 = 0;
-            let rc = pyra_decode_lz_method(
+            let rc = lum_decode_lz_method(
                 body.as_ptr(),
                 body.len(),
                 TOKEN_SYMBOLS as usize,
@@ -1065,7 +1065,7 @@ unsafe fn decode_tile_pixels(
     let res_i32: Vec<i32> = residuals.iter().map(|&v| v as i32).collect();
     let mut out: Vec<i32> = vec![0; count];
     if filter_mode == FILTER_ADAPTIVE_V {
-        let rc = pyra_pipe_reconstruct_adaptive_into(
+        let rc = lum_pipe_reconstruct_adaptive_into(
             res_i32.as_ptr(),
             count,
             stride,
@@ -1083,7 +1083,7 @@ unsafe fn decode_tile_pixels(
             return None;
         }
     } else {
-        let rc = pyra_pipe_reconstruct_into(
+        let rc = lum_pipe_reconstruct_into(
             res_i32.as_ptr(),
             count,
             stride,

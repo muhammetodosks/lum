@@ -1,4 +1,4 @@
-"""DICOM-compatible semantics for the PYRM medical container.
+"""DICOM-compatible semantics for the LUMM medical container.
 
 A lossless container is not enough for clinical data: the *meaning* of the
 stored numbers has to travel with them. This module defines the canonical

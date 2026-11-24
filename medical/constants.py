@@ -1,4 +1,4 @@
-"""Constants of the PYRM (PYRA Medical) container format.
+"""Constants of the LUMM (LUMEN Medical) container format.
 
 The medical profile is built for imaging data: lossless to the last bit,
 wide sample domains (8/16/32 bit, signed and float), volumetric data
@@ -6,7 +6,7 @@ wide sample domains (8/16/32 bit, signed and float), volumetric data
 a SHA-256 content hash of the raw samples).
 """
 
-MAGIC = b"PYRM\r\n\x1A\n"
+MAGIC = b"LUMM\r\n\x1A\n"
 VERSION = 3
 VERSION_V1 = 1
 VERSION_V2 = 2

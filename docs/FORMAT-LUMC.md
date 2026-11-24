@@ -1,6 +1,6 @@
-# PYRC — PYRA Cloud container format (v1)
+# LUMC — LUMEN Cloud container format (v1)
 
-PYRC is the container of the cloud profile of PYRA: it stores **multi-band,
+LUMC is the container of the cloud profile of LUMEN: it stores **multi-band,
 multi-scene** observations (satellite imagery, radar composites, cloud
 products) losslessly, with the metadata that makes such a cube usable
 later on — the wavelength of a band, the units it is measured in, the
@@ -8,10 +8,10 @@ scale and offset that turn a stored value into a physical quantity, the
 georeferencing of a scene and the time it was acquired.
 
 The whole format is implemented **once**, in Rust
-(`rust/pyra_cloud.rs`). The C++ layer (`cpp/pyra_cloud.cpp`) adds the
+(`rust/lum_cloud.rs`). The C++ layer (`cpp/lum_cloud.cpp`) adds the
 working-set helpers — raw cube I/O, per band statistics, false colour
 rendering and band interleaving — and the Python package is a thin
-`ctypes` binding (`pyra/cloud.py`) over both. There is deliberately **no
+`ctypes` binding (`lum/cloud.py`) over both. There is deliberately **no
 pure-Python fallback**: a second implementation would be a second
 definition of the format, and the format is only worth having when it
 has exactly one.
@@ -53,7 +53,7 @@ has exactly one.
 
 | offset | size | field | meaning |
 |-------:|-----:|-------|---------|
-| 0   | 8  | magic | `PYRC\r\n\x1a\n` |
+| 0   | 8  | magic | `LUMC\r\n\x1a\n` |
 | 8   | 4  | version | 1 |
 | 12  | 4  | flags | reserved, 0 |
 | 16  | 4  | width | samples per row |
@@ -215,8 +215,8 @@ candidate, so the choice is deterministic.
 ## Entropy coding
 
 A binary range coder with an adaptive per-symbol model (a Fenwick tree
-over the symbol frequencies) — the same coder the PYRA image format and
-the PYRM medical format use, so all three formats share exactly one
+over the symbol frequencies) — the same coder the LUMEN image format and
+the LUMM medical format use, so all three formats share exactly one
 implementation.
 
 Two residual encodings are possible, and the encoder picks the smaller
@@ -256,7 +256,7 @@ A decoder checks, in this order:
 Any mismatch raises `CloudCorruptedError`. A decoder never returns
 partially decoded or unverified data.
 
-## The PYRX raw cube format
+## The LUMX raw cube format
 
 The C++ layer reads and writes a *raw* cube — the samples without any
 compression — so that a large observation can be moved around and
@@ -265,7 +265,7 @@ trivial:
 
 ```
 +-------------------------------+
-|  magic "PYRX"          4 bytes|
+|  magic "LUMX"          4 bytes|
 |  version               1 byte |
 |  sample_format         1 byte |
 |  reserved              2 bytes|
@@ -280,12 +280,12 @@ trivial:
 ```
 
 All integers are little-endian. The samples follow the header exactly
-as they would inside a PYRC container.
+as they would inside a LUMC container.
 
 ## Python API
 
 ```python
-from pyra import cloud
+from lum import cloud
 
 blob = cloud.encode(samples, width=512, height=512, bands=12, scenes=4,
                     sample_format=cloud.SFMT_U16,
@@ -305,8 +305,8 @@ band = cloud.read_band(blob, scene=2, band=5)     # only that plane
 The C++ helpers are reached through the same module:
 
 ```python
-cloud.raw_write("cube.pyrx", samples, 512, 512, 12, 4, cloud.SFMT_U16)
-samples, w, h, bands, scenes, fmt = cloud.raw_read("cube.pyrx")
+cloud.raw_write("cube.lumx", samples, 512, 512, 12, 4, cloud.SFMT_U16)
+samples, w, h, bands, scenes, fmt = cloud.raw_read("cube.lumx")
 stats = cloud.band_stats(samples, w, h, bands, scenes, fmt, band=3)
 rgb = cloud.render_rgb(samples, w, h, bands, scenes, fmt,
                         scene=0, band_r=3, band_g=1, band_b=0)
@@ -315,31 +315,31 @@ rgb = cloud.render_rgb(samples, w, h, bands, scenes, fmt,
 ## Command line
 
 ```bash
-# encode a raw cube (PYRX) into a PYRC container
-python3 -m pyra cloud encode cube.pyrx cube.pyrc \
+# encode a raw cube (LUMX) into a LUMC container
+python3 -m lum cloud encode cube.lumx cube.lumc \
         --width 512 --height 512 --bands 12 --scenes 4 --format u16 \
         --band-name B01 --band-wavelength 443 --band-type reflectance \
         --scene-time 1700000000 --lon0 12.5 --lat0 41.9 \
         --meta satellite=ANON
 
-python3 -m pyra cloud info cube.pyrc
-python3 -m pyra cloud stats cube.pyrc --band 3 --histogram
-python3 -m pyra cloud render cube.pyrc preview.ppm --scene 0 --red 3 --green 1 --blue 0
-python3 -m pyra cloud decode cube.pyrc out.pyrx
-python3 -m pyra cloud decode cube.pyrc band.pyrx --scene 1 --band 5
+python3 -m lum cloud info cube.lumc
+python3 -m lum cloud stats cube.lumc --band 3 --histogram
+python3 -m lum cloud render cube.lumc preview.ppm --scene 0 --red 3 --green 1 --blue 0
+python3 -m lum cloud decode cube.lumc out.lumx
+python3 -m lum cloud decode cube.lumc band.lumx --scene 1 --band 5
 ```
 
 ## Error classes
 
 * `CloudError` — base class of the cloud profile errors.
 * `UnsupportedFormatError` — unknown sample format, method or predictor.
-* `CloudCorruptedError` — the container is damaged or not a PYRC file
+* `CloudCorruptedError` — the container is damaged or not a LUMC file
   (it is both a `CloudError` and a `CorruptedFileError`).
 
 ## Native API
 
 ```c
-int pyra_cloud_encode(const uint8_t* samples, size_t len,
+int lum_cloud_encode(const uint8_t* samples, size_t len,
                       uint32_t width, uint32_t height, uint32_t bands,
                       uint32_t scenes, uint32_t sample_format,
                       const uint8_t* band_table, size_t band_table_len,
@@ -348,10 +348,10 @@ int pyra_cloud_encode(const uint8_t* samples, size_t len,
                       size_t tile_size, int32_t predictor, int32_t method,
                       uint8_t** out_ptr, size_t* out_len);
 
-int pyra_cloud_decode(const uint8_t* data, size_t len,
+int lum_cloud_decode(const uint8_t* data, size_t len,
                       uint8_t** out_ptr, size_t* out_len, int32_t* meta_out);
-int pyra_cloud_info(const uint8_t* data, size_t len, int32_t* meta_out);
-int pyra_cloud_read_band(const uint8_t* data, size_t len, uint32_t scene,
+int lum_cloud_info(const uint8_t* data, size_t len, int32_t* meta_out);
+int lum_cloud_read_band(const uint8_t* data, size_t len, uint32_t scene,
                          uint32_t band, uint8_t** out_ptr, size_t* out_len);
 ```
 
@@ -363,21 +363,21 @@ meta_offset, meta_size, index_offset, index_size.
 `band_table_len` must be exactly `bands * 48` and `scene_table_len`
 exactly `scenes * 40`; anything else is rejected.
 
-Buffers returned by the encoder are released with `pyra_free_buf`.
+Buffers returned by the encoder are released with `lum_free_buf`.
 
-## C++ helpers (`cpp/pyra_cloud.cpp`)
+## C++ helpers (`cpp/lum_cloud.cpp`)
 
 ```c
-int pyra_cloud_raw_write(const char* path, const uint8_t* data,
+int lum_cloud_raw_write(const char* path, const uint8_t* data,
                          int width, int height, int bands, int scenes,
                          int sample_format);
-int pyra_cloud_raw_read(const char* path, uint8_t* out, size_t cap,
+int lum_cloud_raw_read(const char* path, uint8_t* out, size_t cap,
                         int* info);
-int pyra_cloud_band_stats(const uint8_t* cube, size_t len,
+int lum_cloud_band_stats(const uint8_t* cube, size_t len,
                           int width, int height, int bands, int scenes,
                           int sample_format, int band,
-                          PyraCloudBandStats* out);
-int pyra_cloud_render_rgb(const uint8_t* cube, size_t len,
+                          LumenCloudBandStats* out);
+int lum_cloud_render_rgb(const uint8_t* cube, size_t len,
                            int width, int height, int bands, int scenes,
                            int sample_format, int scene,
                            int band_r, int band_g, int band_b,
@@ -385,12 +385,12 @@ int pyra_cloud_render_rgb(const uint8_t* cube, size_t len,
                            double window_g, double level_g,
                            double window_b, double level_b,
                            uint8_t* out);
-int pyra_cloud_interleave(const uint8_t* cube, size_t len, ...);
-int pyra_cloud_deinterleave(const uint8_t* interleaved, size_t len, ...);
+int lum_cloud_interleave(const uint8_t* cube, size_t len, ...);
+int lum_cloud_deinterleave(const uint8_t* interleaved, size_t len, ...);
 ```
 
 The module also has a self test: compile it with
-`-DPYRA_CLOUD_SELFTEST` and run the resulting binary.
+`-DLUMEN_CLOUD_SELFTEST` and run the resulting binary.
 
 ## Version history
 

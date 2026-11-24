@@ -1,4 +1,4 @@
-# PYRM v4 — "Devasa güncelleme" planı
+# LUMM v4 — "Devasa güncelleme" planı
 
 > **Durum: TAMAMLANDI ✓** — bu plan tarihsel bir kayıttır.
 > Kategori 1 (tıp/sağlık uyumu) ✓, Kategori 2 (MED predictor) ✓,
@@ -46,8 +46,8 @@ Bugün container metadata'sı serbest JSON; oysa bir CT/MR serisi taşınırken
    birebir aynı baytları üretir.
 3. **`medical/codec.py`** — `encode(..., require_dicom=False)`; strict modda
    metadata doğrulanır (klinik kullanımda geçersiz metadata reddedilir).
-4. **CLI** — `pyra med verify` (decode etmeden tüm bütünlük kontrolleri),
-   `pyra med dump` (metadata JSON), `pyra med info`'da DICOM özeti.
+4. **CLI** — `lum med verify` (decode etmeden tüm bütünlük kontrolleri),
+   `lum med dump` (metadata JSON), `lum med info`'da DICOM özeti.
 
 ## Kategori 2 — Sıkıştırma kalitesi
 
@@ -70,13 +70,13 @@ Bugün container metadata'sı serbest JSON; oysa bir CT/MR serisi taşınırken
 - `test_medical.py`: DICOM doğrulama testleri, MED predictor testleri,
   `verify` komutu testi, her dosya bölgesinde bit-flip (şu an sadece 400
   rastgele), bozuk metadata, hatalı geometri.
-- `docs/FORMAT-PYRM.md`: yeni bölümler (tıbbi anlamlar, MED predictor).
+- `docs/FORMAT-LUMM.md`: yeni bölümler (tıbbi anlamlar, MED predictor).
 - README: güncel tablolar.
 
 ## Kategori 5 — Commit + push
 
 Her adım ayrı commit; sonunda
-`GH_TOKEN=... git push origin main` (GitHub: muhammetodosks/pyra, PRIVATE).
+`GH_TOKEN=... git push origin main` (GitHub: muhammetodosks/lum, PRIVATE).
 
 ## Sıra
 1. `medical/dicom.py` + preview rescale/photometric + codec strict mod

@@ -1,7 +1,7 @@
-"""PYRC — the PYRA Cloud container (Python binding).
+"""LUMC — the LUMEN Cloud container (Python binding).
 
 This module is a **thin binding**: every byte of the container is produced
-by the Rust core (`_libpyra_core.so`). There is deliberately no pure-Python
+by the Rust core (`_liblum_core.so`). There is deliberately no pure-Python
 fallback here — the cloud profile is implemented once, in Rust, so there is
 only one definition of the format.
 
@@ -18,10 +18,10 @@ import json
 import os
 import struct
 
-from .constants import CorruptedFileError, PyraError
+from .constants import CorruptedFileError, LumenError
 
 
-class CloudError(PyraError):
+class CloudError(LumenError):
     """Base class of the cloud profile errors."""
 
 
@@ -30,10 +30,10 @@ class UnsupportedFormatError(CloudError):
 
 
 class CloudCorruptedError(CorruptedFileError, CloudError):
-    """The container is damaged, truncated or not a PYRC container.
+    """The container is damaged, truncated or not a LUMC container.
 
     It is both a :class:`CloudError` and a
-    :class:`pyra.constants.CorruptedFileError`, so either name catches it.
+    :class:`lum.constants.CorruptedFileError`, so either name catches it.
     """
 
 # ---------------------------------------------------------------- formats
@@ -97,8 +97,8 @@ UNITS_BY_NAME = {v: k for k, v in UNITS_NAMES.items()}
 BAND_ENTRY_SIZE = 48
 SCENE_ENTRY_SIZE = 40
 
-#: The magic bytes of a PYRC container.
-MAGIC = b"PYRC\r\n\x1A\n"
+#: The magic bytes of a LUMC container.
+MAGIC = b"LUMC\r\n\x1A\n"
 
 _LIB = None
 _TRIED = False
@@ -110,7 +110,7 @@ def _load():
         return _LIB
     _TRIED = True
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "_libpyra_core.so")
+                        "_liblum_core.so")
     try:
         lib = ctypes.CDLL(path)
     except OSError:
@@ -121,28 +121,28 @@ def _load():
     _i32 = ctypes.c_int32
     _isize = ctypes.c_long if ctypes.sizeof(ctypes.c_long) == 8 else ctypes.c_int
     try:
-        lib.pyra_cloud_encode.restype = _isize
-        lib.pyra_cloud_encode.argtypes = [
+        lib.lum_cloud_encode.restype = _isize
+        lib.lum_cloud_encode.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, _u32, _u32, _u32, _u32, _u32,
             ctypes.POINTER(ctypes.c_ubyte), _sz,
             ctypes.POINTER(ctypes.c_ubyte), _sz,
             ctypes.POINTER(ctypes.c_ubyte), _sz,
             _sz, _i32, _i32,
             ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)), ctypes.POINTER(_sz)]
-        lib.pyra_cloud_decode.restype = _isize
-        lib.pyra_cloud_decode.argtypes = [
+        lib.lum_cloud_decode.restype = _isize
+        lib.lum_cloud_decode.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz,
             ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)), ctypes.POINTER(_sz),
             ctypes.POINTER(_i32)]
-        lib.pyra_cloud_info.restype = _isize
-        lib.pyra_cloud_info.argtypes = [
+        lib.lum_cloud_info.restype = _isize
+        lib.lum_cloud_info.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, ctypes.POINTER(_i32)]
-        lib.pyra_cloud_read_band.restype = _isize
-        lib.pyra_cloud_read_band.argtypes = [
+        lib.lum_cloud_read_band.restype = _isize
+        lib.lum_cloud_read_band.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, _u32, _u32,
             ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)), ctypes.POINTER(_sz)]
-        lib.pyra_free_buf.restype = None
-        lib.pyra_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
+        lib.lum_free_buf.restype = None
+        lib.lum_free_buf.argtypes = [ctypes.POINTER(ctypes.c_ubyte), _sz]
     except OSError:
         _LIB = None
         return None
@@ -230,7 +230,7 @@ def encode(samples: bytes, width: int, height: int, bands: int, scenes: int,
            sample_format: int = SFMT_U16, band_meta=None, scene_meta=None,
            metadata=None, tile_size: int = 256, predictor: int = -1,
            method: int = -1) -> bytes:
-    """Encode a multi-band, multi-scene cube into a PYRC container.
+    """Encode a multi-band, multi-scene cube into a LUMC container.
 
     `samples` holds the raw little endian samples, scene by scene, band by
     band (band planar). `band_meta` and `scene_meta` are lists of
@@ -240,7 +240,7 @@ def encode(samples: bytes, width: int, height: int, bands: int, scenes: int,
     lib = _load()
     if lib is None:
         raise UnsupportedFormatError(
-            "the native cloud core is not available (build _libpyra_core.so)")
+            "the native cloud core is not available (build _liblum_core.so)")
     if sample_format not in SAMPLE_BYTES:
         raise UnsupportedFormatError(f"unknown sample format {sample_format}")
     if width <= 0 or height <= 0 or bands <= 0 or scenes <= 0:
@@ -275,7 +275,7 @@ def encode(samples: bytes, width: int, height: int, bands: int, scenes: int,
 
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
     out_len = ctypes.c_size_t()
-    rc = lib.pyra_cloud_encode(
+    rc = lib.lum_cloud_encode(
         src_ptr, need, width, height, bands, scenes, sample_format,
         band_ptr, len(band_blob), scene_ptr, len(scene_blob),
         meta_ptr, len(meta_blob), tile_size, predictor, method,
@@ -285,7 +285,7 @@ def encode(samples: bytes, width: int, height: int, bands: int, scenes: int,
     try:
         return ctypes.string_at(out_p, out_len.value)
     finally:
-        lib.pyra_free_buf(out_p, out_len.value)
+        lib.lum_free_buf(out_p, out_len.value)
 
 
 def _meta_dict(meta) -> dict:
@@ -322,9 +322,9 @@ def info(blob: bytes) -> dict:
     buf = ctypes.create_string_buffer(bytes(blob), len(blob))
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
     meta = (ctypes.c_int32 * 21)()
-    rc = lib.pyra_cloud_info(src, len(blob), meta)
+    rc = lib.lum_cloud_info(src, len(blob), meta)
     if rc != 0:
-        raise CloudCorruptedError(f"not a valid PYRC container (native error {rc})")
+        raise CloudCorruptedError(f"not a valid LUMC container (native error {rc})")
     out = _meta_dict(meta)
     out["format"] = FORMAT_NAMES.get(out["sample_format"], "?")
     band_blob = bytes(blob[out["band_offset"]:out["band_offset"] + out["band_size"]])
@@ -337,7 +337,7 @@ def info(blob: bytes) -> dict:
 
 
 def decode(blob: bytes):
-    """Decode a PYRC container into (info dict, raw samples)."""
+    """Decode a LUMC container into (info dict, raw samples)."""
     lib = _load()
     if lib is None:
         raise UnsupportedFormatError("the native cloud core is not available")
@@ -346,14 +346,14 @@ def decode(blob: bytes):
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
     out_len = ctypes.c_size_t()
     meta = (ctypes.c_int32 * 21)()
-    rc = lib.pyra_cloud_decode(src, len(blob), ctypes.byref(out_p),
+    rc = lib.lum_cloud_decode(src, len(blob), ctypes.byref(out_p),
                                 ctypes.byref(out_len), meta)
     if rc != 0 or not out_p:
         raise CloudCorruptedError(f"cloud decode failed (native error {rc})")
     try:
         samples = ctypes.string_at(out_p, out_len.value)
     finally:
-        lib.pyra_free_buf(out_p, out_len.value)
+        lib.lum_free_buf(out_p, out_len.value)
     return info(blob), samples
 
 
@@ -366,14 +366,14 @@ def read_band(blob: bytes, scene: int, band: int) -> bytes:
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
     out_p = ctypes.POINTER(ctypes.c_ubyte)()
     out_len = ctypes.c_size_t()
-    rc = lib.pyra_cloud_read_band(src, len(blob), scene, band,
+    rc = lib.lum_cloud_read_band(src, len(blob), scene, band,
                                   ctypes.byref(out_p), ctypes.byref(out_len))
     if rc != 0 or not out_p:
         raise CloudCorruptedError(f"band read failed (native error {rc})")
     try:
         return ctypes.string_at(out_p, out_len.value)
     finally:
-        lib.pyra_free_buf(out_p, out_len.value)
+        lib.lum_free_buf(out_p, out_len.value)
 
 
 __all__ = [
@@ -410,13 +410,13 @@ class CloudBandStats(ctypes.Structure):
 
 
 def _load_fast():
-    """Load the optional C++ cloud helper (`_libpyra_cloud.so`)."""
+    """Load the optional C++ cloud helper (`_liblum_cloud.so`)."""
     global _FAST_LIB, _FAST_TRIED
     if _FAST_TRIED:
         return _FAST_LIB
     _FAST_TRIED = True
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "_libpyra_cloud.so")
+                        "_liblum_cloud.so")
     try:
         lib = ctypes.CDLL(path)
     except OSError:
@@ -428,29 +428,29 @@ def _load_fast():
     _u64 = ctypes.c_uint64
     _d = ctypes.c_double
     try:
-        lib.pyra_cloud_raw_write.restype = _i32
-        lib.pyra_cloud_raw_write.argtypes = [
+        lib.lum_cloud_raw_write.restype = _i32
+        lib.lum_cloud_raw_write.argtypes = [
             ctypes.c_char_p, ctypes.POINTER(ctypes.c_ubyte), _i32, _i32,
             _i32, _i32, _i32]
-        lib.pyra_cloud_raw_read.restype = _i32
-        lib.pyra_cloud_raw_read.argtypes = [
+        lib.lum_cloud_raw_read.restype = _i32
+        lib.lum_cloud_raw_read.argtypes = [
             ctypes.c_char_p, ctypes.POINTER(ctypes.c_ubyte), _sz,
             ctypes.POINTER(_i32)]
-        lib.pyra_cloud_band_stats.restype = _i32
-        lib.pyra_cloud_band_stats.argtypes = [
+        lib.lum_cloud_band_stats.restype = _i32
+        lib.lum_cloud_band_stats.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, _i32, _i32, _i32, _i32,
             _i32, _i32, ctypes.POINTER(CloudBandStats)]
-        lib.pyra_cloud_render_rgb.restype = _i32
-        lib.pyra_cloud_render_rgb.argtypes = [
+        lib.lum_cloud_render_rgb.restype = _i32
+        lib.lum_cloud_render_rgb.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, _i32, _i32, _i32, _i32,
             _i32, _i32, _i32, _i32, _i32,
             _d, _d, _d, _d, _d, _d, ctypes.POINTER(ctypes.c_ubyte)]
-        lib.pyra_cloud_interleave.restype = _i32
-        lib.pyra_cloud_interleave.argtypes = [
+        lib.lum_cloud_interleave.restype = _i32
+        lib.lum_cloud_interleave.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, _i32, _i32, _i32, _i32,
             _i32, _i32, ctypes.POINTER(ctypes.c_ubyte)]
-        lib.pyra_cloud_deinterleave.restype = _i32
-        lib.pyra_cloud_deinterleave.argtypes = [
+        lib.lum_cloud_deinterleave.restype = _i32
+        lib.lum_cloud_deinterleave.argtypes = [
             ctypes.POINTER(ctypes.c_ubyte), _sz, _i32, _i32, _i32, _i32,
             ctypes.POINTER(ctypes.c_ubyte)]
     except OSError:
@@ -467,7 +467,7 @@ def fast_available() -> bool:
 
 def raw_write(path: str, data: bytes, width: int, height: int, bands: int,
               scenes: int, sample_format: int = SFMT_U16) -> None:
-    """Write a raw cube file (the "PYRX" interchange format)."""
+    """Write a raw cube file (the "LUMX" interchange format)."""
     lib = _load_fast()
     if lib is None:
         raise UnsupportedFormatError("the C++ cloud helper is not available")
@@ -477,10 +477,10 @@ def raw_write(path: str, data: bytes, width: int, height: int, bands: int,
         raise ValueError("cube buffer too small for the given geometry")
     buf = ctypes.create_string_buffer(bytes(data[:need]), need)
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
-    rc = lib.pyra_cloud_raw_write(path.encode("utf-8"), src, width, height,
+    rc = lib.lum_cloud_raw_write(path.encode("utf-8"), src, width, height,
                                   bands, scenes, sample_format)
     if rc != 0:
-        raise PyraError(f"raw cube write failed (native error {rc})")
+        raise LumenError(f"raw cube write failed (native error {rc})")
 
 
 def raw_read(path: str):
@@ -495,7 +495,7 @@ def raw_read(path: str):
     buf = bytearray(cap)
     view = (ctypes.c_ubyte * cap).from_buffer(buf)
     info = (ctypes.c_int * 8)()
-    rc = lib.pyra_cloud_raw_read(path.encode("utf-8"), view, cap, info)
+    rc = lib.lum_cloud_raw_read(path.encode("utf-8"), view, cap, info)
     if rc < 0:
         raise CloudCorruptedError(f"raw cube read failed (native error {rc})")
     return (bytes(buf[:rc]), info[0], info[1], info[2], info[3], info[4])
@@ -518,10 +518,10 @@ def band_stats(cube: bytes, width: int, height: int, bands: int, scenes: int,
     buf = ctypes.create_string_buffer(bytes(cube[:need]), need)
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
     stats = CloudBandStats()
-    rc = lib.pyra_cloud_band_stats(src, need, width, height, bands, scenes,
+    rc = lib.lum_cloud_band_stats(src, need, width, height, bands, scenes,
                                    sample_format, band, ctypes.byref(stats))
     if rc != 0:
-        raise PyraError(f"band statistics failed (native error {rc})")
+        raise LumenError(f"band statistics failed (native error {rc})")
     return {
         "minimum": stats.minimum,
         "maximum": stats.maximum,
@@ -558,12 +558,12 @@ def render_rgb(cube: bytes, width: int, height: int, bands: int, scenes: int,
     count = width * height * 3
     out = bytearray(count)
     view = (ctypes.c_ubyte * count).from_buffer(out)
-    rc = lib.pyra_cloud_render_rgb(src, need, width, height, bands, scenes,
+    rc = lib.lum_cloud_render_rgb(src, need, width, height, bands, scenes,
                                    sample_format, scene, band_r, band_g,
                                    band_b, window_r, level_r, window_g, level_g,
                                    window_b, level_b, view)
     if rc != 0:
-        raise PyraError(f"render failed (native error {rc})")
+        raise LumenError(f"render failed (native error {rc})")
     return bytes(out)
 
 
@@ -582,10 +582,10 @@ def interleave(cube: bytes, width: int, height: int, bands: int, scenes: int,
     count = width * height * bands * sb
     out = bytearray(count)
     view = (ctypes.c_ubyte * count).from_buffer(out)
-    rc = lib.pyra_cloud_interleave(src, need, width, height, bands, scenes,
+    rc = lib.lum_cloud_interleave(src, need, width, height, bands, scenes,
                                    sample_format, scene, view)
     if rc != 0:
-        raise PyraError(f"interleave failed (native error {rc})")
+        raise LumenError(f"interleave failed (native error {rc})")
     return bytes(out)
 
 
@@ -603,8 +603,8 @@ def deinterleave(interleaved: bytes, width: int, height: int, bands: int,
     src = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
     out = bytearray(need)
     view = (ctypes.c_ubyte * need).from_buffer(out)
-    rc = lib.pyra_cloud_deinterleave(src, need, width, height, bands,
+    rc = lib.lum_cloud_deinterleave(src, need, width, height, bands,
                                      sample_format, view)
     if rc != 0:
-        raise PyraError(f"deinterleave failed (native error {rc})")
+        raise LumenError(f"deinterleave failed (native error {rc})")
     return bytes(out)

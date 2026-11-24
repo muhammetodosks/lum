@@ -1,7 +1,7 @@
 # Changelog
 
-All notable changes to PYRA and PYRM. The format versions are independent:
-`PYRA` container v1 → v2 → v3 (lossless) and v6 (lossy), `PYRM` container
+All notable changes to LUMEN, LUMM and LUMC. The format versions are independent:
+`LUMEN` container v1 → v2 → v3 (lossless) and v6 (lossy), `LUMM` container
 v1 → v2.
 
 The project keeps **bit-exact parity** between the native Rust/C++ backends and the
@@ -9,7 +9,119 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
-## v0.15.0 — AV1 conformance vectors: fetched, verified, measured
+## v1.0.0 — 2026-11-23 — LUMEN: the format gets its name
+
+The working name *PYRA* is retired. The format is **LUMEN** — light — with the
+extension `.lum` next to `.jpg`/`.png`/`.jxl`, the CLI `lum`, and the magic
+bytes `LUMA\r\n\x1A\n`. Nothing about the pixel pipeline changed: this release
+is the rename plus the measurement work that earns the 1.0.
+
+### The name
+
+| Layer | Name | Magic | Extension |
+|-------|------|-------|-----------|
+| Lossless / lossy image | **LUMEN** | `LUMA\r\n\x1A\n` | `.lum` |
+| Cloud / earth observation | **LUMC** | `LUMC\r\n\x1A\n` | `.lumc`, raw cubes `.lumx` |
+| Medical / DICOM | **LUMM** | `LUMM\r\n\x1A\n` | `.lumm`, previews `.lump` |
+
+The `LUMA` / `LUMC` / `LUMM` family keeps the previous base-plus-letter scheme,
+so the three containers still read as siblings. The DICOM private creator is
+`LUMEN-LUMM`.
+
+**This is a breaking rename.** A 0.x file carries `PYRA\r\n\x1A\n` and is
+rejected by 1.0.0 with `CorruptedFileError`; a 1.0.0 file is rejected by 0.x.
+The container *layout*, the version bytes and every bit of the encoded stream
+are otherwise unchanged, so the only difference between a 0.x stream and a
+1.0.0 stream is the eight magic bytes and the renamed symbols.
+
+Renamed in the same pass:
+
+- package `pyra/` → `lum/`, imports `from lum import api, lossy`
+- CLI `python3 -m pyra.cli` → `python3 -m lum.cli`
+- native libraries `_libpyra_core.so` → `_liblum_core.so`, plus `_liblum_fast`,
+  `_liblum_cloud` (the `.so` files stay out of git)
+- Rust sources `pyra_{core,image,lossy,med,cloud}.rs` → `lum_*.rs`,
+  C++ `pyra_{fast,cloud}.cpp` → `lum_*.cpp`
+- the raw cloud interchange magic `PYRX` → `LUMX`
+- tests `python3 -m lum.tests.test_*`
+
+### Thirteen formats, measured on a corpus the codec never saw
+
+Six Kodak PhotoCD images (0.393 MP mean) from the 24-image set, decoded to RGB
+and re-encoded by the real encoder of every format — ImageMagick 6.9.12 for
+PNG/JPEG/WebP/AVIF/JP2/TIFF/BMP/GIF and `ffmpeg -c:v libjxl` for JPEG XL. Each
+output was decoded again and compared to the source; the byte counts and the
+RGB PSNR below are what the encoders actually produced.
+
+Lossless, mean bytes per image and KB per megapixel:
+
+| Format | Mean size | KB/MP | vs LUMEN |
+|--------|-----------|-------|----------|
+| **LUMEN** | **285.9 KB** | **727.0** | — |
+| JPEG XL lossless | 425.0 KB | 1080.9 | +48.7 % |
+| WebP lossless | 475.3 KB | 1208.6 | +66.2 % |
+| PNG (zlib 9) | 673.5 KB | 1712.8 | +135.6 % |
+| TIFF (LZW) | 753.0 KB | 1915.1 | +163.4 % |
+| BMP | 1152.1 KB | 2930.0 | +303.0 % |
+
+Lossy at each encoder's quality 90, with the fidelity it really reached:
+
+| Format | Mean size | KB/MP | PSNR |
+|--------|-----------|-------|------|
+| WebP q90 | 56.4 KB | 143.5 | 35.14 dB |
+| JPEG XL d1.0 | 90.4 KB | 229.9 | 37.78 dB |
+| AVIF q90 | 133.4 KB | 339.3 | 40.95 dB |
+| JPEG q90 | 142.9 KB | 363.4 | 39.09 dB |
+| **LUMEN q90** | **161.5 KB** | **410.8** | **43.70 dB** |
+| GIF 256 colours | 262.2 KB | 666.8 | 37.29 dB |
+| JPEG 2000 q90 | 465.2 KB | 1183.1 | 82.59 dB |
+
+Nominal quality is not a common currency across codecs, which is why the PSNR
+column is there. The honest reading: LUMEN lossless is the smallest container
+in the comparison and beats JPEG XL by 24 % on photos it was not tuned on; the
+lossy mode at q90 reaches the highest fidelity of the eight lossy formats, and
+on the matched-fidelity curves over the full 24-image corpus it is level with
+JPEG XL at 38 dB, 7.9 % larger at 34 dB and 6.1 % smaller at 42 dB. Those
+curves were already in the README and are unchanged.
+
+Speed per 0.393 MP image (four cores, native core, whole process):
+
+| | encode | decode |
+|---|---|---|
+| LUMEN lossless | 203 ms | 70 ms |
+| LUMEN q90 | 51 ms | 33 ms |
+
+The external timings in the harness include process startup, so the ratios
+understate LUMEN slightly rather than the other way round.
+
+### New measurement tooling
+
+- `benchmarks/bench_formats.py` — drives all thirteen encoders, decodes back,
+  records bytes / PSNR / encode / decode time per image, writes
+  `benchmarks/results/formats.json` and the centre crops.
+- `benchmarks/format_report.py` — stdlib-only renderer: `psnr`, `summarise`,
+  `best_by`, `render_bars_svg`, `render_scatter_svg`, `render_html`. No Pillow,
+  so the test suite imports it without a dependency.
+- `docs/assets/formats-bars.svg`, `docs/assets/formats-scatter.svg`,
+  `docs/assets/formats.html` — the two charts and a 1.6 MB self-contained
+  gallery with the decoded crops of all thirteen formats.
+- `tests/test_format_report.py` — PSNR identity, size formatting, aggregation
+  ordering, `best_by`, SVG validity, hostile-label escaping, empty-corpus
+  rendering, gallery/table/notes.
+
+Also fixed while renaming: the native Rust medical and cloud cores still
+carried the old byte-array magic (`0x50,0x59,0x52,0x4D` / `…0x43`), so the
+native path wrote `PYRM`/`PYRC` headers while the reader expected `LUMM`/`LUMC`.
+Both `lum_med.rs` and `lum_cloud.rs` now emit the new magic, and
+`scripts/build_native.sh` rebuilds them.
+
+Test totals at release: 246 lossless, 72 lossy, 25 cloud, 106 medical,
+33 format-report checks — all passing, plus the pure-Python path
+(`LUMEN_DISABLE_NATIVE=1`) at 179 lossless and 104 medical.
+
+---
+
+
 
 The request was to test against `github.com/AOMediaCodec/av1-cts`. That
 repository does not exist: `https://github.com/AOMediaCodec/av1-cts` returns 404,
@@ -41,7 +153,7 @@ frames; decoding to `yuv420p` matched all of them.
 
 One decoded frame per stream, 105 distinct sizes from 16x16 to 1920x1080, RGB:
 
-| PSNR | n | PYRA KB/MP | JXL KB/MP | mean | median | PYRA wins |
+| PSNR | n | LUMEN KB/MP | JXL KB/MP | mean | median | LUMEN wins |
 |------|---|------------|-----------|------|--------|-----------|
 | 34 dB | 239 | 112.27 | 110.78 | 100.2 % | 102.2 % | 95/239 |
 | 38 dB | 241 | 165.48 | 157.31 | 107.1 % | 104.1 % | 64/241 |
@@ -55,7 +167,7 @@ is labelled as such.
 **Natural footage from the same bucket** — 10 frames each of three SDR
 sequences, 30 frames total:
 
-| PSNR | n | PYRA KB/MP | JXL KB/MP | mean | median | PYRA wins |
+| PSNR | n | LUMEN KB/MP | JXL KB/MP | mean | median | LUMEN wins |
 |------|---|------------|-----------|------|--------|-----------|
 | 34 dB | 22 | 97.98 | 91.87 | 97.8 % | 103.8 % | 10/22 |
 | 38 dB | 30 | 117.99 | 117.26 | 98.2 % | 106.8 % | 10/30 |
@@ -66,7 +178,7 @@ carried by Dance; the median is worse than the mean at 34 and 38 dB, which is
 stated in the README rather than rounded away. The weakness is smooth content at
 moderate rate — the same direction as the Kodak result.
 
-Speed on the 1080x1920 frames: 13.2 s for the full PYRA sweep against 31.4 s
+Speed on the 1080x1920 frames: 13.2 s for the full LUMEN sweep against 31.4 s
 for the JXL sweep, a factor of 2.4.
 
 ## v0.14.0 — independent corpus: Kodak, measured and published
@@ -79,7 +191,7 @@ publishes the result even though it is worse.
 **Corpus and method**
 
 `benchmarks/bench_kodak.py` downloads nothing and tunes nothing: it takes a
-directory of PNGs, encodes each image on both codecs' own curves (PYRA q=10..100
+directory of PNGs, encodes each image on both codecs' own curves (LUMEN q=10..100
 in steps of 5, JPEG XL through `libjxl -effort 7` at 17 distances from -1.0 to
 15.0), and interpolates the size at a target RGB PSNR between the two nearest
 measured points. A target one curve never reaches is dropped for that image
@@ -92,19 +204,19 @@ the repository was fitted on it.
 
 **Result**
 
-| PSNR | n | PYRA KB/MP | JXL KB/MP | PYRA/JXL mean | median | PYRA wins |
+| PSNR | n | LUMEN KB/MP | JXL KB/MP | LUMEN/JXL mean | median | LUMEN wins |
 |------|---|------------|-----------|---------------|--------|-----------|
 | 34 dB | 24 | 128.37 | 118.76 | 107.9 % | 109.8 % | 4/24 |
 | 38 dB | 24 | 216.65 | 218.97 | 100.1 % | 103.8 % | 9/24 |
 | 42 dB | 24 | 341.37 | 359.46 | 93.9 % | 95.5 % | 20/24 |
 
-On content the encoder has not seen, PYRA is **7.9 % larger than JXL at 34 dB**,
+On content the encoder has not seen, LUMEN is **7.9 % larger than JXL at 34 dB**,
 level at 38 dB, and 6.1 % smaller at 42 dB. The six-photo table in the README
 said "smaller at every target"; that sentence is now scoped to the set it was
 measured on.
 
 The loss is not one bad image. At 34 dB the median (109.8 %) is worse than the
-mean (107.9 %), so it is spread across the corpus, and PYRA wins on only four of
+mean (107.9 %), so it is spread across the corpus, and LUMEN wins on only four of
 the 24 images at that rate.
 
 **Why it is published rather than tuned away**
@@ -167,8 +279,8 @@ passes 72/72.
 Measured through `ffmpeg -c:v libjxl -effort 7` on the same 1920x1080 image,
 distances 2.0/1.0/0.5 (90/128/185 KB):
 
-* encode: JXL 1.92-2.00 MP/s, PYRA 16.3-18.7 MP/s -> **~9x faster**
-* decode: JXL 11.2-12.6 MP/s, PYRA 25.8-31.0 MP/s -> **~2.7x faster**
+* encode: JXL 1.92-2.00 MP/s, LUMEN 16.3-18.7 MP/s -> **~9x faster**
+* decode: JXL 11.2-12.6 MP/s, LUMEN 25.8-31.0 MP/s -> **~2.7x faster**
 
 The JXL figures include ffmpeg's own startup and PPM I/O, so they are an upper
 bound on JXL's speed and the ratio is if anything conservative.
@@ -183,16 +295,16 @@ bound on JXL's speed and the ratio is if anything conservative.
 * `-C target-cpu=native`: measured at 3 %, and it would make the binary
   non-portable for no meaningful return next to the 6.4x above.
 
-## v0.12.0 — per-band quantisation, PYRA v6
+## v0.12.0 — per-band quantisation, LUMEN v6
 
-The lossy codec's weak point was never the entropy model: `PYRA_STATS` reports
+The lossy codec's weak point was never the entropy model: `LUMEN_STATS` reports
 the range coder at 100.0 % of the ideal cost, so every byte it writes is a byte
 the model asked for. The bytes were going to the wrong frequencies. The JPEG
 base tables shape the step as a function of `u+v`, which treats all ten
 frequency bands the same way at every quality; the measured optimum does not.
 
 This release adds a per-band multiplier table, fitted against the real codec at
-matched PSNR, and makes PYRA faster than JXL at every measured distortion.
+matched PSNR, and makes LUMEN faster than JXL at every measured distortion.
 
 **Changed**
 
@@ -204,7 +316,7 @@ matched PSNR, and makes PYRA faster than JXL at every measured distortion.
   gate, so encoder and decoder always derive the same table from `quality`.
 * The shape is blended across three anchors (`BAND_Q_LOW` 10, `BAND_Q_MID` 56,
   `BAND_Q_HIGH` 90) and held constant outside that range.
-  `PYRA_QBAND` still overrides it for experiments; `PYRA_GSCALE` still applies
+  `LUMEN_QBAND` still overrides it for experiments; `LUMEN_GSCALE` still applies
   after it.
 
 **Measured**
@@ -220,7 +332,7 @@ distance swept -1..15), six 800 px backgrounds, ratios averaged per image:
 | 42 dB | 101.7 % | **97.6 %** | -4.1 % | 6 |
 | 46 dB | 91.3 % | **88.2 %** | -3.1 % | 6 |
 
-PYRA is now smaller than JXL at all five targets. The 30 and 34 dB rows cover
+LUMEN is now smaller than JXL at all five targets. The 30 and 34 dB rows cover
 four images rather than six because JXL cannot go below 34.64 dB on Clouds or
 35.68 dB on Fuji at any distance, so there is nothing to compare there.
 Absolute rates where all six images are covered: 61.15 / 109.66 / 183.36 KB/MP
@@ -238,7 +350,7 @@ textured images (Rainbow, Northan) keep their existing 30-50 % lead.
 * Two anchors on a single line between q=10 and q=90. Better on average at
   30 dB, but the fitted shape bulges upward through the middle, so a straight
   line is wrong exactly there: Fuji still lost 2.1 % at 38 dB — the one point
-  where PYRA trailed JXL. Three anchors cost 1.0 % at 30 dB (where the margin
+  where LUMEN trailed JXL. Three anchors cost 1.0 % at 30 dB (where the margin
   is already comfortable) and fix 38 dB, so the three-anchor version is kept.
 * Extrapolating the blend outside q=10..90. The end shapes are held constant
   instead: past the measured range the line produced steps coarser than any
@@ -251,9 +363,9 @@ earlier version silently snapped to the nearest measured point, which reported
 an 11 % win on Rainbow and Fuji at q=85 — those curves never reach 38 dB, and
 the "win" was a comparison between two different distortions.
 
-## v0.11.0 — lossy codec (PYRA v5)
+## v0.11.0 — lossy codec (LUMEN v5)
 
-PYRA gains a photographic mode. Until now the container was lossless only: it
+LUMEN gains a photographic mode. Until now the container was lossless only: it
 competed with PNG, had no quality knob, and was useless for camera output. The
 new mode is a full transform codec — YCbCr, 8x8 DCT, perceptual quantisation and
 a context-modelled binary range coder — written in the same dependency-free Rust
@@ -271,9 +383,9 @@ core as the rest of the project.
   `u32 length + stream` per plane, then CRC-32 over the whole file. Version 4
   files are rejected rather than decoded: the entropy model changed and they
   would decode to the wrong pixels.
-* `pyra.lossy` ctypes binding (`encode`, `decode`, `info`) and a
-  `PyraCodec.decode` dispatch for v5.
-* `pyra inspect` reports quality, chroma format and plane count for v5 files.
+* `lum.lossy` ctypes binding (`encode`, `decode`, `info`) and a
+  `LumenCodec.decode` dispatch for v5.
+* `lum inspect` reports quality, chroma format and plane count for v5 files.
 * `tests/test_lossy.py`: 63 checks covering round-trip accuracy, monotone
   distortion in quality, header validation, corruption rejection and the
   codec dispatch.
@@ -283,7 +395,7 @@ core as the rest of the project.
 Mean bytes per megapixel at matched RGB PSNR over six 800 px backgrounds,
 compared with JPEG XL (`libjxl --effort 7`, distance swept over -1..15):
 
-| PSNR | PYRA | as % of JXL |
+| PSNR | LUMEN | as % of JXL |
 |------|------|-------------|
 | 30 dB | 16.5 KB | 87.9 % |
 | 34 dB | 32.4 KB | 89.2 % |
@@ -322,7 +434,7 @@ explained in v0.13.0, which makes the claim true rather than deleting it.
 * Flat high-frequency shaping, chroma stride, a second-order tilt term, and a
   finer 9-state neighbour context all measured neutral or worse.
 * A within-block energy context for significance: neutral to negative.
-* Coarser chroma (`PYRA_CQ` 1.1 and 1.25, `PYRA_CS` 1.4/2.0/2.8): always larger.
+* Coarser chroma (`LUMEN_CQ` 1.1 and 1.25, `LUMEN_CS` 1.4/2.0/2.8): always larger.
 * Five alternative DC predictors (average of left+above, planar
   `l+u-ul`, median of the two and the planar guess, above-only, left-only).
   LOCO-I's median edge detector won at every operating point:
@@ -364,7 +476,7 @@ explained in v0.13.0, which makes the claim true rather than deleting it.
   Doubling the transform is a wash on ratio but makes the weakness
   deeper, so it is not taken.
 
-## v0.10.0 — near-lossless PYRM
+## v0.10.0 — near-lossless LUMM
 
 The medical container can now trade a small, bounded error for a smaller
 file. The bound is absolute and exact: no sample moves by more than the
@@ -372,11 +484,11 @@ requested amount.
 
 **Added**
 
-* `encode(..., max_error=N)` and `pyra med encode --max-error N`: the
+* `encode(..., max_error=N)` and `lum med encode --max-error N`: the
   encoder quantizes each canonical sample onto a `2N+1` grid **before**
   prediction, so the residual chain and the decoder stay exact and the
   error bound is independent of modular wrap-around.
-* `pyra_med_encode` takes the quantization step, the header stores it in
+* `lum_med_encode` takes the quantization step, the header stores it in
   `flags` bit 1 plus the packed word at offset 76 (`predictor | step << 8`),
   and `info()` reports it as `step`.
 * The slice predictor stays available in the near-lossless mode (the
@@ -401,7 +513,7 @@ native core as well.
 
 **Added**
 
-* `pyra_med_decode_region` in `rust/pyra_med.rs`: decodes a box of a volume
+* `lum_med_decode_region` in `rust/lum_med.rs`: decodes a box of a volume
   natively. Only the tiles the box touches are decoded, the tiles needed for
   the volumetric context (the previous slice of the same tile when the
   `slice` predictor is used) are resolved recursively and cached, and the
@@ -426,31 +538,31 @@ native core as well.
 
 ## v0.8.0 — the cloud working set: C++ tools, command line, checksummed index
 
-The `PYRC` container of v0.7.0 is now a complete working set: the codec was
+The `LUMC` container of v0.7.0 is now a complete working set: the codec was
 there, but there was no way to look at the data. This release adds the tools
 around it.
 
 **Added**
 
-* `cpp/pyra_cloud.cpp`: a C++20 working-set layer for cloud cubes.
-  * The `PYRX` raw cube format (32 byte header, band planar samples) with
-    `pyra_cloud_raw_write` / `pyra_cloud_raw_read`.
-  * `pyra_cloud_band_stats`: minimum, maximum, mean, standard deviation and a
+* `cpp/lum_cloud.cpp`: a C++20 working-set layer for cloud cubes.
+  * The `LUMX` raw cube format (32 byte header, band planar samples) with
+    `lum_cloud_raw_write` / `lum_cloud_raw_read`.
+  * `lum_cloud_band_stats`: minimum, maximum, mean, standard deviation and a
     256 bin histogram per band (Welford algorithm, canonical samples).
-  * `pyra_cloud_render_rgb`: false-colour composite of three bands with a
+  * `lum_cloud_render_rgb`: false-colour composite of three bands with a
     window and a level per band.
-  * `pyra_cloud_interleave` / `pyra_cloud_deinterleave`: band planar ↔ pixel
+  * `lum_cloud_interleave` / `lum_cloud_deinterleave`: band planar ↔ pixel
     interleaved conversion.
-  * A built-in self test (`-DPYRA_CLOUD_SELFTEST`, 17 checks).
-* `pyra cloud` command group: `encode`, `info`, `stats`, `render`, `decode`
+  * A built-in self test (`-DLUMEN_CLOUD_SELFTEST`, 17 checks).
+* `lum cloud` command group: `encode`, `info`, `stats`, `render`, `decode`
   (the whole cube or a single band with `--scene` and `--band`).
-* `pyra/cloud.py`: the C++ bindings for the working-set operations.
-* `docs/FORMAT-PYRC.md`: the full format specification.
-* `rust/pyra_cloud.rs`: a `#[cfg(test)]` unit test module (9 checks: CRC and
+* `lum/cloud.py`: the C++ bindings for the working-set operations.
+* `docs/FORMAT-LUMC.md`: the full format specification.
+* `rust/lum_cloud.rs`: a `#[cfg(test)]` unit test module (9 checks: CRC and
   SHA-256 reference vectors, the round trip, every predictor, every sample
   format, the damage and truncation rejections).
 * `scripts/run_tests.sh`: runs every suite — the native Python suites, the
-  pure-Python fallback suites and, with `PYRA_BUILD_TESTS=1`, the Rust unit
+  pure-Python fallback suites and, with `LUMEN_BUILD_TESTS=1`, the Rust unit
   tests and the C++ self test.
 
 **Changed**
@@ -461,36 +573,36 @@ around it.
   checksum of its own. Every structure of the container now has one.
 * `read_band` no longer decodes the whole cube twice: it decodes only the
   planes it needs, following the `TIME` / `BAND` context chain.
-* `pyra.cloud` is exported from the package root (`from pyra import cloud`).
+* `lum.cloud` is exported from the package root (`from lum import cloud`).
 
 **Fixed**
 
-* `pyra_cloud_deinterleave` wrote its output in the interleaved order it was
+* `lum_cloud_deinterleave` wrote its output in the interleaved order it was
   reading instead of the band planar order the contract promises; the output
   was a copy of the input.
 
 ---
 
-## v0.7.0 — PYRC: the cloud container (Rust only)
+## v0.7.0 — LUMC: the cloud container (Rust only)
 
 A new container format for earth observation data: multi-band, multi-scene
 cubes with per-band radiometric metadata and per-scene georeferencing.
-The codec is implemented **in Rust only** (`rust/pyra_cloud.rs`); the Python
-package is a thin ctypes binding (`pyra/cloud.py`) with no pure-Python
+The codec is implemented **in Rust only** (`rust/lum_cloud.rs`); the Python
+package is a thin ctypes binding (`lum/cloud.py`) with no pure-Python
 fallback, so there is exactly one implementation and no parity risk.
 
 **Added**
 
-* `PYRC` container: 192 byte header, band table (48 B/entry: name, wavelength,
+* `LUMC` container: 192 byte header, band table (48 B/entry: name, wavelength,
   type, units, scale, offset, valid range), scene table (40 B/entry: timestamp,
   origin, pixel size), tile index (24 B/entry) and a SHA-256 content hash.
 * Nine predictors, including two that cross the tile borders: `TIME` (the same
   band of the previous scene) and `BAND` (the same pixel of the previous band).
 * Two entropy paths: a zig-zag escape code (one symbol per sample) for wide
   integers and byte planes with one adaptive model per plane otherwise.
-* `pyra cloud` Python binding: `encode`, `decode`, `info`, `read_band`
+* `lum cloud` Python binding: `encode`, `decode`, `info`, `read_band`
   (a single band without touching the rest of the cube).
-* `pyra/tests/test_cloud.py`: round trip over every sample format, geometry,
+* `lum/tests/test_cloud.py`: round trip over every sample format, geometry,
   method and predictor, band reads against the full decode, determinism,
   bit-flip fuzzing and the input guards.
 
@@ -507,7 +619,7 @@ fallback, so there is exactly one implementation and no parity risk.
 
 ---
 
-## v0.6.0 — region decoding (PYRM v3)
+## v0.6.0 — region decoding (LUMM v3)
 
 ### Added
 - **`medical.decode_region(blob, x, y, z, width, height, depth)`**: decodes
@@ -529,7 +641,7 @@ fallback, so there is exactly one implementation and no parity risk.
   the 10-20 % that was expected - consecutive slices are nearly
   independent. The format was left alone.
 
-## v0.5.0 — signed containers and provenance (PYRM v3)
+## v0.5.0 — signed containers and provenance (LUMM v3)
 
 ### Added
 - **Optional HMAC-SHA256 signature** (`medical/signature.py`). The 32 byte
@@ -560,10 +672,10 @@ fallback, so there is exactly one implementation and no parity risk.
 ### Fixed
 - An empty signing key was silently ignored instead of being refused.
 
-## v0.4.0 — context modelling (PYRM v3)
+## v0.4.0 — context modelling (LUMM v3)
 
 ### Added
-- **One adaptive model per byte plane** in the PYRM container (version 3,
+- **One adaptive model per byte plane** in the LUMM container (version 3,
   tile flag `0x08`). The high planes of a wide sample are long runs of zero
   bytes; a separate model per plane learns that immediately instead of
   sharing one model with the noisy low plane. The Python reference and the
@@ -581,7 +693,7 @@ fallback, so there is exactly one implementation and no parity risk.
 
 ---
 
-## v0.3.0 — the clinical update (PYRM v2)
+## v0.3.0 — the clinical update (LUMM v2)
 
 ### Added
 - **DICOM compatible clinical metadata** (`medical/dicom.py`): `build_dicom_metadata`,
@@ -597,9 +709,9 @@ fallback, so there is exactly one implementation and no parity risk.
 - **`medical.verify(blob)`**: checks every integrity guarantee and reports the
   clinical problems of the metadata block (`dicom_problems`).
 - **Third-party DICOM conformance**: the DICOM files are checked against
-  pydicom in both directions - pydicom parses every file PYRM writes (five
+  pydicom in both directions - pydicom parses every file LUMM writes (five
   sample formats plus a multi-frame series, byte-identical pixel data and
-  clinical attributes) and PYRM parses the files pydicom writes from scratch.
+  clinical attributes) and LUMM parses the files pydicom writes from scratch.
   The check lives in `tests/test_medical.py` and is skipped when pydicom is
   not installed.
 - **`medical.generate_uid(seed)`**: standards-compliant `2.25.` UIDs; deterministic
@@ -607,11 +719,11 @@ fallback, so there is exactly one implementation and no parity risk.
 - **LOCO-I / JPEG-LS MED predictor** (`PRED_MED = 8`), added to the adaptive row
   filter candidate list.
 - **Window/level preview** with rescale calibration and MONOCHROME1 inversion
-  (`medical/preview.py`, C++ `pyra_med_preview`).
+  (`medical/preview.py`, C++ `lum_med_preview`).
 - **CLI `med` command group**: `encode --dicom --require-dicom`, `decode`, `info`,
   `dump` (full JSON document, `--metadata-only`), `verify`, `preview`, `to-dicom`,
   `from-dicom`.
-- **Escape coding** in PYRM: one symbol per sample for 16/32 bit formats, with
+- **Escape coding** in LUMM: one symbol per sample for 16/32 bit formats, with
   zig-zag mapping of small residuals and escape chunks for the rare large ones.
   Cut the file size of a 16-bit CT volume by 22 %.
 - **Allocation-free LZ matcher** (Rust and Python): fixed hash table with
@@ -633,7 +745,7 @@ fallback, so there is exactly one implementation and no parity risk.
 - `write_dicom` wrote the same tag twice (0020,0011) — duplicate elements are
   invalid in DICOM. Elements are now written in ascending tag order.
 - `build_dicom_metadata` did not produce the ten standard attributes that the
-  DICOM writer emits, so the metadata of a PYRM container and of the equivalent
+  DICOM writer emits, so the metadata of a LUMM container and of the equivalent
   DICOM file were not the same set.
 - `is_dicom_compatible()` ignored *contradictions* (geometry, pixel
   representation, photometric interpretation, HighBit, rescale slope, unusable
@@ -659,11 +771,11 @@ smaller files.
 
 ---
 
-## v0.2.0 — the speed update (PYRA v3)
+## v0.2.0 — the speed update (LUMEN v3)
 
 ### Added
-- **Whole-image native codec** (`rust/pyra_image.rs`): `pyra_encode_image`,
-  `pyra_encode_image_bytes`, `pyra_decode_image`. Planning, tiling, the method
+- **Whole-image native codec** (`rust/lum_image.rs`): `lum_encode_image`,
+  `lum_encode_image_bytes`, `lum_decode_image`. Planning, tiling, the method
   candidates, the container header, the tile index and the CRC32 all happen in
   Rust, with one thread per tile.
 - **Narrow residual packing** (container v3): a residual is stored in exactly the
@@ -688,13 +800,13 @@ bytes (3.93x of raw), slightly ahead of PNG (3.85x).
 
 ---
 
-## v0.1.0 — the first release (PYRA v1 / v2)
+## v0.1.0 — the first release (LUMEN v1 / v2)
 
 ### Added
 - A stdlib-only lossless image codec: seven reversible predictors, a reversible
   YCoCg transform, an adaptive per-row filter, RAW/RLE/LZ methods and an
   adaptive range coder with a Fenwick CDF model.
-- A native Rust core (`rust/pyra_core.rs`) with a ctypes dispatch layer and a
+- A native Rust core (`rust/lum_core.rs`) with a ctypes dispatch layer and a
   pure-Python fallback; an optional C++20 core for the adaptive row filters.
 - Container v1 (32 byte header) and v2 (34 byte header, automatic colour
   transform, automatic row filter).

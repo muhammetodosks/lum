@@ -1,5 +1,5 @@
-# PYRC (PYRA Cloud) format test suite.
-# Run:  python3 -m pyra.tests.test_cloud
+# LUMC (LUMEN Cloud) format test suite.
+# Run:  python3 -m lum.tests.test_cloud
 #
 # The cloud container holds multi-band, multi-scene cubes. Every check here is
 # about correctness: the decoded cube must be byte-identical to the input and
@@ -13,7 +13,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from pyra.cloud import (METHOD_LZ, METHOD_RAW, PRED_BAND, PRED_NONE, PRED_TIME,
+from lum.cloud import (METHOD_LZ, METHOD_RAW, PRED_BAND, PRED_NONE, PRED_TIME,
                         SFMT_F32, SFMT_I16, SFMT_I32, SFMT_U8, SFMT_U16,
                         SFMT_U32, CloudError, decode, encode, info, read_band)
 
@@ -213,7 +213,7 @@ def test_band_predictor():
 
 def test_cpp_layer():
     """The C++ work-set helpers behave like the reference implementation."""
-    import pyra.cloud as _cloud
+    import lum.cloud as _cloud
     if not _cloud.fast_available():
         check("the C++ cloud core is present", False)
         return
@@ -224,7 +224,7 @@ def test_cpp_layer():
 
     # --- the raw cube format round trips
     with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "cube.pyrx")
+        path = os.path.join(tmp, "cube.lumx")
         try:
             _cloud.raw_write(path, raw, w, h, bands, scenes, SFMT_U16)
             written = True
@@ -289,22 +289,22 @@ def test_cli():
     import json
     from contextlib import redirect_stdout
 
-    from pyra import cli as _cli
+    from lum import cli as _cli
 
     raw = make_cube("smooth", 12, 8, 3, 2, SFMT_U16)
     with tempfile.TemporaryDirectory() as tmp:
-        pyrx = os.path.join(tmp, "cube.pyrx")
-        container = os.path.join(tmp, "cube.pyrc")
-        out = os.path.join(tmp, "out.pyrx")
-        import pyra.cloud as _cloud
+        cube = os.path.join(tmp, "cube.lumx")
+        container = os.path.join(tmp, "cube.lumc")
+        out = os.path.join(tmp, "out.lumx")
+        import lum.cloud as _cloud
         if not _cloud.fast_available():
             check("the command line builds a cloud container", False)
             return
-        _cloud.raw_write(pyrx, raw, 12, 8, 3, 2, SFMT_U16)
+        _cloud.raw_write(cube, raw, 12, 8, 3, 2, SFMT_U16)
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            rc = _cli.main(["cloud", "encode", pyrx, container,
+            rc = _cli.main(["cloud", "encode", cube, container,
                             "--width", "12", "--height", "8", "--bands", "3",
                             "--scenes", "2", "--format", "u16",
                             "--band-name", "red", "--band-name", "green",
@@ -339,7 +339,7 @@ def test_cli():
 
 
 def main():
-    print("=== PYRC cloud format test suite ===")
+    print("=== LUMC cloud format test suite ===")
     test_roundtrip_matrix()
     test_geometry_and_tables()
     test_read_band()

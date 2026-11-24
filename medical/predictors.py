@@ -1,4 +1,4 @@
-"""Predictors, row filter tables and byte-plane helpers for PYRM.
+"""Predictors, row filter tables and byte-plane helpers for LUMM.
 
 The prediction context is *tile local*: a tile never borrows a pixel from
 its neighbour, which keeps every tile independently decodable (and lets the

@@ -1,6 +1,6 @@
 __pycache__/
 *.pyc
-.pyra
-_libpyra_core.so
-_libpyra_fast.so
-_libpyra_cloud.so
+.lum
+_liblum_core.so
+_liblum_fast.so
+_liblum_cloud.so

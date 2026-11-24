@@ -1,7 +1,7 @@
-# PYRA v6 (lossy DCT) test suite.
-# Run:  python3 -m pyra.tests.test_lossy
+# LUMEN v6 (lossy DCT) test suite.
+# Run:  python3 -m lum.tests.test_lossy
 #
-# Version 4 is the first lossy PYRA revision: YCbCr, 8x8 DCT, perceptual
+# Version 4 is the first lossy LUMEN revision: YCbCr, 8x8 DCT, perceptual
 # quantisation and an adaptive binary range coder. The checks below pin the
 # *contract* of the codec, not its exact numbers, so the bitstream and the
 # quantisation tables can still be improved without rewriting the suite:
@@ -25,11 +25,11 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from pyra import lossy
-from pyra.api import _parse_pnm_raw, decode_file, encode_file
-from pyra.codec import PyraCodec
-from pyra.constants import CS_GRAY, CS_RGB, CS_RGBA, MAGIC
-from pyra.security import CorruptedFileError
+from lum import lossy
+from lum.api import _parse_pnm_raw, decode_file, encode_file
+from lum.codec import LumenCodec
+from lum.constants import CS_GRAY, CS_RGB, CS_RGBA, MAGIC
+from lum.security import CorruptedFileError
 
 PASS = 0
 FAIL = 0
@@ -193,7 +193,7 @@ def test_info():
     w, h = 40, 24
     raw = photo(w, h)
     blob = lossy.encode(raw, w, h, CS_RGB, 77, lossy.SUBSAMPLE_444)
-    check("container starts with the PYRA magic", blob[:len(MAGIC)] == MAGIC)
+    check("container starts with the LUMEN magic", blob[:len(MAGIC)] == MAGIC)
     check("version field is 6",
           struct.unpack(">I", blob[8:12])[0] == 6)
     meta = lossy.info(blob)
@@ -300,14 +300,14 @@ def test_stream_desync():
 
 def test_api_and_cli_paths():
     print("\n-- api / codec integration --")
-    tmp = tempfile.mkdtemp(prefix="pyra_v6_test_")
+    tmp = tempfile.mkdtemp(prefix="lum_v6_test_")
     w, h = 64, 40
     raw = photo(w, h)
     ppm = os.path.join(tmp, "in.ppm")
     with open(ppm, "wb") as f:
         f.write(b"P6\n%d %d\n255\n" % (w, h))
         f.write(raw)
-    out = os.path.join(tmp, "out.pyra")
+    out = os.path.join(tmp, "out.lum")
     meta = encode_file(ppm, out, quality=90, subsampling=lossy.SUBSAMPLE_444)
     check("encode_file reports the quality", meta["quality"] == 90)
     check("encode_file writes a v6 container",
@@ -322,23 +322,23 @@ def test_api_and_cli_paths():
 
     # The generic codec entry point must dispatch v6 to the lossy backend.
     blob = open(out, "rb").read()
-    codec_meta, samples = PyraCodec.decode(blob)
-    check("PyraCodec.decode routes v6 to the lossy backend",
+    codec_meta, samples = LumenCodec.decode(blob)
+    check("LumenCodec.decode routes v6 to the lossy backend",
           codec_meta["version"] == 6 and len(samples) == w * h * 3)
-    check("PyraCodec.decode returns Python ints, not bytes",
+    check("LumenCodec.decode returns Python ints, not bytes",
           isinstance(samples[0], int) and 0 <= samples[0] <= 255)
 
     # quality=0 (the default) must keep using the lossless v3 path.
-    lossless = os.path.join(tmp, "lossless.pyra")
+    lossless = os.path.join(tmp, "lossless.lum")
     encode_file(ppm, lossless)
     head = open(lossless, "rb").read()
     check("default encode_file still writes the lossless container",
           struct.unpack(">I", head[8:12])[0] != 4)
-    lm, ls = PyraCodec.decode(head)
+    lm, ls = LumenCodec.decode(head)
     check("the lossless container still round trips exactly",
           bytes(ls) == raw)
 
-    for name in ("in.ppm", "out.pyra", "back.ppm", "lossless.pyra"):
+    for name in ("in.ppm", "out.lum", "back.ppm", "lossless.lum"):
         try:
             os.unlink(os.path.join(tmp, name))
         except OSError:
@@ -373,14 +373,14 @@ def test_colour_transform():
     raw = photo(w, h)
     sizes = {}
     for name, flag in (("ycocg", "1"), ("ycbcr", "0")):
-        os.environ["PYRA_CT"] = flag
+        os.environ["LUMEN_CT"] = flag
         blob = lossy.encode(raw, w, h, CS_RGB, 88, lossy.SUBSAMPLE_444)
         meta, back = lossy.decode(blob)
         sizes[name] = len(blob)
         want = 1 if flag == "1" else 0
         check(f"{name} writes its transform flag", (blob[22] >> 2) & 1 == want)
         check(f"{name} round-trips above 30 dB", psnr(raw, bytes(back)) > 30.0)
-    os.environ.pop("PYRA_CT", None)
+    os.environ.pop("LUMEN_CT", None)
     # The baked default must be YCoCg, but the size relation is not asserted:
     # YCoCg wins on average over a photo set, not on every individual image.
     default = lossy.encode(raw, w, h, CS_RGB, 88, lossy.SUBSAMPLE_444)
@@ -389,7 +389,7 @@ def test_colour_transform():
 
 def main():
     if not lossy.available():
-        print("PYRA v6 codec is not built - run scripts/build_native.sh first")
+        print("LUMEN v6 codec is not built - run scripts/build_native.sh first")
         return 1
     test_available()
     test_quality()

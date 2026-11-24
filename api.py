@@ -1,19 +1,19 @@
 import struct
 from .constants import *
-from .codec import PyraCodec
-from .container import PyraContainer
+from .codec import LumenCodec
+from .container import LumenContainer
 from .tile import split_into_tiles, Tile
 
 def encode(pixels: list[int], width: int, height: int, bit_depth: int = 8, color_space: int = CS_RGB, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1, transform: int = -1, filter_mode: int = -1) -> bytes:
-    """Encode raw pixels into PYRA byte format. method=-1 auto-selects the
+    """Encode raw pixels into LUMEN byte format. method=-1 auto-selects the
     compression method; otherwise forced to METHOD_*/-constants.
     transform=-1 and filter_mode=-1 auto-select the colour transform and the
     row filter mode (pred_type=-1 auto-selects the global predictor)."""
-    return PyraCodec.encode(pixels, width, height, bit_depth, color_space, pred_type, tile_size, method, transform, filter_mode)
+    return LumenCodec.encode(pixels, width, height, bit_depth, color_space, pred_type, tile_size, method, transform, filter_mode)
 
 def decode(file_bytes: bytes) -> tuple[dict, list[int]]:
-    """Decode PYRA byte format into metadata and raw pixels."""
-    return PyraCodec.decode(file_bytes)
+    """Decode LUMEN byte format into metadata and raw pixels."""
+    return LumenCodec.decode(file_bytes)
 
 def _parse_pnm_raw(input_path: str) -> tuple[bytes, int, int, bytes, int, int]:
     """Parse a PNM file into raw sample bytes.
@@ -56,7 +56,7 @@ def _parse_pnm(input_path: str) -> tuple[int, int, int, list[int], int, int]:
     return magic, width, height, pixels, bit_depth, max_val
 
 def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_type: int = PRED_PAETH, tile_size: int = 256, method: int = -1, transform: int = -1, filter_mode: int = -1, quality: int = 0, subsampling: int = 0) -> dict:
-    """Encode an image file (PGM P5 / PPM P6, 8- or 16-bit) into a .pyra file.
+    """Encode an image file (PGM P5 / PPM P6, 8- or 16-bit) into a .lum file.
     color_space=-1 auto-detects from the PNM magic; method=-1 picks the
     method automatically. transform=-1 / filter_mode=-1 pick the colour
     transform and the row filter mode automatically. quality > 0 selects the
@@ -71,7 +71,7 @@ def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_t
         blob = lossy.encode(raw, width, height, color_space, quality,
                             subsampling)
         if blob is None:
-            raise ValueError("the native PYRA v6 codec is not available")
+            raise ValueError("the native LUMEN v6 codec is not available")
         with open(output_path, "wb") as f:
             f.write(blob)
         return {"width": width, "height": height, "bit_depth": bit_depth,
@@ -80,7 +80,7 @@ def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_t
     channels = 1 if color_space == CS_GRAY else 3
     # The native core widens the raw samples itself; the pure-Python path
     # converts them here. Both produce identical container bytes.
-    encoded = PyraCodec.encode_samples(raw, width, height, bit_depth,
+    encoded = LumenCodec.encode_samples(raw, width, height, bit_depth,
                                         color_space, pred_type, tile_size,
                                         method, transform, filter_mode)
     with open(output_path, "wb") as f:
@@ -89,7 +89,7 @@ def encode_file(input_path: str, output_path: str, color_space: int = -1, pred_t
             "color_space": color_space, "pred_type": pred_type, "tile_size": tile_size}
 
 def decode_file(input_path: str, output_path: str) -> dict:
-    """Decode a .pyra file into a PNM image file (P5 for gray, P6 for RGB).
+    """Decode a .lum file into a PNM image file (P5 for gray, P6 for RGB).
     16-bit images are written with 65535 maxval (big-endian samples)."""
     import struct
     with open(input_path, "rb") as f:
@@ -114,7 +114,7 @@ def decode_file(input_path: str, output_path: str) -> dict:
 
 def decode_region(file_bytes: bytes, rx: int, ry: int, rw: int, rh: int) -> tuple[dict, list[int]]:
     """Region-of-interest decoding: decode only tiles intersecting the region (rx, ry, rw, rh)."""
-    meta, compressed_tiles = PyraContainer.unpack_file(file_bytes)
+    meta, compressed_tiles = LumenContainer.unpack_file(file_bytes)
     width = meta["width"]
     height = meta["height"]
     tile_size = meta["tile_size"]
@@ -122,7 +122,7 @@ def decode_region(file_bytes: bytes, rx: int, ry: int, rw: int, rh: int) -> tupl
     bit_depth = meta["bit_depth"]
     pred_type = meta["pred_type"]
     method = meta["method"]
-    channels = PyraCodec._channels_for_colorspace(color_space)
+    channels = LumenCodec._channels_for_colorspace(color_space)
     legacy = meta.get("version", VERSION) < VERSION
 
     # Identify tiles intersecting region
@@ -137,9 +137,9 @@ def decode_region(file_bytes: bytes, rx: int, ry: int, rw: int, rh: int) -> tupl
             # Check intersection
             if not (tx + tw <= rx or tx >= rx + rw or ty + th <= ry or ty >= ry + rh):
                 # Decode tile
-                tile_method, tile_bytes, filter_bits = PyraCodec._tile_body(
+                tile_method, tile_bytes, filter_bits = LumenCodec._tile_body(
                     meta, compressed_tiles[tile_idx], th)
-                tile_pixels = PyraCodec.decode_tile(
+                tile_pixels = LumenCodec.decode_tile(
                     tile_bytes, tw, th, color_space, pred_type, bit_depth,
                     tile_method, meta.get("transform", TRANSFORM_YCOCG),
                     meta.get("filter_mode", FILTER_GLOBAL), filter_bits,
@@ -164,8 +164,8 @@ def decode_region(file_bytes: bytes, rx: int, ry: int, rw: int, rh: int) -> tupl
     return region_meta, region_pixels
 
 def iter_tiles(file_bytes: bytes) -> Generator[tuple[dict, list[int]], None, None]:
-    """Iterate over all decoded tiles in the PYRA file."""
-    meta, compressed_tiles = PyraContainer.unpack_file(file_bytes)
+    """Iterate over all decoded tiles in the LUMEN file."""
+    meta, compressed_tiles = LumenContainer.unpack_file(file_bytes)
     width = meta["width"]
     height = meta["height"]
     tile_size = meta["tile_size"]
@@ -180,9 +180,9 @@ def iter_tiles(file_bytes: bytes) -> Generator[tuple[dict, list[int]], None, Non
         th = min(tile_size, height - ty)
         for tx in range(0, width, tile_size):
             tw = min(tile_size, width - tx)
-            tile_method, tile_bytes, filter_bits = PyraCodec._tile_body(
+            tile_method, tile_bytes, filter_bits = LumenCodec._tile_body(
                 meta, compressed_tiles[tile_idx], th)
-            tile_pixels = PyraCodec.decode_tile(
+            tile_pixels = LumenCodec.decode_tile(
                 tile_bytes, tw, th, color_space, pred_type, bit_depth,
                 tile_method, meta.get("transform", TRANSFORM_YCOCG),
                 meta.get("filter_mode", FILTER_GLOBAL), filter_bits,
@@ -192,7 +192,7 @@ def iter_tiles(file_bytes: bytes) -> Generator[tuple[dict, list[int]], None, Non
             tile_idx += 1
 
 def encode_animation(frames: list[list[int]], width: int, height: int, fps: int = 30, **kwargs) -> bytes:
-    """Encode an animation (multiple frames) into PYRA format."""
+    """Encode an animation (multiple frames) into LUMEN format."""
     # For animation, we can pack multiple frames or use a container extension.
     # Here we encode frame count and frames sequentially.
     encoded_frames = [encode(frame, width, height, **kwargs) for frame in frames]

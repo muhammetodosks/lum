@@ -1,11 +1,11 @@
-# PYRA - Adaptive Arithmetic (Range) Coder
+# LUMEN - Adaptive Arithmetic (Range) Coder
 # Pure Python 3.12+, standard library only.
 #
 # Design: interval-based arithmetic coder with Witten-Neal-Cleary(E1/E2/E3)
 # renormalization on a bit stream, and an adaptive frequency model backed
 # by a Fenwick tree (O(log n) per symbol).
 
-from .constants import PyraError
+from .constants import LumenError
 
 
 class FenwickCDF:
@@ -98,7 +98,7 @@ class FenwickCDF:
 class AdaptiveModel:
     def __init__(self, n_symbols: int):
         if n_symbols < 1:
-            raise PyraError("model needs at least 1 symbol")
+            raise LumenError("model needs at least 1 symbol")
         self.cdf = FenwickCDF(n_symbols)
 
     def update(self, symbol: int):
@@ -210,9 +210,9 @@ class ContextRangeEncoder:
 
     def __init__(self, n_symbols: int, n_contexts: int):
         if n_symbols < 1:
-            raise PyraError("model needs at least 1 symbol")
+            raise LumenError("model needs at least 1 symbol")
         if n_contexts < 1:
-            raise PyraError("needs at least one context")
+            raise LumenError("needs at least one context")
         self.models = [AdaptiveModel(n_symbols) for _ in range(n_contexts)]
         self.out = bytearray()
         self.acc = 0
@@ -309,9 +309,9 @@ class ContextRangeDecoder:
 
     def __init__(self, data: bytes, n_symbols: int, n_contexts: int):
         if n_symbols < 1:
-            raise PyraError("model needs at least 1 symbol")
+            raise LumenError("model needs at least 1 symbol")
         if n_contexts < 1:
-            raise PyraError("needs at least one context")
+            raise LumenError("needs at least one context")
         self.models = [AdaptiveModel(n_symbols) for _ in range(n_contexts)]
         self.data = data
         self.pos = 0      # bit position

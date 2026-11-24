@@ -1,11 +1,11 @@
-"""Container layout of the PYRM (PYRA Medical) format.
+"""Container layout of the LUMM (LUMEN Medical) format.
 
 The header is 144 bytes, everything is little-endian:
 
 ===========  ======  =========================================================
 offset       size   field
 ===========  ======  =========================================================
-0            8      magic ``PYRM\\r\\n\\x1a\\n``
+0            8      magic ``LUMM\\r\\n\\x1a\\n``
 8            4      version (1)
 12           4      flags
 16           4      width
@@ -102,15 +102,15 @@ def pack_header(hdr: Header, sha256: bytes) -> bytes:
 def unpack_header(data: bytes) -> Header:
     """Parse and validate the fixed header."""
     if len(data) < HEADER_SIZE:
-        raise CorruptedFileError("truncated PYRM header")
+        raise CorruptedFileError("truncated LUMM header")
     (magic, version, flags, width, height, depth, channels, sample_format,
      bits, tile_size, num_tiles, index_offset, index_size, meta_offset,
      meta_size, meta_crc, payload_crc, header_crc, predictor, sha256,
      signature) = _HDR.unpack(data[:HEADER_SIZE])
     if magic != MAGIC:
-        raise CorruptedFileError("not a PYRM container")
+        raise CorruptedFileError("not a LUMM container")
     if version not in (VERSION_V1, VERSION_V2, VERSION):
-        raise CorruptedFileError(f"unsupported PYRM version {version}")
+        raise CorruptedFileError(f"unsupported LUMM version {version}")
     if width == 0 or height == 0 or depth == 0 or channels == 0:
         raise CorruptedFileError("degenerate image geometry")
     if tile_size == 0:

@@ -1,4 +1,4 @@
-"""LZ77 token stream used by the PYRM container.
+"""LZ77 token stream used by the LUMM container.
 
 The token alphabet is deliberately tiny so that the adaptive entropy coder
 stays fast:

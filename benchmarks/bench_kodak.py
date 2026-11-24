@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Matched-PSNR comparison of PYRA against JPEG XL on an independent corpus.
+"""Matched-PSNR comparison of LUMEN against JPEG XL on an independent corpus.
 
 The Kodak PhotoCD set (24 images, 768x512 / 512x768) is the classic codec
 benchmark and is used here as an *independent* corpus: nothing in this
@@ -32,14 +32,14 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 
-from pyra import lossy                                    # noqa: E402
-from pyra.constants import CS_RGB                         # noqa: E402
+from lum import lossy                                    # noqa: E402
+from lum.constants import CS_RGB                         # noqa: E402
 
 # Distances hand-picked to cover the useful range of libjxl's quality knob;
 # -1.0 is near-lossless and 15.0 is the bottom of the curve.
 JXL_DISTANCES = [-1.0, -0.5, 0.0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.5, 3.0,
                  3.8, 4.8, 6.0, 7.5, 9.5, 12.0, 15.0]
-PYRA_QUALITIES = list(range(10, 101, 5))
+LUMEN_QUALITIES = list(range(10, 101, 5))
 
 
 def psnr(a, b):
@@ -71,9 +71,9 @@ def size_at(points, target):
     return None
 
 
-def pyra_curve(raw, w, h):
+def lum_curve(raw, w, h):
     out = []
-    for q in PYRA_QUALITIES:
+    for q in LUMEN_QUALITIES:
         blob = lossy.encode(raw, w, h, CS_RGB, q, lossy.SUBSAMPLE_444)
         out.append((psnr(raw, lossy.decode(blob)[1]), len(blob)))
     return out
@@ -110,7 +110,7 @@ def main():
         print(f"no PNG files in {args.corpus}", file=sys.stderr)
         return 1
 
-    work = tempfile.mkdtemp(prefix="pyra_kodak_")
+    work = tempfile.mkdtemp(prefix="lum_kodak_")
     print(f"corpus: {len(names)} images from {args.corpus}", flush=True)
 
     rows = []
@@ -123,29 +123,29 @@ def main():
         im.save(ppm)
 
         t0 = time.time()
-        pyra = pyra_curve(raw, w, h)
-        t_pyra = time.time() - t0
+        lum = lum_curve(raw, w, h)
+        t_lum = time.time() - t0
         t0 = time.time()
         jxl = jxl_curve(ppm, os.path.splitext(name)[0], work, raw)
         t_jxl = time.time() - t0
 
-        row = {"image": name, "w": w, "h": h, "pyra": pyra, "jxl": jxl,
-               "pyra_sec": t_pyra, "jxl_sec": t_jxl}
+        row = {"image": name, "w": w, "h": h, "lum": lum, "jxl": jxl,
+               "lum_sec": t_lum, "jxl_sec": t_jxl}
         cells = ""
         for t in targets:
-            ps, js = size_at(pyra, t), size_at(jxl, t)
-            row[f"pyra_at_{t:g}"] = ps
+            ps, js = size_at(lum, t), size_at(jxl, t)
+            row[f"lum_at_{t:g}"] = ps
             row[f"jxl_at_{t:g}"] = js
             cells += ("   n/a  " if ps is None or js is None
                       else f" {100.0 * ps / js:6.1f}%")
         rows.append(row)
         print(f"[{i:2d}/{len(names)}] {name:9s} {w}x{h}" + cells
-              + f"   ({t_pyra:.1f}s pyra, {t_jxl:.1f}s jxl)", flush=True)
+              + f"   ({t_lum:.1f}s lum, {t_jxl:.1f}s jxl)", flush=True)
 
     summary = []
     for t in targets:
         covered = [r for r in rows
-                   if r[f"pyra_at_{t:g}"] is not None
+                   if r[f"lum_at_{t:g}"] is not None
                    and r[f"jxl_at_{t:g}"] is not None]
         if not covered:
             summary.append({"target": t, "n": 0, "missing": len(rows)})
@@ -155,22 +155,22 @@ def main():
             "target": t,
             "n": len(covered),
             "missing": len(rows) - len(covered),
-            "pyra_kbmp": sum(kbmp(r, f"pyra_at_{t:g}") for r in covered) / len(covered),
+            "lum_kbmp": sum(kbmp(r, f"lum_at_{t:g}") for r in covered) / len(covered),
             "jxl_kbmp": sum(kbmp(r, f"jxl_at_{t:g}") for r in covered) / len(covered),
-            "mean_ratio": sum(100.0 * r[f"pyra_at_{t:g}"] / r[f"jxl_at_{t:g}"]
+            "mean_ratio": sum(100.0 * r[f"lum_at_{t:g}"] / r[f"jxl_at_{t:g}"]
                               for r in covered) / len(covered),
             "wins": sum(1 for r in covered
-                        if r[f"pyra_at_{t:g}"] < r[f"jxl_at_{t:g}"]),
+                        if r[f"lum_at_{t:g}"] < r[f"jxl_at_{t:g}"]),
             "losses": sum(1 for r in covered
-                          if r[f"pyra_at_{t:g}"] >= r[f"jxl_at_{t:g}"]),
+                          if r[f"lum_at_{t:g}"] >= r[f"jxl_at_{t:g}"]),
         })
 
-    print("\ntarget |    n | PYRA KB/MP | JXL KB/MP | PYRA/JXL | wins/losses")
+    print("\ntarget |    n | LUMEN KB/MP | JXL KB/MP | LUMEN/JXL | wins/losses")
     for s in summary:
         if not s["n"]:
             print(f"{s['target']:6.0f} |    0 | unbracketed by every curve")
             continue
-        print(f"{s['target']:6.0f} | {s['n']:4d} | {s['pyra_kbmp']:10.2f} |"
+        print(f"{s['target']:6.0f} | {s['n']:4d} | {s['lum_kbmp']:10.2f} |"
               f" {s['jxl_kbmp']:9.2f} | {s['mean_ratio']:7.1f}% |"
               f" {s['wins']}/{s['losses']}")
 

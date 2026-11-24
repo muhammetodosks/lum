@@ -1,24 +1,24 @@
-// PYRA Cloud (PYRC) C++ helper layer.
+// LUMEN Cloud (LUMC) C++ helper layer.
 //
-// The PYRC container itself is produced by the Rust core
-// (rust/pyra_cloud.rs). This library covers the things that are *not* the
+// The LUMC container itself is produced by the Rust core
+// (rust/lum_cloud.rs). This library covers the things that are *not* the
 // container but belong to the cloud/earth-observation workflow:
 //
-//   * pyra_cloud_raw_read / pyra_cloud_raw_write
-//       A tiny self describing raw cube container ("PYRX"): a 32 byte
+//   * lum_cloud_raw_read / lum_cloud_raw_write
+//       A tiny self describing raw cube container ("LUMX"): a 32 byte
 //       header plus the samples of the cube in scene major, band planar
 //       order. It is the interchange format between the sensor pipeline and
 //       the codec.
 //
-//   * pyra_cloud_band_stats / pyra_cloud_histogram
+//   * lum_cloud_band_stats / lum_cloud_histogram
 //       Per band statistics over the whole cube: minimum, maximum, mean,
 //       standard deviation and a 256 bin histogram.
 //
-//   * pyra_cloud_render_rgb
+//   * lum_cloud_render_rgb
 //       A false colour composite: three bands are windowed and mapped to
 //       the red, green and blue channel of an 8 bit image.
 //
-//   * pyra_cloud_interleave / pyra_cloud_deinterleave
+//   * lum_cloud_interleave / lum_cloud_deinterleave
 //       Band planar <-> pixel interleaved conversion.
 //
 // Everything is standard library only (C++20), no external dependencies, and
@@ -44,7 +44,7 @@ static const int CLOUD_SFMT_I32 = 4;
 static const int CLOUD_SFMT_F32 = 5;
 
 static const size_t CLOUD_RAW_HEADER_SIZE = 32;
-static const char CLOUD_RAW_MAGIC[4] = {'P', 'Y', 'R', 'X'};
+static const char CLOUD_RAW_MAGIC[4] = {'L', 'U', 'M', 'X'};
 
 static inline int cloud_sample_bytes(int sample_format) {
     switch (sample_format) {
@@ -110,9 +110,9 @@ static inline size_t cloud_offset(int width, int height, int bands, int scenes,
 
 // --------------------------------------------------------------- raw cube
 
-// Write a raw cube file ("PYRX"). Returns 0 on success, -1 on bad
+// Write a raw cube file ("LUMX"). Returns 0 on success, -1 on bad
 // arguments, -2 on an I/O error.
-int pyra_cloud_raw_write(const char* path, const uint8_t* data, int width,
+int lum_cloud_raw_write(const char* path, const uint8_t* data, int width,
                          int height, int bands, int scenes, int sample_format) {
     if (!path || !data || width <= 0 || height <= 0 || bands <= 0 || scenes <= 0) {
         return -1;
@@ -146,7 +146,7 @@ int pyra_cloud_raw_write(const char* path, const uint8_t* data, int width,
     return ok ? 0 : -2;
 }
 
-// Read a raw cube file ("PYRX") into `out`.
+// Read a raw cube file ("LUMX") into `out`.
 //
 // `info` receives: width, height, bands, scenes, sample_format,
 // sample_bytes, data offset.
@@ -154,7 +154,7 @@ int pyra_cloud_raw_write(const char* path, const uint8_t* data, int width,
 // Returns the number of data bytes written into `out`, or a negative error
 // code: -1 bad arguments, -2 unreadable file, -3 malformed header,
 // -4 truncated data, -5 the buffer is too small.
-int pyra_cloud_raw_read(const char* path, uint8_t* out, size_t out_cap,
+int lum_cloud_raw_read(const char* path, uint8_t* out, size_t out_cap,
                         int* info) {
     if (!path || !out || !info) return -1;
     FILE* f = std::fopen(path, "rb");
@@ -212,7 +212,7 @@ int pyra_cloud_raw_read(const char* path, uint8_t* out, size_t out_cap,
 // ----------------------------------------------------------------- stats
 
 // Statistics of one band over the whole cube.
-struct PyraCloudBandStats {
+struct LumenCloudBandStats {
     double minimum;
     double maximum;
     double mean;
@@ -225,9 +225,9 @@ struct PyraCloudBandStats {
 //
 // Returns 0 on success, -1 on bad arguments, -2 when the buffer is too
 // short for the described geometry.
-int pyra_cloud_band_stats(const uint8_t* cube, size_t len, int width,
+int lum_cloud_band_stats(const uint8_t* cube, size_t len, int width,
                            int height, int bands, int scenes, int sample_format,
-                           int band, PyraCloudBandStats* out) {
+                           int band, LumenCloudBandStats* out) {
     if (!cube || !out || width <= 0 || height <= 0 || bands <= 0 || scenes <= 0) {
         return -1;
     }
@@ -349,7 +349,7 @@ static inline uint8_t cloud_window(double value, double window,
 //
 // Returns 0 on success, -1 on bad arguments, -2 when the buffer is too
 // short.
-int pyra_cloud_render_rgb(const uint8_t* cube, size_t len, int width,
+int lum_cloud_render_rgb(const uint8_t* cube, size_t len, int width,
                            int height, int bands, int scenes, int sample_format,
                            int scene, int band_r, int band_g, int band_b,
                            double window_r, double level_r, double window_g,
@@ -397,7 +397,7 @@ int pyra_cloud_render_rgb(const uint8_t* cube, size_t len, int width,
 //
 // Returns 0 on success, -1 on bad arguments, -2 when the buffer is too
 // short.
-int pyra_cloud_interleave(const uint8_t* cube, size_t len, int width,
+int lum_cloud_interleave(const uint8_t* cube, size_t len, int width,
                            int height, int bands, int scenes, int sample_format,
                            int scene, uint8_t* out) {
     if (!cube || !out || width <= 0 || height <= 0 || bands <= 0 || scenes <= 0) {
@@ -423,8 +423,8 @@ int pyra_cloud_interleave(const uint8_t* cube, size_t len, int width,
     return 0;
 }
 
-// Inverse of pyra_cloud_interleave: pixel interleaved -> band planar.
-int pyra_cloud_deinterleave(const uint8_t* interleaved, size_t len, int width,
+// Inverse of lum_cloud_interleave: pixel interleaved -> band planar.
+int lum_cloud_deinterleave(const uint8_t* interleaved, size_t len, int width,
                              int height, int bands, int sample_format,
                              uint8_t* out) {
     if (!interleaved || !out || width <= 0 || height <= 0 || bands <= 0) {
@@ -453,12 +453,12 @@ int pyra_cloud_deinterleave(const uint8_t* interleaved, size_t len, int width,
 
 }  // extern "C"
 
-#ifdef PYRA_CLOUD_SELFTEST
+#ifdef LUMEN_CLOUD_SELFTEST
 // ---------------------------------------------------------------- self test
 //
-// Compiled with -DPYRA_CLOUD_SELFTEST this file becomes a standalone test
-// binary: `g++ -DPYRA_CLOUD_SELFTEST -std=c++20 -O2 -o cloud_test
-// cpp/pyra_cloud.cpp && ./cloud_test`
+// Compiled with -DLUMEN_CLOUD_SELFTEST this file becomes a standalone test
+// binary: `g++ -DLUMEN_CLOUD_SELFTEST -std=c++20 -O2 -o cloud_test
+// cpp/lum_cloud.cpp && ./cloud_test`
 
 #include <cstdio>
 
@@ -474,7 +474,7 @@ void check(const char* name, bool ok) {
 }  // namespace
 
 int main() {
-    std::printf("=== PYRA cloud C++ self test ===\n");
+    std::printf("=== LUMEN cloud C++ self test ===\n");
     const int w = 5, h = 3, bands = 3, scenes = 2;
     const int fmt = CLOUD_SFMT_U16;
     const int sb = 2;
@@ -494,8 +494,8 @@ int main() {
     }
 
     // statistics
-    PyraCloudBandStats stats{};
-    check("band stats", pyra_cloud_band_stats(cube.data(), cube.size(), w, h,
+    LumenCloudBandStats stats{};
+    check("band stats", lum_cloud_band_stats(cube.data(), cube.size(), w, h,
                                                bands, scenes, fmt, 1,
                                                &stats) == 0);
     // band 1 covers every scene: values are s*1000 + 100 + y*10 + x
@@ -509,7 +509,7 @@ int main() {
 
     // render
     std::vector<uint8_t> rgb((size_t)w * h * 3, 0);
-    check("render", pyra_cloud_render_rgb(cube.data(), cube.size(), w, h, bands,
+    check("render", lum_cloud_render_rgb(cube.data(), cube.size(), w, h, bands,
                                            scenes, fmt, 0, 0, 1, 2, 65535.0, 0.0,
                                            65535.0, 0.0, 65535.0, 0.0,
                                            rgb.data()) == 0);
@@ -517,11 +517,11 @@ int main() {
 
     // interleave round trip
     std::vector<uint8_t> inter((size_t)w * h * bands * sb, 0);
-    check("interleave", pyra_cloud_interleave(cube.data(), cube.size(), w, h,
+    check("interleave", lum_cloud_interleave(cube.data(), cube.size(), w, h,
                                               bands, scenes, fmt, 0,
                                               inter.data()) == 0);
     std::vector<uint8_t> back((size_t)w * h * bands * sb, 0);
-    check("deinterleave", pyra_cloud_deinterleave(inter.data(), inter.size(), w,
+    check("deinterleave", lum_cloud_deinterleave(inter.data(), inter.size(), w,
                                                   h, bands, fmt,
                                                   back.data()) == 0);
     bool same = true;
@@ -542,12 +542,12 @@ int main() {
     check("interleave round trip", same);
 
     // raw file round trip
-    const char* path = "/tmp/pyra_cloud_selftest.pyrx";
-    check("raw write", pyra_cloud_raw_write(path, cube.data(), w, h, bands,
+    const char* path = "/tmp/lum_cloud_selftest.lumx";
+    check("raw write", lum_cloud_raw_write(path, cube.data(), w, h, bands,
                                              scenes, fmt) == 0);
     std::vector<uint8_t> loaded(cube.size() + 64, 0);
     int info[8] = {0};
-    const int n = pyra_cloud_raw_read(path, loaded.data(), loaded.size(), info);
+    const int n = lum_cloud_raw_read(path, loaded.data(), loaded.size(), info);
     check("raw read", n == (int)cube.size());
     check("raw geometry", info[0] == w && info[1] == h && info[2] == bands &&
                                info[3] == scenes && info[4] == fmt);

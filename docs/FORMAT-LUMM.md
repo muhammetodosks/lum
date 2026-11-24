@@ -1,6 +1,6 @@
-# PYRM — PYRA Medical container format (v1)
+# LUMM — LUMEN Medical container format (v1)
 
-PYRM is the lossless container used for medical and scientific imaging: CT,
+LUMM is the lossless container used for medical and scientific imaging: CT,
 MR, ultrasound, microscopy, pathology slides. It is designed around three
 requirements that matter in a clinical setting:
 
@@ -36,7 +36,7 @@ requirements that matter in a clinical setting:
 
 | offset | size | field | meaning |
 |-------:|-----:|-------|---------|
-| 0   | 8  | magic | `PYRM\r\n\x1a\n` |
+| 0   | 8  | magic | `LUMM\r\n\x1a\n` |
 | 8   | 4  | version | 2 (1 is still readable) |
 | 12  | 4  | flags | reserved, 0 |
 | 16  | 4  | width | samples per row |
@@ -185,9 +185,9 @@ Two of these deserve a warning:
   -1024, for instance). The display window is defined in the calibrated
   domain, so the calibration is applied *before* the window.
 
-`pyra.medical.build_dicom_metadata()` builds a complete and consistent
+`lum.medical.build_dicom_metadata()` builds a complete and consistent
 block (the geometry dependent attributes are derived), and
-`pyra.medical.validate_dicom_metadata()` checks a block against the image
+`lum.medical.validate_dicom_metadata()` checks a block against the image
 geometry: a contradicting `Columns`, an impossible `PixelRepresentation`,
 an unknown photometric interpretation, a missing patient identifier or a
 non-positive `WindowWidth` are all refused. The encoder takes the same
@@ -197,7 +197,7 @@ metadata is rejected instead of being stored silently.
 ## Entropy coding
 
 A binary range coder with an adaptive per-symbol model (a Fenwick tree over
-the symbol frequencies). The coder is the same one the `PYRA` image format
+the symbol frequencies). The coder is the same one the `LUMEN` image format
 uses, so the two formats share exactly one implementation.
 
 * `METHOD_RAW` (0): the packed residual bytes are coded directly (256
@@ -228,7 +228,7 @@ decoded or unverified data.
 ## Python API
 
 ```python
-from pyra.medical import (encode, decode, info, verify, build_dicom_metadata,
+from lum.medical import (encode, decode, info, verify, build_dicom_metadata,
                           preview_from_metadata)
 
 meta = build_dicom_metadata(512, 512, 64, 1, 1,      # u16
@@ -252,13 +252,13 @@ png_bytes = preview_from_metadata(samples_back, 512, 512, 64, 1, 1,
 ## Command line
 
 ```bash
-python3 -m pyra med encode raw.bin volume.pyrm --width 512 --height 512 \
+python3 -m lum med encode raw.bin volume.lumm --width 512 --height 512 \
         --depth 64 --format u16 --meta patient=anon --meta modality=CT
-python3 -m pyra med info volume.pyrm        # header + clinical attributes
-python3 -m pyra med dump volume.pyrm        # the metadata block as JSON
-python3 -m pyra med verify volume.pyrm      # every integrity guarantee
-python3 -m pyra med decode volume.pyrm out.bin
-python3 -m pyra med preview volume.pyrm slice.pgm --slice 12
+python3 -m lum med info volume.lumm        # header + clinical attributes
+python3 -m lum med dump volume.lumm        # the metadata block as JSON
+python3 -m lum med verify volume.lumm      # every integrity guarantee
+python3 -m lum med decode volume.lumm out.bin
+python3 -m lum med preview volume.lumm slice.pgm --slice 12
 ```
 
 `--window` and `--level` are optional for the preview: without them the
@@ -272,7 +272,7 @@ PixelRepresentation, PhotometricInterpretation) from the image itself and
 fills the clinical attributes from the options:
 
 ```bash
-python3 -m pyra med encode raw.bin volume.pyrm --width 512 --height 512 \
+python3 -m lum med encode raw.bin volume.lumm --width 512 --height 512 \
         --depth 64 --format u16 --dicom --require-dicom \
         --patient-id ANON-001 --patient-name "Doe^Jane" --modality CT \
         --study-uid 1.2.840.113619.2.1 --series-uid 1.2.840.113619.2.1.4 \
@@ -297,9 +297,9 @@ wrapper) with the *Explicit VR Little Endian* transfer syntax and
 because no lossy step is ever involved.
 
 ```python
-from pyra.medical.dicomfile import read_dicom, write_dicom
+from lum.medical.dicomfile import read_dicom, write_dicom
 
-# a PYRM container into a DICOM file
+# a LUMM container into a DICOM file
 blob = write_dicom(samples, 512, 512, depth=64, sample_format=SFMT_U16,
                    metadata=metadata)
 
@@ -327,8 +327,8 @@ well rather than misread.
 The command line converts between the two formats:
 
 ```bash
-python3 -m pyra med to-dicom   volume.pyrm volume.dcm
-python3 -m pyra med from-dicom volume.dcm volume.pyrm
+python3 -m lum med to-dicom   volume.lumm volume.dcm
+python3 -m lum med from-dicom volume.dcm volume.lumm
 ```
 
 A round trip keeps both the pixels (byte for byte) and the clinical
@@ -382,7 +382,7 @@ row, the requested columns.
 
 The region decoder exists twice and both implementations are byte-identical:
 the pure-Python reference in `medical/codec.py` and the native core
-(`pyra_med_decode_region` in `rust/pyra_med.rs`), which the Python layer
+(`lum_med_decode_region` in `rust/lum_med.rs`), which the Python layer
 uses automatically when the shared library is present. The native path
 decodes only the tiles the box touches and reconstructs the requested rows in
 place; the tiles it needs for the volumetric context (the previous slice of
@@ -432,16 +432,16 @@ the encoding stays reproducible.
 The DICOM reader and writer are checked against an **independent toolkit**
 (pydicom), in both directions:
 
-* pydicom parses every file PYRM writes (five sample formats plus a
+* pydicom parses every file LUMM writes (five sample formats plus a
   multi-frame series) and sees the same rows, columns, frame count, pixel
   representation, photometric interpretation, window, rescale values, SOP
   class and **byte-identical pixel data**;
-* PYRM parses the files pydicom writes from scratch and reproduces the
+* LUMM parses the files pydicom writes from scratch and reproduces the
   pixels and the attributes exactly;
 * the attributes of such an external file pass the clinical consistency
   rules.
 
-Run it with `python3 -m pyra.tests.test_medical` on an interpreter that has
+Run it with `python3 -m lum.tests.test_medical` on an interpreter that has
 pydicom installed; the check is skipped when it is not.
 
 ### Metadata fidelity contract
@@ -451,9 +451,9 @@ same set**. `build_dicom_metadata()` produces the same attribute set the
 DICOM writer produces, and the DICOM reader returns that set unchanged:
 
 ```
-PYRM container  -> metadata      : identical
-PYRM container  -> DICOM file    : pixels identical, attributes identical
-DICOM file      -> PYRM container: pixels identical, attributes identical
+LUMM container  -> metadata      : identical
+LUMM container  -> DICOM file    : pixels identical, attributes identical
+DICOM file      -> LUMM container: pixels identical, attributes identical
 ```
 
 The rules that make this hold:
@@ -567,7 +567,7 @@ is expected: near-lossless pays off on noisy, real-world data.
 ## Error classes
 
 * `MedicalError` — base class of the format errors.
-* `CorruptedFileError` — the file is damaged or not a PYRM container.
+* `CorruptedFileError` — the file is damaged or not a LUMM container.
 * `UnsupportedFormatError` — unknown sample format, method or predictor.
 * `MedicalMetadataError` — the metadata block is incomplete or contradicts
   the image geometry.

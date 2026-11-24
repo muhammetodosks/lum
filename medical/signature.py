@@ -1,4 +1,4 @@
-"""Optional HMAC-SHA256 signature and provenance audit for PYRM containers.
+"""Optional HMAC-SHA256 signature and provenance audit for LUMM containers.
 
 A CRC-32 or a plain SHA-256 tells you that a file was *not* damaged. It
 does not tell you that the file is *yours*: anybody who can rewrite the
@@ -45,7 +45,7 @@ def signed_region(blob: bytes) -> bytes:
     it, the metadata block, the tile index and the payload.
     """
     if len(blob) < SIGNATURE_OFFSET + SIGNATURE_SIZE:
-        raise CorruptedFileError("truncated PYRM header")
+        raise CorruptedFileError("truncated LUMM header")
     return blob[:SIGNATURE_OFFSET] + blob[SIGNATURE_OFFSET + SIGNATURE_SIZE:]
 
 
@@ -75,7 +75,7 @@ def sign(blob: bytes, key: bytes) -> bytes:
     if not key:
         raise ValueError("the signing key must not be empty")
     if len(blob) < SIGNATURE_OFFSET + SIGNATURE_SIZE:
-        raise CorruptedFileError("truncated PYRM header")
+        raise CorruptedFileError("truncated LUMM header")
     out = bytearray(blob)
     flags = struct.unpack_from("<I", out, FLAGS_OFFSET)[0] | FLAG_SIGNED
     struct.pack_into("<I", out, FLAGS_OFFSET, flags)

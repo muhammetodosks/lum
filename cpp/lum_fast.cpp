@@ -1,20 +1,20 @@
-// PYRA C++ fast paths (v2 codec).
+// LUMEN C++ fast paths (v2 codec).
 //
 // These functions implement the hottest inner loops of the v2 format:
 //
-//   * pyra_fast_adaptive_residuals  - colour transform + per-row predictor
+//   * lum_fast_adaptive_residuals  - colour transform + per-row predictor
 //     selection (seven candidates per row, scored by the modular L1
 //     distance) in one pass over the tile.
-//   * pyra_fast_adaptive_reconstruct - the inverse: every row is rebuilt
+//   * lum_fast_adaptive_reconstruct - the inverse: every row is rebuilt
 //     with the predictor it was encoded with, descaled and inverse
 //     transformed.
 //
 // The encoder planner is *not* here: it has to measure candidates with the
-// real range coder, and the coder lives in the Rust core (rust/pyra_core.rs,
-// pyra_plan). The pure-Python reference planner mirrors it exactly.
+// real range coder, and the coder lives in the Rust core (rust/lum_core.rs,
+// lum_plan). The pure-Python reference planner mirrors it exactly.
 //
 // Every function is bit-exact with the pure-Python reference in
-// pyra/predictors.py and pyra/color.py; the caller falls back to the Python
+// lum/predictors.py and lum/color.py; the caller falls back to the Python
 // reference when this library is missing.
 
 #include <cstdint>
@@ -181,7 +181,7 @@ static void unpack_filter_bits(const uint8_t* data, size_t len, size_t rows,
 
 // Residuals + per-row predictor table for one tile.
 // Returns 0 on success, negative on error.
-int pyra_fast_adaptive_residuals(const int32_t* pixels, int count, int width,
+int lum_fast_adaptive_residuals(const int32_t* pixels, int count, int width,
                                   int height, int channels, int64_t offset,
                                   int64_t modv, int32_t color_space,
                                   int32_t transform, int32_t* out_res,
@@ -253,7 +253,7 @@ int pyra_fast_adaptive_residuals(const int32_t* pixels, int count, int width,
 
 // --------------------------------------------------- adaptive reconstruct
 
-int pyra_fast_adaptive_reconstruct(const int32_t* res, int count, int width,
+int lum_fast_adaptive_reconstruct(const int32_t* res, int count, int width,
                                    int height, int channels, int64_t offset,
                                    int64_t modv, int32_t color_space,
                                    int32_t transform, const uint8_t* filter_bits,
@@ -294,11 +294,11 @@ int pyra_fast_adaptive_reconstruct(const int32_t* res, int count, int width,
     return 0;
 }
 
-// ------------------------------------------------- medical preview (PYRM)
+// ------------------------------------------------- medical preview (LUMM)
 
 // Window/level mapping of one slice of a medical volume into 8 bit.
 //
-// The sample formats are the ones of the PYRM container: U8, U16, U32, I16,
+// The sample formats are the ones of the LUMM container: U8, U16, U32, I16,
 // I32 and F32 (little endian). Signed samples are shifted into their signed
 // range before the window is applied, which is what a radiologist expects:
 // the level is given in the units of the modality (Hounsfield units for CT,
@@ -309,7 +309,7 @@ int pyra_fast_adaptive_reconstruct(const int32_t* res, int count, int width,
 
 // Window/level preview of one slice of a medical volume.
 //
-// The sample formats are the ones of the PYRM container: U8, U16, U32, I16,
+// The sample formats are the ones of the LUMM container: U8, U16, U32, I16,
 // I32 and F32 (little endian). Signed samples are shifted into their signed
 // range before the window is applied, which is what a radiologist expects:
 // the level is given in the units of the modality (Hounsfield units for CT,
@@ -324,9 +324,9 @@ int pyra_fast_adaptive_reconstruct(const int32_t* res, int count, int width,
 // low end of the range is white.
 //
 // The output has one byte per *pixel* (the channels are averaged), exactly
-// like the pure-Python reference in pyra/medical/preview.py.
+// like the pure-Python reference in lum/medical/preview.py.
 
-int pyra_med_preview(const uint8_t* samples, size_t len, int width, int height,
+int lum_med_preview(const uint8_t* samples, size_t len, int width, int height,
                      int depth, int channels, int sample_format, int slice,
                      double window, double level, double slope,
                      double intercept, int invert, uint8_t* out) {
@@ -390,7 +390,7 @@ int pyra_med_preview(const uint8_t* samples, size_t len, int width, int height,
 
 // Read a binary PGM/PPM file (P5/P6) into a raw sample buffer.
 //
-// The header is parsed exactly like the Python reference in pyra/api.py:
+// The header is parsed exactly like the Python reference in lum/api.py:
 // comments start with '#' and run to the end of the line, tokens may be
 // spread over several lines. 16 bit samples stay big endian.
 //
@@ -398,7 +398,7 @@ int pyra_med_preview(const uint8_t* samples, size_t len, int width, int height,
 // -1 bad arguments, -2 unreadable file, -3 malformed header, -4 truncated
 // data, -5 unsupported variant.
 
-int pyra_pnm_read(const char* path, uint8_t* out, size_t out_cap,
+int lum_pnm_read(const char* path, uint8_t* out, size_t out_cap,
                   int* info) {
     if (!path || !out || !info) return -1;
     FILE* f = std::fopen(path, "rb");
@@ -465,10 +465,10 @@ int pyra_pnm_read(const char* path, uint8_t* out, size_t out_cap,
 //
 // The buffer holds the samples exactly as they are stored in the file: 8 bit
 // samples are written as they are, 16 bit samples are big endian (the PNM
-// order), which is what `pyra_pnm_read` returns. Returns 0 on success, -1 on
+// order), which is what `lum_pnm_read` returns. Returns 0 on success, -1 on
 // bad arguments, -2 on I/O error.
 
-int pyra_pnm_write(const char* path, const uint8_t* data, int width, int height,
+int lum_pnm_write(const char* path, const uint8_t* data, int width, int height,
                    int channels, int bit_depth) {
     if (!path || !data || width <= 0 || height <= 0 || channels <= 0) {
         return -1;

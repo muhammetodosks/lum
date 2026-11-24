@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch and verify the AV1 conformance streams PYRA is measured on.
+"""Fetch and verify the AV1 conformance streams LUMEN is measured on.
 
 There is no public `AOMediaCodec/av1-cts` repository: the URL returns 404 from
 both github.com and the REST API, and the AOMediaCodec organisation does not

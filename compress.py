@@ -1,4 +1,4 @@
-# PYRA - RLE + LZ compression stages (pure Python, stdlib only).
+# LUMEN - RLE + LZ compression stages (pure Python, stdlib only).
 #
 # Pipeline: residuals -> pack(byte stream) -> RLE -> LZ77 -> tokens -> entropy
 #

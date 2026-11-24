@@ -1,8 +1,8 @@
-"""Reference (pure Python) codec of the PYRM medical container.
+"""Reference (pure Python) codec of the LUMM medical container.
 
 This module is the *specification* of the format: every byte of a container
 is produced here by straightforward code. The native Rust core
-(:mod:`pyra.medical.native`) implements the very same pipeline and the test
+(:mod:`lum.medical.native`) implements the very same pipeline and the test
 suite asserts that both produce identical bytes.
 
 Layout of a tile body::
@@ -385,7 +385,7 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
            require_dicom: bool = False, sign_key: bytes | None = None,
            audit: bool = False, audit_timestamp: str | None = None,
            max_error: int = 0) -> bytes:
-    """Encode a medical image into a PYRM container.
+    """Encode a medical image into a LUMM container.
 
     `samples` holds the raw samples in little-endian order (exactly the
     bytes the decoder returns). `predictor` and `method` accept -1, which
@@ -410,7 +410,7 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
 
     With `sign_key` the container is signed with HMAC-SHA256; the
     signature proves that the holder of the key produced the file and that
-    nobody modified it afterwards. See :mod:`pyra.medical.signature`.
+    nobody modified it afterwards. See :mod:`lum.medical.signature`.
 
     With `audit` a deterministic provenance block is added to the metadata
     (encoder, codec, geometry and the SHA-256 of the source samples). The
@@ -424,7 +424,7 @@ def encode(samples: bytes, width: int, height: int, depth: int = 1,
         _n = width * height * depth * channels * _fmt.sample_bytes
         metadata["Audit"] = _signature.audit_block(
             samples[:_n], width, height, depth, channels, sample_format,
-            encoder=f"pyra/{__version__}", codec=f"PYRM-v{VERSION}",
+            encoder=f"lum/{__version__}", codec=f"LUMM-v{VERSION}",
             timestamp=audit_timestamp)
     if max_error < 0:
         raise ValueError("the error bound must not be negative")
@@ -442,7 +442,7 @@ def _encode_core(samples: bytes, width: int, height: int, depth: int = 1,
            metadata: dict | None = None, tile_size: int = 256,
            predictor: int = -1, method: int = -1,
            require_dicom: bool = False, step: int = 1) -> bytes:
-    """Encode a medical image into a PYRM container.
+    """Encode a medical image into a LUMM container.
 
     `samples` holds the raw samples in little-endian order (exactly the
     bytes the decoder returns). `predictor` and `method` accept -1, which
@@ -649,7 +649,7 @@ def _decode_tile(body: bytes, flags: int, method: int, tw: int, th: int,
 
 
 def decode(blob: bytes, verify_key: bytes | None = None) -> tuple[dict, bytes]:
-    """Decode a PYRM container.
+    """Decode a LUMM container.
 
     Returns (metadata, raw samples). Every integrity check is performed:
     header CRC, metadata CRC, per tile CRC, payload CRC and the SHA-256

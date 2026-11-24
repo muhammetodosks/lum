@@ -1,9 +1,9 @@
-//! PYRM (PYRA Medical) native core.
+//! LUMM (LUMEN Medical) native core.
 //!
 //! The container is a 3D lossless image format: volume of slices, each slice
 //! tiled, every tile predicted with a per-row filter choice and entropy
 //! coded. This module is the native twin of the pure-Python reference in
-//! `pyra/medical/codec.py`; both produce byte-identical containers.
+//! `lum/medical/codec.py`; both produce byte-identical containers.
 //!
 //! Layout of a tile body:
 //!
@@ -27,7 +27,7 @@
 //! * The predictor candidates are scored in a single pass over the row and
 //!   the modular arithmetic avoids the hardware division.
 
-use super::pyra_image::crc32;
+use super::lum_image::crc32;
 use super::{CtxRangeDec, CtxRangeEnc};
 use super::FastBuild;
 use super::RangeDec;
@@ -36,7 +36,7 @@ use std::collections::HashMap;
 
 // ------------------------------------------------------------------ format
 
-const MED_MAGIC: [u8; 8] = [0x50, 0x59, 0x52, 0x4D, 0x0D, 0x0A, 0x1A, 0x0A];
+const MED_MAGIC: [u8; 8] = [0x4C, 0x55, 0x4D, 0x4D, 0x0D, 0x0A, 0x1A, 0x0A];
 const MED_VERSION: u32 = 3;
 const MED_VERSION_V2: u32 = 2;
 const MED_VERSION_V1: u32 = 1;
@@ -1199,7 +1199,7 @@ struct TileBody {
 
 /// Encode a whole medical volume and return the container bytes.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_med_encode(
+pub unsafe extern "C" fn lum_med_encode(
     src: *const u8,
     len: usize,
     width: u32,
@@ -1737,7 +1737,7 @@ impl<'a> RoiState<'a> {
 /// sample of the container - which is precisely what this call avoids
 /// decoding.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_med_decode_region(
+pub unsafe extern "C" fn lum_med_decode_region(
     src: *const u8,
     len: usize,
     x: i32,
@@ -1844,7 +1844,7 @@ pub unsafe extern "C" fn pyra_med_decode_region(
 
 /// Decode a whole container into the raw sample bytes.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_med_decode(
+pub unsafe extern "C" fn lum_med_decode(
     src: *const u8,
     len: usize,
     out_ptr: *mut *mut u8,
@@ -2015,7 +2015,7 @@ pub unsafe extern "C" fn pyra_med_decode(
 
 /// Read the header of a container without decoding the samples.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_med_info(
+pub unsafe extern "C" fn lum_med_info(
     src: *const u8,
     len: usize,
     meta_out: *mut i32,

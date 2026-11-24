@@ -4,7 +4,7 @@ import sys
 import os
 from typing import List, Tuple, Optional, BinaryIO, Generator
 
-MAGIC = b"PYRA\r\n\x1A\n"
+MAGIC = b"LUMA\r\n\x1A\n"
 VERSION = 3
 VERSION_LEGACY = 1
 VERSION_V2 = 2
@@ -48,11 +48,11 @@ METHOD_MIX = 3   # per-tile best of RAW/RLE/LZ; each tile body starts with a met
 METHOD_COUNT = 3 # candidate count for global auto-select (RAW/RLE/LZ)
 _VALID_METHODS = (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX)
 
-class PyraError(Exception):
+class LumenError(Exception):
     pass
 
-class SecurityError(PyraError):
+class SecurityError(LumenError):
     pass
 
-class CorruptedFileError(PyraError):
+class CorruptedFileError(LumenError):
     pass

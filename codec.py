@@ -7,7 +7,7 @@ from .color import (transform_pixels_forward, transform_pixels_inverse,
 from .entropy import RangeEncoder, RangeDecoder
 from .entropycost import histogram_cost
 from .tile import split_into_tiles, assemble_from_tiles, Tile
-from .container import PyraContainer
+from .container import LumenContainer
 from .compress import (pack_residuals, unpack_residuals, rle_encode, rle_decode,
                        lz_encode, lz_decode, pack_width as _pack_width,
                        TOKEN_EOF, TOKEN_MATCH, TOKEN_SYMBOLS)
@@ -30,7 +30,7 @@ _RGB_MOD_BITS = 3       # mod = 1 << (bit_depth + _RGB_MOD_BITS)
 # rows and measure them with the same range coder.
 _PLAN_SAMPLE_ROWS = 8
 
-class PyraCodec:
+class LumenCodec:
     @staticmethod
     def _channels_for_colorspace(color_space: int) -> int:
         if color_space == CS_GRAY:
@@ -59,7 +59,7 @@ class PyraCodec:
                           transform: int = TRANSFORM_YCOCG) -> int:
         """Uniform offset added to transformed values before prediction."""
         if color_space in (CS_RGB, CS_RGBA) and transform == TRANSFORM_YCOCG:
-            return PyraCodec._residual_mod(color_space, bit_depth, transform) >> 1
+            return LumenCodec._residual_mod(color_space, bit_depth, transform) >> 1
         return 0
 
     @staticmethod
@@ -399,9 +399,9 @@ class PyraCodec:
                     filter_mode: int = FILTER_GLOBAL,
                     filter_bits: bytes | None = None,
                     legacy: bool = False) -> list[int]:
-        channels = PyraCodec._channels_for_colorspace(color_space)
-        mod = PyraCodec._residual_mod(color_space, bit_depth, transform)
-        offset = PyraCodec._canonical_offset(color_space, bit_depth, transform)
+        channels = LumenCodec._channels_for_colorspace(color_space)
+        mod = LumenCodec._residual_mod(color_space, bit_depth, transform)
+        offset = LumenCodec._canonical_offset(color_space, bit_depth, transform)
 
         if filter_mode == FILTER_ADAPTIVE:
             if filter_bits is None:
@@ -506,7 +506,7 @@ class PyraCodec:
                         return None
                 candidates.append(cand)
         compressed_tiles, method = cls._select_candidates(candidates, method)
-        return PyraContainer.pack_file(width, height, bit_depth, color_space,
+        return LumenContainer.pack_file(width, height, bit_depth, color_space,
                                        pred_type, method, tile_size,
                                        compressed_tiles, transform, filter_mode)
 
@@ -644,7 +644,7 @@ class PyraCodec:
             compressed_tiles = [cand[method] for cand in candidates]
         else:
             raise ValueError(f"invalid method: {method} (use -1 for auto)")
-        return PyraContainer.pack_file(width, height, bit_depth, color_space,
+        return LumenContainer.pack_file(width, height, bit_depth, color_space,
                                        pred_type, method, tile_size,
                                        compressed_tiles, transform, filter_mode)
 
@@ -774,7 +774,7 @@ class PyraCodec:
         if native is not None:
             return native
 
-        meta, compressed_tiles = PyraContainer.unpack_file(file_bytes)
+        meta, compressed_tiles = LumenContainer.unpack_file(file_bytes)
         width = meta["width"]
         height = meta["height"]
         bit_depth = meta["bit_depth"]

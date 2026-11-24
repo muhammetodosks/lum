@@ -1,9 +1,9 @@
-"""Minimal stdlib-only PNG encoder, used by the benchmark to compare PYRA
+"""Minimal stdlib-only PNG encoder, used by the benchmark to compare LUMEN
 against real PNG output for the *same* pixel data.
 
 Note on fairness: PNG compresses with zlib's C-optimized DEFLATE plus
 per-row adaptive filtering (we emulate a practical encoder by always
-applying the Paeth filter). PYRA uses a hand-rolled adaptive range coder
+applying the Paeth filter). LUMEN uses a hand-rolled adaptive range coder
 in pure Python, so speed comparisons are inherently asymmetric -- only
 compression-size comparison is meaningful, and even that favors PNG.
 """
@@ -85,7 +85,7 @@ def _filter_image(raw: bytes, width: int, height: int, stride: int, bpp: int,
 def encode_png(pixels: list[int], width: int, height: int, bit_depth: int = 8,
                color_space: int = 2, filter_choice: str = "adaptive") -> bytes:
     """Encode raw pixels (flat channel-major list) into a valid PNG byte string.
-    color_space: PYRA numbering (1=gray, 2=rgb, 3=rgba).
+    color_space: LUMEN numbering (1=gray, 2=rgb, 3=rgba).
     """
     assert bit_depth in (8, 16)
     channels = {1: 1, 2: 3, 3: 4}[color_space]

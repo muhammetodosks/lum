@@ -1,31 +1,31 @@
-// PYRA native core — Rust implementation of the hot-path compression stages.
+// LUMEN native core — Rust implementation of the hot-path compression stages.
 //
 // Stages ported (byte/token-identical to the pure-Python reference in
 // compress.py — the container-equivalence test proves it through the
 // entropy coder):
 //
-//   pyra_pack_residuals    fixed-width little-endian residual packing
-//   pyra_unpack_residuals  inverse, with strict range validation
-//   pyra_rle_encode        byte-level RLE, greedy maximal runs
-//   pyra_rle_decode        inverse with all overshoot/truncation guards
-//   pyra_lz_encode         greedy longest-match LZ77, 3-byte hash buckets
-//   pyra_lz_decode_tokens  token-array LZ77 decode with all guards
+//   lum_pack_residuals    fixed-width little-endian residual packing
+//   lum_unpack_residuals  inverse, with strict range validation
+//   lum_rle_encode        byte-level RLE, greedy maximal runs
+//   lum_rle_decode        inverse with all overshoot/truncation guards
+//   lum_lz_encode         greedy longest-match LZ77, 3-byte hash buckets
+//   lum_lz_decode_tokens  token-array LZ77 decode with all guards
 //
 // Error convention: every fn returns isize (or i64-style handle encoded in
 // isize). >= 0 means success (bytes/tokens produced); < 0 is an error code
 // that Python maps to CorruptedFileError / ValueError with the reference
 // wording.
 //
-// Build: scripts/build_native.sh  ->  pyra/_libpyra_core.so
+// Build: scripts/build_native.sh  ->  lum/_liblum_core.so
 
 #![allow(clippy::needless_range_loop)]
 
 use std::collections::{HashMap, VecDeque};
 
-mod pyra_image;
-mod pyra_cloud;
-mod pyra_med;
-mod pyra_lossy;
+mod lum_image;
+mod lum_cloud;
+mod lum_med;
+mod lum_lossy;
 
 pub const TOKEN_MATCH: u32 = 256;
 pub const TOKEN_EOF: u32 = 257;
@@ -66,7 +66,7 @@ const CS_RGBA_V: i32 = 3;
 
 /// Pack residual symbols (each in [0, mod)) little-endian, `width` bytes each.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_pack_residuals(
+pub unsafe extern "C" fn lum_pack_residuals(
     syms: *const u32, count: usize, width: usize, modv: u64, out: *mut u8,
 ) -> isize {
     let syms = std::slice::from_raw_parts(syms, count);
@@ -85,7 +85,7 @@ pub unsafe extern "C" fn pyra_pack_residuals(
 /// Inverse of pack: decode exactly `count` fixed-width little-endian symbols,
 /// validating each against `mod` (decompression-safety requirement).
 #[no_mangle]
-pub unsafe extern "C" fn pyra_unpack_residuals(
+pub unsafe extern "C" fn lum_unpack_residuals(
     data: *const u8, len: usize, count: usize, width: usize, modv: u64, out: *mut u32,
 ) -> isize {
     if len < count * width {
@@ -111,7 +111,7 @@ pub unsafe extern "C" fn pyra_unpack_residuals(
 /// Byte-level RLE, greedy maximal runs. Deterministic; byte-identical to the
 /// Python reference. Output buffer must be >= 2*len + 16.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_rle_encode(data: *const u8, len: usize, out: *mut u8) -> isize {
+pub unsafe extern "C" fn lum_rle_encode(data: *const u8, len: usize, out: *mut u8) -> isize {
     let data = std::slice::from_raw_parts(data, len);
     let out = std::slice::from_raw_parts_mut(out, 2 * len + 16);
     let mut i = 0usize;
@@ -157,7 +157,7 @@ pub unsafe extern "C" fn pyra_rle_encode(data: *const u8, len: usize, out: *mut 
 
 /// Inverse of rle_encode; reconstructs exactly `target` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_rle_decode(
+pub unsafe extern "C" fn lum_rle_decode(
     data: *const u8, len: usize, target: usize, out: *mut u8,
 ) -> isize {
     let data = std::slice::from_raw_parts(data, len);
@@ -420,7 +420,7 @@ impl<'a> LzMatcher<'a> {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pyra_lz_encode(
+pub unsafe extern "C" fn lum_lz_encode(
     data: *const u8, len: usize, tokens_out: *mut u32,
 ) -> isize {
     let data = std::slice::from_raw_parts(data, len);
@@ -545,15 +545,15 @@ macro_rules! row_kernel {
     };
 }
 
-row_kernel!(pyra_apply_predictor_row, false);
-row_kernel!(pyra_reconstruct_row, true);
+row_kernel!(lum_apply_predictor_row, false);
+row_kernel!(lum_reconstruct_row, true);
 
 // ----------------------------------------------------------- YCoCg
 
 /// Reversible RGB->YCoCg over an interleaved pixel list (passthrough for
 /// non-RGB/RGBa color spaces, alpha untouched). Byte-identical to Python.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_transform_forward(
+pub unsafe extern "C" fn lum_transform_forward(
     vals: *const i32, n: usize, color_space: i32, out: *mut i32,
 ) -> isize {
     if color_space != CS_RGB_V && color_space != CS_RGBA_V {
@@ -592,9 +592,9 @@ pub unsafe extern "C" fn pyra_transform_forward(
     n as isize
 }
 
-/// Inverse of pyra_transform_forward.
+/// Inverse of lum_transform_forward.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_transform_inverse(
+pub unsafe extern "C" fn lum_transform_inverse(
     vals: *const i32, n: usize, color_space: i32, out: *mut i32,
 ) -> isize {
     if color_space != CS_RGB_V && color_space != CS_RGBA_V {
@@ -634,7 +634,7 @@ pub unsafe extern "C" fn pyra_transform_inverse(
 /// or exactly `target` output bytes are produced. Token-identical to the
 /// Python reference (compress.py equivalent pipeline).
 #[no_mangle]
-pub unsafe extern "C" fn pyra_lz_decode_tokens(
+pub unsafe extern "C" fn lum_lz_decode_tokens(
     tokens: *const u32, ntok: usize, target: usize, out: *mut u8,
 ) -> isize {
     let tokens = std::slice::from_raw_parts(tokens, ntok);
@@ -701,7 +701,7 @@ pub unsafe extern "C" fn pyra_lz_decode_tokens(
 
 // Fused codec front/back halves: one buffer conversion per call instead of
 // one per stage (transform / per-row prediction / packing). Semantics are
-// the exact composition of PyraCodec._residual_stream / decode_tile on the
+// the exact composition of LumenCodec._residual_stream / decode_tile on the
 // pure-Python side, proven by container-parity tests.
 
 /// Forward half: YCoCg transform -> canonicalize (+offset) -> per-row
@@ -709,7 +709,7 @@ pub unsafe extern "C" fn pyra_lz_decode_tokens(
 /// come from an internal copy of the canonicalized input, mirroring the
 /// Python reference (prev_row = canonicalized transformed slice above).
 #[no_mangle]
-pub unsafe extern "C" fn pyra_pipe_forward(
+pub unsafe extern "C" fn lum_pipe_forward(
     vals: *const i32, n: usize, stride: usize,
     color_space: i32, offset: i64, modv: i64,
     pred_type: i32, channels: usize, out: *mut i32, transform: i32,
@@ -790,7 +790,7 @@ pub unsafe extern "C" fn pyra_pipe_forward(
 /// (-offset) -> inverse YCoCg. Bit-identical to the pure-python tail of
 /// decode_tile.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_pipe_reconstruct(
+pub unsafe extern "C" fn lum_pipe_reconstruct(
     res: *const i32, n: usize, stride: usize,
     color_space: i32, offset: i64, modv: i64,
     pred_type: i32, channels: usize, out: *mut i32, transform: i32,
@@ -1242,7 +1242,7 @@ fn encode_lz_method_capped(rle_raw: &[u8], max_bits: usize) -> Result<Vec<u8>, i
 /// Encode `count` symbols as a packed bit string, byte-identical to
 /// RangeEncoder(...).flush(). Output buffer >= 2*count + 256 bytes.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_range_encode(
+pub unsafe extern "C" fn lum_range_encode(
     syms: *const u32, count: usize, n_symbols: usize,
     out: *mut u8, out_cap: usize,
 ) -> isize {
@@ -1505,7 +1505,7 @@ impl<'a> CtxRangeDec<'a> {
 /// Decode exactly `count` symbols, byte-identical to the RangeDecoder
 /// reference (zeros beyond the stream end, same clamping policy).
 #[no_mangle]
-pub unsafe extern "C" fn pyra_range_decode(
+pub unsafe extern "C" fn lum_range_decode(
     data: *const u8, dlen: usize, n_symbols: usize, count: usize, out: *mut u32,
 ) -> isize {
     if n_symbols == 0 {
@@ -1562,7 +1562,7 @@ unsafe fn unpack_into(
 /// METHOD_RLE decode: range-decode the token stream (byte literals + EOF)
 /// with the reference's bounded-decode guard, then RLE-decode and unpack.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_decode_rle_method(
+pub unsafe extern "C" fn lum_decode_rle_method(
     data: *const u8, dlen: usize, n_symbols: usize,
     packed_len: usize, width: usize, modv: u64,
     count: usize, out_res: *mut u32, detail: *mut i32,
@@ -1596,7 +1596,7 @@ pub unsafe extern "C" fn pyra_decode_rle_method(
         raw.push(sym as u8);
     }
     let mut packed = vec![0u8; packed_len];
-    let rc = pyra_rle_decode(raw.as_ptr(), raw.len(), packed_len, packed.as_mut_ptr());
+    let rc = lum_rle_decode(raw.as_ptr(), raw.len(), packed_len, packed.as_mut_ptr());
     if rc < 0 {
         return rc;
     }
@@ -1608,7 +1608,7 @@ pub unsafe extern "C" fn pyra_decode_rle_method(
 /// Mirrors the reference's streaming LZ decoder, including its symbol cap
 /// and check order.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_decode_lz_method(
+pub unsafe extern "C" fn lum_decode_lz_method(
     data: *const u8, dlen: usize, n_symbols: usize,
     max_rle_len: usize, packed_len: usize, width: usize, modv: u64,
     count: usize, out_res: *mut u32, rle_len_out: *mut u32, detail: *mut i32,
@@ -1688,7 +1688,7 @@ pub unsafe extern "C" fn pyra_decode_lz_method(
     }
 
     let mut packed = vec![0u8; packed_len];
-    let rc = pyra_rle_decode(out.as_ptr(), out.len(), packed_len, packed.as_mut_ptr());
+    let rc = lum_rle_decode(out.as_ptr(), out.len(), packed_len, packed.as_mut_ptr());
     if rc < 0 {
         return rc;
     }
@@ -1710,7 +1710,7 @@ pub unsafe extern "C" fn pyra_decode_lz_method(
 /// in samples, the tile origin is (x, y) in pixels and the tile is
 /// `tw` x `th` pixels with `channels` samples each.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_extract_tile(
+pub unsafe extern "C" fn lum_extract_tile(
     src: *const i32, src_stride: usize,
     x: usize, y: usize, tw: usize, th: usize, channels: usize,
     dst: *mut i32,
@@ -1735,7 +1735,7 @@ pub unsafe extern "C" fn pyra_extract_tile(
 /// transform output -- exactly like the reference implementation, which
 /// reconstructs every row first and only then descales and un-transforms.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_pipe_reconstruct_into(
+pub unsafe extern "C" fn lum_pipe_reconstruct_into(
     res: *const i32, n: usize, stride: usize,
     color_space: i32, offset: i64, modv: i64,
     pred_type: i32, channels: usize,
@@ -1867,7 +1867,7 @@ fn residual_score(d: i64, modv: i64) -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pyra_pipe_forward_adaptive_into(
+pub unsafe extern "C" fn lum_pipe_forward_adaptive_into(
     vals: *const i32, n: usize, stride: usize,
     color_space: i32, offset: i64, modv: i64,
     channels: usize, transform: i32,
@@ -1999,7 +1999,7 @@ pub unsafe extern "C" fn pyra_pipe_forward_adaptive_into(
 /// Adaptive back half: rebuild every row with the predictor it was encoded
 /// with -> descale -> inverse YCoCg, straight into the canvas.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_pipe_reconstruct_adaptive_into(
+pub unsafe extern "C" fn lum_pipe_reconstruct_adaptive_into(
     res: *const i32, n: usize, stride: usize,
     color_space: i32, offset: i64, modv: i64,
     channels: usize, transform: i32,
@@ -2078,7 +2078,7 @@ pub unsafe extern "C" fn pyra_pipe_reconstruct_adaptive_into(
 }
 
 /// Encode a symbol sequence with the adaptive range coder into `out`.
-/// Shared by pyra_range_encode and the fused method encoders below.
+/// Shared by lum_range_encode and the fused method encoders below.
 unsafe fn encode_symbols(
     syms: &[u32], n_symbols: usize, out: *mut u8, out_cap: usize,
 ) -> isize {
@@ -2104,7 +2104,7 @@ unsafe fn encode_symbols(
 /// METHOD_RAW encoder: residual symbols straight into the range coder.
 /// `res` holds `count` residual symbols (each < modv).
 #[no_mangle]
-pub unsafe extern "C" fn pyra_encode_raw_method(
+pub unsafe extern "C" fn lum_encode_raw_method(
     res: *const i32, count: usize, modv: u64, out: *mut u8, out_cap: usize,
 ) -> isize {
     let res = std::slice::from_raw_parts(res, count);
@@ -2121,7 +2121,7 @@ pub unsafe extern "C" fn pyra_encode_raw_method(
 /// METHOD_RLE encoder: RLE byte stream as literal tokens + EOF terminator,
 /// range coded in one pass.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_encode_rle_method(
+pub unsafe extern "C" fn lum_encode_rle_method(
     rle: *const u8, len: usize, out: *mut u8, out_cap: usize,
 ) -> isize {
     let rle = std::slice::from_raw_parts(rle, len);
@@ -2137,12 +2137,12 @@ pub unsafe extern "C" fn pyra_encode_rle_method(
 /// decoder knows the LZ output target) followed by the LZ77 token stream
 /// (already EOF-terminated), range coded in one pass.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_encode_lz_method(
+pub unsafe extern "C" fn lum_encode_lz_method(
     rle: *const u8, len: usize, out: *mut u8, out_cap: usize,
 ) -> isize {
     let rle = std::slice::from_raw_parts(rle, len);
     let mut tokens: Vec<u32> = vec![0; len + 2];
-    let n = pyra_lz_encode(rle.as_ptr(), len, tokens.as_mut_ptr());
+    let n = lum_lz_encode(rle.as_ptr(), len, tokens.as_mut_ptr());
     if n < 0 {
         return n;
     }
@@ -2322,7 +2322,7 @@ unsafe fn plan_candidate_cost(
 /// selection afterwards walks them in the reference order with a strict
 /// `<`, which keeps the tie-breaking identical.
 #[no_mangle]
-pub unsafe extern "C" fn pyra_plan(
+pub unsafe extern "C" fn lum_plan(
     pixels: *const i32, count: usize, width: usize, height: usize,
     channels: usize, bit_depth: u32, color_space: i32, sample_rows: usize,
     fixed_transform: i32, fixed_filter: i32, fixed_pred: i32,

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Measure real image formats against PYRA on an independent photo corpus.
+"""Measure real image formats against LUMEN on an independent photo corpus.
 
 This is the harness behind ``docs/assets/formats.html`` and the "Visual
 comparison" section of the README.  It is deliberately boring: every format
 is encoded by the encoder that ships on the machine (ImageMagick for
-PNG/JPEG/WebP/AVIF/JP2/TIFF/BMP/GIF, ffmpeg+libjxl for JPEG XL, the PYRA
-Python/Rust codec for PYRA), decoded again, and scored on the bytes it
+PNG/JPEG/WebP/AVIF/JP2/TIFF/BMP/GIF, ffmpeg+libjxl for JPEG XL, the LUMEN
+Python/Rust codec for LUMEN), decoded again, and scored on the bytes it
 actually produced and the PSNR it actually reached.
 
     # the Kodak set is an independent corpus; nothing here was tuned on it
@@ -46,8 +46,8 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, os.path.dirname(REPO))
 sys.path.insert(0, HERE)
 
-from pyra import api, lossy                                  # noqa: E402
-from pyra.constants import CS_RGB                             # noqa: E402
+from lum import api, lossy                                  # noqa: E402
+from lum.constants import CS_RGB                             # noqa: E402
 from format_report import psnr, summarise                     # noqa: E402
 
 DEFAULT_IMAGES = ["01.png", "03.png", "05.png", "07.png", "13.png", "23.png"]
@@ -55,7 +55,7 @@ QUALITY = 90
 
 # key, label, family, lossless, kind, argument
 FORMATS = [
-    ("pyra-lossless", "PYRA lossless", "lossless", True, "pyra-lossless", ""),
+    ("lum-lossless", "LUMEN lossless", "lossless", True, "lum-lossless", ""),
     ("png", "PNG (zlib 9)", "lossless", True, "convert",
      ["-define", "png:compression-level=9"]),
     ("jxl-lossless", "JPEG XL lossless", "lossless", True, "ffmpeg-jxl",
@@ -65,7 +65,7 @@ FORMATS = [
     ("tiff-lzw", "TIFF (LZW)", "lossless", True, "convert",
      ["-compress", "lzw"]),
     ("bmp", "BMP (uncompressed)", "lossless", True, "convert", []),
-    ("pyra-lossy", "PYRA lossy q90", "lossy", False, "pyra-lossy", ""),
+    ("lum-lossy", "LUMEN lossy q90", "lossy", False, "lum-lossy", ""),
     ("jpeg", "JPEG q90", "lossy", False, "convert", ["-quality", str(QUALITY)]),
     ("jxl", "JPEG XL d1.0", "lossy", False, "ffmpeg-jxl",
      ["-distance", "1.0", "-effort", "7"]),
@@ -78,7 +78,7 @@ FORMATS = [
     ("gif", "GIF 256 colours", "lossy", False, "convert", ["-colors", "256"]),
 ]
 
-EXT = {"pyra-lossless": "pyra", "pyra-lossy": "pyra", "png": "png",
+EXT = {"lum-lossless": "lum", "lum-lossy": "lum", "png": "png",
        "jxl-lossless": "jxl", "jxl": "jxl", "webp-lossless": "webp",
        "webp": "webp", "tiff-lzw": "tiff", "bmp": "bmp", "jpeg": "jpg",
        "avif": "avif", "jpeg2000": "jp2", "gif": "gif"}
@@ -164,7 +164,7 @@ def main(argv=None):
     started = time.strftime("%Y-%m-%d")
     preview_paths = {}
 
-    with tempfile.TemporaryDirectory(prefix="pyra-formats-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="lum-formats-") as tmp:
         for name in args.images:
             src = os.path.join(args.corpus, name)
             if not os.path.exists(src):
@@ -184,11 +184,11 @@ def main(argv=None):
                 out = os.path.join(tmp, f"{key}.{EXT[key]}")
                 t0 = time.perf_counter()
                 blob_path = out
-                if kind == "pyra-lossless":
+                if kind == "lum-lossless":
                     blob = api.encode(list(reference), width, height, CS_RGB)
                     with open(out, "wb") as f:
                         f.write(blob)
-                elif kind == "pyra-lossy":
+                elif kind == "lum-lossy":
                     blob = lossy.encode(reference, width, height, CS_RGB,
                                         QUALITY, lossy.SUBSAMPLE_444)
                     with open(out, "wb") as f:
@@ -198,11 +198,11 @@ def main(argv=None):
                 encode_ms = (time.perf_counter() - t0) * 1000.0
 
                 t0 = time.perf_counter()
-                if kind == "pyra-lossless":
+                if kind == "lum-lossless":
                     meta, pixels = api.decode(blob)
                     decoded = bytes(pixels)
                     size = (meta["width"], meta["height"])
-                elif kind == "pyra-lossy":
+                elif kind == "lum-lossy":
                     meta, decoded = lossy.decode(blob)
                     size = (meta["width"], meta["height"])
                 else:
@@ -237,7 +237,7 @@ def main(argv=None):
         "notes": [
             "Nominal quality 90 means each encoder's own knob; the measured "
             "PSNR is what makes the comparison honest.",
-            "PYRA lossless/lossy numbers come from this Python package; the "
+            "LUMEN lossless/lossy numbers come from this Python package; the "
             "other formats come from ImageMagick 6.9 and ffmpeg+libjxl 7 "
             "at their default settings plus the flags shown.",
             "Encode time includes process startup for external tools and is "

@@ -1,5 +1,5 @@
-# PYRA lossless roundtrip / determinism / corruption / security test suite.
-# Run:  python3 -m pyra.tests.test_lossless
+# LUMEN lossless roundtrip / determinism / corruption / security test suite.
+# Run:  python3 -m lum.tests.test_lossless
 #
 # Every lossless path must guarantee decoded == original, bit-exact.
 
@@ -12,10 +12,10 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from pyra import *
-from pyra.codec import PyraCodec
-from pyra.container import PyraContainer
-from pyra.security import SecurityError, CorruptedFileError
+from lum import *
+from lum.codec import LumenCodec
+from lum.container import LumenContainer
+from lum.security import SecurityError, CorruptedFileError
 
 PASS = 0
 FAIL = 0
@@ -57,7 +57,7 @@ def make_pixels(kind: str, w: int, h: int, ch: int, bit_depth: int) -> list[int]
 
 # ---------------------------------------------------------------- roundtrips
 def test_roundtrips():
-    rt = tempfile.mktemp(prefix="pyra_rt_")
+    rt = tempfile.mktemp(prefix="lum_rt_")
     for_w, for_h = 40, 30
     for cs, ch in [(CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)]:
         for bd in (8, 16):
@@ -66,16 +66,16 @@ def test_roundtrips():
                 pred_ok = []
                 for pred in (PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE,
                              PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN):
-                    fb = PyraCodec.encode(px, for_w, for_h, bd, cs, pred, 16)
-                    _, dec = PyraCodec.decode(fb)
+                    fb = LumenCodec.encode(px, for_w, for_h, bd, cs, pred, 16)
+                    _, dec = LumenCodec.decode(fb)
                     pred_ok.append(dec == px)
                 check(f"roundtrip {kind} cs={cs} bd={bd} x7preds", all(pred_ok))
     # multi-tile (odd tile split)
     px = make_pixels("photo", 37, 23, 3, 8)
     ok = True
     for ts in (1, 4, 8, 37, 64):
-        fb = PyraCodec.encode(px, 37, 23, 8, CS_RGB, PRED_PAETH, ts)
-        _, dec = PyraCodec.decode(fb)
+        fb = LumenCodec.encode(px, 37, 23, 8, CS_RGB, PRED_PAETH, ts)
+        _, dec = LumenCodec.decode(fb)
         ok = ok and dec == px
     check("roundtrip multi-tile tile_sizes", ok)
     if os.path.exists(rt):
@@ -87,37 +87,37 @@ def test_determinism():
     ok = True
     for pred in (PRED_NONE, PRED_LEFT, PRED_UP, PRED_AVERAGE,
                  PRED_PAETH, PRED_GRADIENT, PRED_MEDIAN):
-        a = PyraCodec.encode(px, 64, 48, 8, CS_RGB, pred)
-        b = PyraCodec.encode(px, 64, 48, 8, CS_RGB, pred)
+        a = LumenCodec.encode(px, 64, 48, 8, CS_RGB, pred)
+        b = LumenCodec.encode(px, 64, 48, 8, CS_RGB, pred)
         ok = ok and a == b
     check("deterministic encode (same input -> same bytes, x7 preds)", ok)
 
 
 def test_container():
     px = make_pixels("photo", 32, 32, 3, 8)
-    fb = PyraCodec.encode(px, 32, 32, 8, CS_RGB, PRED_PAETH, 16)
+    fb = LumenCodec.encode(px, 32, 32, 8, CS_RGB, PRED_PAETH, 16)
     check("magic bytes", fb.startswith(MAGIC))
     check("header version", struct.unpack(">I", fb[8:12])[0] == VERSION)
-    meta, tiles = PyraContainer.unpack_file(fb)
+    meta, tiles = LumenContainer.unpack_file(fb)
     check("meta roundtrip",
           meta["width"] == 32 and meta["height"] == 32 and meta["bit_depth"] == 8)
     # CRC corruption must be caught (mutate payload byte)
     corrupt = bytearray(fb)
     corrupt[len(fb) // 2] ^= 0xFF
     try:
-        PyraContainer.unpack_file(bytes(corrupt))
+        LumenContainer.unpack_file(bytes(corrupt))
         check("CRC mismatch raises CorruptedFileError", False)
     except CorruptedFileError:
         check("CRC mismatch raises CorruptedFileError", True)
     # truncation caught
     try:
-        PyraContainer.unpack_file(fb[:len(fb) // 2])
+        LumenContainer.unpack_file(fb[:len(fb) // 2])
         check("truncation raises CorruptedFileError", False)
     except (CorruptedFileError, IndexError):
         check("truncation raises CorruptedFileError", True)
     # bad magic caught
     try:
-        PyraContainer.unpack_file(b"NOPE" + fb[4:])
+        LumenContainer.unpack_file(b"NOPE" + fb[4:])
         check("bad magic raises CorruptedFileError", False)
     except CorruptedFileError:
         check("bad magic raises CorruptedFileError", True)
@@ -127,13 +127,13 @@ def test_security():
     # bomb dimensions
     for w, h in [(0, 1), (1, 0), (1 << 17, 1), (1, 1 << 17), (16385, 16385)]:
         try:
-            PyraContainer.pack_file(w, h, 8, CS_RGB, PRED_PAETH, METHOD_RAW, 256, [b""])
+            LumenContainer.pack_file(w, h, 8, CS_RGB, PRED_PAETH, METHOD_RAW, 256, [b""])
             check(f"dimensions {w}x{h} rejected", False)
         except SecurityError:
             check(f"dimensions {w}x{h} rejected", True)
     # oversize chunk
     try:
-        PyraContainer.pack_file(4, 4, 8, CS_RGB, PRED_PAETH, METHOD_RAW, 256,
+        LumenContainer.pack_file(4, 4, 8, CS_RGB, PRED_PAETH, METHOD_RAW, 256,
                                 [b"x" * (600 * 1024 * 1024)])
         check("512MB chunk limit", False)
     except (SecurityError, MemoryError):
@@ -143,7 +143,7 @@ def test_security():
 def test_region_and_tiles():
     w, h, ch = 48, 32, 3
     px = make_pixels("photo", w, h, ch, 8)
-    fb = PyraCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16)
+    fb = LumenCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16)
     # full region
     _, full = decode_region(fb, 0, 0, w, h)
     check("decode_region full == image", full == px)
@@ -175,11 +175,11 @@ def test_region_and_tiles():
 
 
 def test_files_and_cli_io():
-    tmp = tempfile.mkdtemp(prefix="pyra_files_")
-    # 8-bit PPM roundtrip through .pyra
+    tmp = tempfile.mkdtemp(prefix="lum_files_")
+    # 8-bit PPM roundtrip through .lum
     ppm = os.path.join(tmp, "a.ppm")
-    py1 = os.path.join(tmp, "a.pyra")
-    py2 = os.path.join(tmp, "b.pyra")
+    py1 = os.path.join(tmp, "a.lum")
+    py2 = os.path.join(tmp, "b.lum")
     out = os.path.join(tmp, "out.ppm")
     w, h = 24, 18
     px = make_pixels("photo", w, h, 3, 8)
@@ -191,11 +191,11 @@ def test_files_and_cli_io():
         orig = f.read()
     with open(py2, "rb") as f:
         redone = f.read()
-    check("PPM->pyra->PPM byte-identical", orig == redone)
+    check("PPM->lum->PPM byte-identical", orig == redone)
     check("encode_file meta", m1["width"] == w and m1["height"] == h)
     # 16-bit PPM roundtrip
     ppm16 = os.path.join(tmp, "a16.ppm")
-    pya16 = os.path.join(tmp, "a16.pyra")
+    pya16 = os.path.join(tmp, "a16.lum")
     out16 = os.path.join(tmp, "out16.ppm")
     px16 = make_pixels("noise", w, h, 3, 16)
     body = struct.pack(f">{w*h*3}H", *px16)
@@ -207,10 +207,10 @@ def test_files_and_cli_io():
         orig16 = f.read()
     with open(out16, "rb") as f:
         redone16 = f.read()
-    check("16-bit PPM->pyra->PPM byte-identical", orig16 == redone16)
+    check("16-bit PPM->lum->PPM byte-identical", orig16 == redone16)
     # PGM gray roundtrip
     pgm = os.path.join(tmp, "g.pgm")
-    pyg = os.path.join(tmp, "g.pyra")
+    pyg = os.path.join(tmp, "g.lum")
     outg = os.path.join(tmp, "gout.pgm")
     pxg = make_pixels("gradient", w, h, 1, 8)
     with open(pgm, "wb") as f:
@@ -221,7 +221,7 @@ def test_files_and_cli_io():
         o = f.read()
     with open(outg, "rb") as f:
         r = f.read()
-    check("PGM->pyra->PGM byte-identical", o == r)
+    check("PGM->lum->PGM byte-identical", o == r)
 
 
 def test_compression_sanity():
@@ -231,9 +231,9 @@ def test_compression_sanity():
     noise = make_pixels("noise", w, h, 3, 8)
     solid = make_pixels("solid", w, h, 3, 8)
     raw = w * h * 3
-    g_fb = PyraCodec.encode(grad, w, h, 8, CS_RGB, PRED_LEFT, 0xFFFF)
-    n_fb = PyraCodec.encode(noise, w, h, 8, CS_RGB, PRED_NONE, 0xFFFF)
-    s_fb = PyraCodec.encode(solid, w, h, 8, CS_RGB, PRED_LEFT, 0xFFFF)
+    g_fb = LumenCodec.encode(grad, w, h, 8, CS_RGB, PRED_LEFT, 0xFFFF)
+    n_fb = LumenCodec.encode(noise, w, h, 8, CS_RGB, PRED_NONE, 0xFFFF)
+    s_fb = LumenCodec.encode(solid, w, h, 8, CS_RGB, PRED_LEFT, 0xFFFF)
     check(f"solid compresses <25% of raw ({len(s_fb)}/{raw})", len(s_fb) < raw // 4)
     check(f"gradient compresses below raw ({len(g_fb)}/{raw})", len(g_fb) < raw)
     check(f"noise expansion bounded (<2.2x) ({len(n_fb)}/{raw})", len(n_fb) < raw * 2.2)
@@ -248,7 +248,7 @@ def test_animation():
     check("animation frame count", n == 3 and fps == 30)
     ok = True
     body = anim[8:]
-    # Each frame is a complete PYRA file; its length is discoverable from the
+    # Each frame is a complete LUMEN file; its length is discoverable from the
     # header: header + index_size_field + index + tiles + trailing CRC32.
     # v2 extends the header with two extra bytes (transform, filter_mode).
     pos = 0
@@ -264,7 +264,7 @@ def test_animation():
             ">II", body[index_start + (nt - 1) * 8:index_start + (nt - 1) * 8 + 8])
         flen = last_off + last_len + 4
         fbytes = body[pos:pos + flen]
-        _, dec = PyraCodec.decode(fbytes)
+        _, dec = LumenCodec.decode(fbytes)
         ok = ok and dec == frame
         pos += flen
     check("animation frames roundtrip exactly", ok and pos == len(body))
@@ -272,7 +272,7 @@ def test_animation():
 
 # ------------------------------------------------- compress stages + methods
 def test_compress_methods():
-    from pyra.compress import (pack_residuals, unpack_residuals, rle_encode,
+    from lum.compress import (pack_residuals, unpack_residuals, rle_encode,
                                rle_decode, lz_encode, lz_decode, TOKEN_EOF,
                                TOKEN_MATCH, CorruptedFileError as CFE)
 
@@ -357,13 +357,13 @@ def test_compress_methods():
         ("photo RGBA", CS_RGBA, 8, make_pixels("photo", 14, 14, 4, 8)),
     ]
     for name, cs, depth, px in cases:
-        nch = PyraCodec._channels_for_colorspace(cs)
+        nch = LumenCodec._channels_for_colorspace(cs)
         side = _side_for(len(px), nch)
         px = px[:side * side * nch]
         tiles = split_into_tiles(px, side, side, nch, 8)
         for m in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
-            comps = [PyraCodec.encode_tile(t, cs, PRED_PAETH, depth, m) for t in tiles]
-            outs = [PyraCodec.decode_tile(c, t.width, t.height, cs, PRED_PAETH, depth, m)
+            comps = [LumenCodec.encode_tile(t, cs, PRED_PAETH, depth, m) for t in tiles]
+            outs = [LumenCodec.decode_tile(c, t.width, t.height, cs, PRED_PAETH, depth, m)
                     for c, t in zip(comps, tiles)]
             # assemble pixels
             out = [0] * len(px)
@@ -377,8 +377,8 @@ def test_compress_methods():
 
     # ---- global method selection + container validation
     solid = make_pixels("solid", 64, 64, 3, 8)
-    data = PyraCodec.encode(solid, 64, 64, 8, CS_RGB, PRED_LEFT, 64)
-    meta, out = PyraCodec.decode(data)
+    data = LumenCodec.encode(solid, 64, 64, 8, CS_RGB, PRED_LEFT, 64)
+    meta, out = LumenCodec.decode(data)
     check("meta contains method", "method" in meta)
     check("solid container picks RLE/LZ", meta["method"] in (METHOD_RLE, METHOD_LZ))
     check("solid full roundtrip via chosen method", out == solid)
@@ -389,23 +389,23 @@ def test_compress_methods():
     mangled[23] = 9  # method field in ">8sIIIBBBBII": 8+4+4+4+1+1+1 = 23
     body = bytes(mangled[:-4])
     try:
-        PyraContainer.unpack_file(body + zlib.crc32(body).to_bytes(4, "big"))
+        LumenContainer.unpack_file(body + zlib.crc32(body).to_bytes(4, "big"))
         check("container rejects invalid method", False)
     except CorruptedFileError:
         check("container rejects invalid method", True)
 
     # header height is a full 32-bit field now (old fmt packed it into a byte)
     tall = make_pixels("gradient", 16, 300, 3, 8)
-    data_t = PyraCodec.encode(tall, 16, 300, 8, CS_RGB, PRED_NONE, 256)
-    meta_t, out_t = PyraCodec.decode(data_t)
+    data_t = LumenCodec.encode(tall, 16, 300, 8, CS_RGB, PRED_NONE, 256)
+    meta_t, out_t = LumenCodec.decode(data_t)
     check("height=300 roundtrip (header I-field fix)", meta_t["height"] == 300 and out_t == tall)
 
     # ---- forced-METHOD_LZ containers: corruption must raise CFE only
-    base = PyraContainer.pack_file(16, 16, 8, CS_RGB, PRED_PAETH, METHOD_LZ, 16, [
-        PyraCodec.encode_tile(t, CS_RGB, PRED_PAETH, 8, METHOD_LZ)
+    base = LumenContainer.pack_file(16, 16, 8, CS_RGB, PRED_PAETH, METHOD_LZ, 16, [
+        LumenCodec.encode_tile(t, CS_RGB, PRED_PAETH, 8, METHOD_LZ)
         for t in split_into_tiles(make_pixels("photo", 16, 16, 3, 8), 16, 16, 3, 16)
     ])
-    base_meta, base_pixels = PyraCodec.decode(base)
+    base_meta, base_pixels = LumenCodec.decode(base)
     orig = make_pixels("photo", 16, 16, 3, 8)
     check("forced LZ container roundtrip", base_pixels == orig)
     bad = 0
@@ -416,7 +416,7 @@ def test_compress_methods():
             raw[i] = rnd.randrange(256)
         corrupted = bytes(raw[:rnd.randrange(36, len(raw) + 1)])
         try:
-            _, dec = PyraCodec.decode(corrupted)
+            _, dec = LumenCodec.decode(corrupted)
             if dec != orig:
                 bad += 1
         except CorruptedFileError:
@@ -437,16 +437,16 @@ def test_forced_methods():
     for kind, cs in (("photo", CS_RGB), ("solid", CS_RGB), ("gradient", CS_RGB)):
         px = make_pixels(kind, w, h, 3, 8)
         for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
-            data = PyraCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16, method)
+            data = LumenCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16, method)
             mymeta, decoded = decode(data)
             check(f"forced method {method} roundtrip ({kind})", decoded == px)
-            hdr, _t = PyraContainer.unpack_file(data)
+            hdr, _t = LumenContainer.unpack_file(data)
             check(f"forced method {method} header honored ({kind})", hdr["method"] == method)
     # gray forced methods too
     pxg = make_pixels("photo", w, h, 1, 8)
     for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ):
         data = encode(pxg, w, h, 8, CS_GRAY, PRED_LEFT, 16, method)
-        hdr, _t = PyraContainer.unpack_file(data)
+        hdr, _t = LumenContainer.unpack_file(data)
         _m, dec = decode(data)
         check(f"forced method {method} gray roundtrip", dec == pxg and hdr["method"] == method)
     # invalid method rejected before encoding
@@ -458,7 +458,7 @@ def test_forced_methods():
 
 
 def test_png_roundtrip():
-    from pyra.pngbench import encode_png, decode_png
+    from lum.pngbench import encode_png, decode_png
     for kind, cs, ch, bd in (("photo", CS_RGB, 3, 8), ("solid", CS_GRAY, 1, 8), ("noise", CS_RGBA, 4, 8)):
         w, h = 33, 17
         px = make_pixels(kind, w, h, ch, bd)
@@ -479,23 +479,23 @@ def test_png_roundtrip():
 
 def test_cli_flags_e2e():
     import subprocess
-    tmp = tempfile.mkdtemp(prefix="pyra_cli_")
+    tmp = tempfile.mkdtemp(prefix="lum_cli_")
     ppm = os.path.join(tmp, "in.ppm")
     w, h = 48, 32
     with open(ppm, "wb") as f:
         f.write(f"P6\n{w} {h}\n255\n".encode()
                 + bytes(make_pixels("photo", w, h, 3, 8)))
-    pyra = os.path.join(tmp, "out.pyra")
+    lum = os.path.join(tmp, "out.lum")
     pnm = os.path.join(tmp, "out.ppm")
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env = dict(os.environ, PYTHONPATH=root)
 
-    r = subprocess.run([sys.executable, "-m", "pyra.cli", "encode", ppm, pyra,
+    r = subprocess.run([sys.executable, "-m", "lum.cli", "encode", ppm, lum,
                         "--method", "lz", "--tile", "48"],
                        capture_output=True, text=True, cwd=tmp, env=env)
     check(f"cli encode --method lz rc=0 ({r.returncode})", r.returncode == 0)
     check("cli encode logs method", "method: lz" in (r.stdout + r.stderr))
-    r = subprocess.run([sys.executable, "-m", "pyra.cli", "decode", pyra, pnm],
+    r = subprocess.run([sys.executable, "-m", "lum.cli", "decode", lum, pnm],
                        capture_output=True, text=True, cwd=tmp, env=env)
     check("cli decode rc=0", r.returncode == 0)
     with open(ppm, "rb") as f:
@@ -503,16 +503,16 @@ def test_cli_flags_e2e():
     with open(pnm, "rb") as f:
         b = f.read()
     check("cli flag-encode roundtrip byte-identical", a == b)
-    r = subprocess.run([sys.executable, "-m", "pyra.cli", "inspect", pyra],
+    r = subprocess.run([sys.executable, "-m", "lum.cli", "inspect", lum],
                        capture_output=True, text=True, cwd=tmp, env=env)
     check("cli inspect mentions forced values", r.returncode == 0
           and "tile_size: 48" in r.stdout and "method: lz" in r.stdout)
-    r = subprocess.run([sys.executable, "-m", "pyra.cli", "benchmark", ppm],
+    r = subprocess.run([sys.executable, "-m", "lum.cli", "benchmark", ppm],
                        capture_output=True, text=True, cwd=tmp, env=env)
     check("cli benchmark rc=0 + roundtrip OK", r.returncode == 0 and "roundtrip: OK" in r.stdout)
-    r = subprocess.run([sys.executable, "-m", "pyra.cli", "verify", ppm],
+    r = subprocess.run([sys.executable, "-m", "lum.cli", "verify", ppm],
                        capture_output=True, text=True, cwd=tmp, env=env)
-    check("cli verify rejects non-PYRA (rc=1)", r.returncode == 1 and "VERIFICATION FAILED" in (r.stdout + r.stderr))
+    check("cli verify rejects non-LUMEN (rc=1)", r.returncode == 1 and "VERIFICATION FAILED" in (r.stdout + r.stderr))
 
 
 def test_mixed_methods():
@@ -526,7 +526,7 @@ def test_mixed_methods():
 
     data_global = encode(img, w, h, 8, CS_RGB, PRED_PAETH, ts, -1)   # global auto
     data_mix = encode(img, w, h, 8, CS_RGB, PRED_PAETH, ts, METHOD_MIX)
-    hdr_mix, _t = PyraContainer.unpack_file(data_mix)
+    hdr_mix, _t = LumenContainer.unpack_file(data_mix)
     check("mix header method=3", hdr_mix["method"] == METHOD_MIX)
     _m, decoded = decode(data_mix)
     check("mix roundtrip exact", decoded == img)
@@ -575,10 +575,10 @@ def test_mixed_methods():
 
 
 def test_native_backend():
-    # Rust-backed hot paths (optional): when _libpyra_core.so is built,
+    # Rust-backed hot paths (optional): when _liblum_core.so is built,
     # stage outputs must be bit-identical to the pure-Python references.
-    from pyra import native
-    from pyra.compress import (pack_residuals, unpack_residuals, rle_encode,
+    from lum import native
+    from lum.compress import (pack_residuals, unpack_residuals, rle_encode,
                                rle_decode, lz_encode, lz_decode)
 
     if not native.available():
@@ -592,17 +592,17 @@ def test_native_backend():
     residuals = [(i * 7 + i * i * 3) % 2048 for i in range(201)]
     mod = 2048
 
-    dis = os.environ.get("PYRA_DISABLE_NATIVE")
+    dis = os.environ.get("LUMEN_DISABLE_NATIVE")
 
     def pure(fn, *a):
-        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        os.environ["LUMEN_DISABLE_NATIVE"] = "1"
         try:
             return fn(*a)
         finally:
             if dis is None:
-                del os.environ["PYRA_DISABLE_NATIVE"]
+                del os.environ["LUMEN_DISABLE_NATIVE"]
             else:
-                os.environ["PYRA_DISABLE_NATIVE"] = dis
+                os.environ["LUMEN_DISABLE_NATIVE"] = dis
 
     check("native pack == pure pack", pack_residuals(residuals, mod)
           == pure(pack_residuals, residuals, mod))
@@ -679,7 +679,7 @@ def test_native_backend():
 
     # damaged tile payload must raise (no native crash / UB)
     body = data_native[36:-4]
-    _hdr, _ctiles = PyraContainer.unpack_file(data_native)
+    _hdr, _ctiles = LumenContainer.unpack_file(data_native)
     for atk in (body[:6] + b"\xff" * 4 + body[10:], body[:-3]):
         try:
             decode(data_native[:-4])  # crc broken -> container level
@@ -698,7 +698,7 @@ def test_native_backend():
     check("native forced-LZ gray roundtrip", decode(d1)[1] == px2)
 
     # --- predictor row kernels: native == pure, bit-exact ---------------
-    from pyra.predictors import apply_predictor_row, reconstruct_row
+    from lum.predictors import apply_predictor_row, reconstruct_row
 
     for pt in range(7):  # PRED_NONE..PRED_MEDIAN
         for ch in (1, 3, 4):
@@ -715,7 +715,7 @@ def test_native_backend():
                   and r_nat == r_pure == row)
 
     # --- YCoCg transform: native == pure, bit-exact ---------------------
-    from pyra.color import transform_pixels_forward, transform_pixels_inverse
+    from lum.color import transform_pixels_forward, transform_pixels_inverse
 
     rng2 = random.Random(606)
     for cs in (CS_GRAY, CS_RGB, CS_RGBA, 9, -4):
@@ -745,15 +745,15 @@ def test_native_backend():
     # pipe_residuals == _residual_stream composition (transform ->
     # canonicalize -> per-row predict) and pipe_reconstruct == the decode
     # tail (row reconstruction -> descale -> inverse YCoCg).
-    from pyra.codec import PyraCodec
-    from pyra.color import transform_pixels_forward as _tfwd
-    from pyra.color import transform_pixels_inverse as _tinv
+    from lum.codec import LumenCodec
+    from lum.color import transform_pixels_forward as _tfwd
+    from lum.color import transform_pixels_inverse as _tinv
 
     for cs, chx in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
         wt, ht = 37, 23
         stride = wt * chx
-        modf = PyraCodec._residual_mod(cs, 8)
-        offf = PyraCodec._canonical_offset(cs, 8)
+        modf = LumenCodec._residual_mod(cs, 8)
+        offf = LumenCodec._canonical_offset(cs, 8)
         pxf = make_pixels("photo", wt, ht, chx, 8)
 
         nat_res = native.pipe_residuals(pxf, stride, offf, modf, PRED_PAETH, chx, cs)
@@ -789,27 +789,27 @@ def test_range_coder():
     """Native range coder + fused per-method decoders must be bit-identical
     to the pure-Python reference (encoder bytes, decoder symbols, and the
     final container bytes)."""
-    from pyra import native
-    from pyra.entropy import RangeEncoder, RangeDecoder
-    from pyra.codec import PyraCodec
-    from pyra.compress import (pack_residuals, rle_encode, lz_encode,
+    from lum import native
+    from lum.entropy import RangeEncoder, RangeDecoder
+    from lum.codec import LumenCodec
+    from lum.compress import (pack_residuals, rle_encode, lz_encode,
                                rle_decode)
 
     if not native.available():
         check("range coder backend absent -> python-only mode", True)
         return
 
-    dis = os.environ.get("PYRA_DISABLE_NATIVE")
+    dis = os.environ.get("LUMEN_DISABLE_NATIVE")
 
     def pure(fn, *a):
-        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        os.environ["LUMEN_DISABLE_NATIVE"] = "1"
         try:
             return fn(*a)
         finally:
             if dis is None:
-                del os.environ["PYRA_DISABLE_NATIVE"]
+                del os.environ["LUMEN_DISABLE_NATIVE"]
             else:
-                os.environ["PYRA_DISABLE_NATIVE"] = dis
+                os.environ["LUMEN_DISABLE_NATIVE"] = dis
 
     def py_encode(symbols, n_symbols):
         enc = RangeEncoder(n_symbols)
@@ -847,10 +847,10 @@ def test_range_coder():
         for bd in (8, 16):
             w, h = 29, 17
             px = make_pixels("photo", w, h, ch, bd)
-            mod = PyraCodec._residual_mod(cs, bd)
-            offset = PyraCodec._canonical_offset(cs, bd)
-            from pyra.predictors import apply_predictor_row
-            from pyra.color import transform_pixels_forward
+            mod = LumenCodec._residual_mod(cs, bd)
+            offset = LumenCodec._canonical_offset(cs, bd)
+            from lum.predictors import apply_predictor_row
+            from lum.color import transform_pixels_forward
             tr = transform_pixels_forward(px, cs)
             if offset:
                 tr = [v + offset for v in tr]
@@ -863,9 +863,9 @@ def test_range_coder():
             count = len(res)
 
             # RAW: range-coded residuals
-            raw_bytes = pure(PyraCodec._encode_raw, res, mod)
+            raw_bytes = pure(LumenCodec._encode_raw, res, mod)
             nat = native.range_decode(raw_bytes, mod, count)
-            ref = pure(PyraCodec._decode_residuals, raw_bytes,
+            ref = pure(LumenCodec._decode_residuals, raw_bytes,
                        METHOD_RAW, count, mod)
             if nat is None or nat != ref or ref != res:
                 fused_ok = False
@@ -873,17 +873,17 @@ def test_range_coder():
             # RLE: packed + RLE + range-coded token stream
             packed = pure(pack_residuals, res, mod)
             rle = pure(rle_encode, packed)
-            rle_bytes = pure(PyraCodec._encode_rle, rle)
+            rle_bytes = pure(LumenCodec._encode_rle, rle)
             nat = native.decode_rle_method(rle_bytes, count, mod)
-            ref = pure(PyraCodec._decode_residuals, rle_bytes,
+            ref = pure(LumenCodec._decode_residuals, rle_bytes,
                        METHOD_RLE, count, mod)
             if nat is None or nat != ref or ref != res:
                 fused_ok = False
 
             # LZ: packed + RLE + LZ tokens + range-coded stream
-            lz_bytes = pure(PyraCodec._encode_lz, rle)
+            lz_bytes = pure(LumenCodec._encode_lz, rle)
             nat = native.decode_lz_method(lz_bytes, count, mod)
-            ref = pure(PyraCodec._decode_residuals, lz_bytes,
+            ref = pure(LumenCodec._decode_residuals, lz_bytes,
                        METHOD_LZ, count, mod)
             if nat is None or nat != ref or ref != res:
                 fused_ok = False
@@ -895,12 +895,12 @@ def test_range_coder():
         w, h = 33, 21
         px = make_pixels("photo", w, h, ch, 8)
         for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX, -1):
-            nat = PyraCodec.encode(px, w, h, 8, cs, PRED_PAETH, 64, method)
-            ref = pure(PyraCodec.encode, px, w, h, 8, cs, PRED_PAETH, 64,
+            nat = LumenCodec.encode(px, w, h, 8, cs, PRED_PAETH, 64, method)
+            ref = pure(LumenCodec.encode, px, w, h, 8, cs, PRED_PAETH, 64,
                        method)
             if nat != ref:
                 cont_ok = False
-            if PyraCodec.decode(nat)[1] != px:
+            if LumenCodec.decode(nat)[1] != px:
                 cont_ok = False
     check("native container bytes == pure (cs x method)", cont_ok)
 
@@ -909,8 +909,8 @@ def test_range_coder():
     # a valid image) exactly like the pure path -- never a native crash.
     w, h, ch = 20, 12, 3
     px = make_pixels("photo", w, h, ch, 8)
-    base = PyraCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 64, METHOD_LZ)
-    _hdr, ctiles = PyraContainer.unpack_file(base)
+    base = LumenCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 64, METHOD_LZ)
+    _hdr, ctiles = LumenContainer.unpack_file(base)
     body = ctiles[0]
     crash_ok = True
     rng2 = random.Random(4242)
@@ -919,7 +919,7 @@ def test_range_coder():
         mutated = bytearray(body)
         mutated[pos] ^= 1 << rng2.randrange(8)
         try:
-            PyraCodec.decode_tile(bytes(mutated), w, h, CS_RGB,
+            LumenCodec.decode_tile(bytes(mutated), w, h, CS_RGB,
                                   PRED_PAETH, 8, METHOD_LZ)
         except CorruptedFileError:
             pass
@@ -946,7 +946,7 @@ def test_range_coder():
     for _ in range(4):
         enc.encode_symbol(255)
     bogus = enc.flush()
-    guard = outcome(lambda: PyraCodec._decode_residuals(
+    guard = outcome(lambda: LumenCodec._decode_residuals(
         bogus, METHOD_LZ, 16, 256))
     check(f"LZ implausible length guard ({guard})",
           guard.startswith("cfe:implausible RLE stream length"))
@@ -955,29 +955,29 @@ def test_range_coder():
 def test_buffer_pipeline():
     """Zero-copy native buffer pipeline: canvas in/out, no per-tile lists."""
     from array import array as _array
-    from pyra import native as _native
-    from pyra.color import transform_pixels_forward, transform_pixels_inverse
-    from pyra.compress import pack_residuals, rle_encode, lz_encode
-    from pyra.predictors import apply_predictor_row, reconstruct_row
+    from lum import native as _native
+    from lum.color import transform_pixels_forward, transform_pixels_inverse
+    from lum.compress import pack_residuals, rle_encode, lz_encode
+    from lum.predictors import apply_predictor_row, reconstruct_row
 
     if not _native.available():
         check("buffer pipeline backend absent -> python-only mode", True)
         return
 
     def pure(fn, *args, **kwargs):
-        old = os.environ.get("PYRA_DISABLE_NATIVE")
-        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        old = os.environ.get("LUMEN_DISABLE_NATIVE")
+        os.environ["LUMEN_DISABLE_NATIVE"] = "1"
         try:
             return fn(*args, **kwargs)
         finally:
             if old is None:
-                os.environ.pop("PYRA_DISABLE_NATIVE", None)
+                os.environ.pop("LUMEN_DISABLE_NATIVE", None)
             else:
-                os.environ["PYRA_DISABLE_NATIVE"] = old
+                os.environ["LUMEN_DISABLE_NATIVE"] = old
 
     def ref_residuals(px, w, h, ch, cs, pred, bd):
-        mod = PyraCodec._residual_mod(cs, bd)
-        offset = PyraCodec._canonical_offset(cs, bd)
+        mod = LumenCodec._residual_mod(cs, bd)
+        offset = LumenCodec._canonical_offset(cs, bd)
         transformed = transform_pixels_forward(px, cs)
         if offset:
             transformed = [v + offset for v in transformed]
@@ -990,8 +990,8 @@ def test_buffer_pipeline():
         return residuals
 
     def ref_reconstruct(residuals, w, h, ch, cs, pred, bd):
-        mod = PyraCodec._residual_mod(cs, bd)
-        offset = PyraCodec._canonical_offset(cs, bd)
+        mod = LumenCodec._residual_mod(cs, bd)
+        offset = LumenCodec._canonical_offset(cs, bd)
         transformed = []
         prev_row = None
         for y in range(h):
@@ -1011,12 +1011,12 @@ def test_buffer_pipeline():
                 for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX, -1):
                     for (w, h, ts) in ((13, 9, 8), (64, 48, 16), (70, 50, 256)):
                         px = make_pixels(kind, w, h, ch, bd)
-                        nat = PyraCodec.encode(px, w, h, bd, cs, PRED_PAETH, ts, method)
-                        ref = pure(PyraCodec.encode, px, w, h, bd, cs, PRED_PAETH, ts, method)
+                        nat = LumenCodec.encode(px, w, h, bd, cs, PRED_PAETH, ts, method)
+                        ref = pure(LumenCodec.encode, px, w, h, bd, cs, PRED_PAETH, ts, method)
                         if nat != ref:
                             fails.append(f"bytes cs{cs} bd{bd} {kind} m{method} {w}x{h}")
                             continue
-                        _, dec = PyraCodec.decode(nat)
+                        _, dec = LumenCodec.decode(nat)
                         if dec != px:
                             fails.append(f"pixels cs{cs} bd{bd} {kind} m{method} {w}x{h}")
     check(f"native buffer encode/decode == pure ({len(fails)} mismatches)",
@@ -1027,8 +1027,8 @@ def test_buffer_pipeline():
 
     # (2) multi-tile canvas offsets (tile_size < image)
     px = make_pixels("photo", 100, 70, 3, 8)
-    blob = PyraCodec.encode(px, 100, 70, 8, CS_RGB, PRED_PAETH, 32, -1)
-    _, dec = PyraCodec.decode(blob)
+    blob = LumenCodec.encode(px, 100, 70, 8, CS_RGB, PRED_PAETH, 32, -1)
+    _, dec = LumenCodec.decode(blob)
     check("native multi-tile canvas offsets", dec == px)
 
     # (3) extract_tile copies the right rectangle out of the canvas
@@ -1046,8 +1046,8 @@ def test_buffer_pipeline():
     w, h, ch, cs, pred, bd = 9, 6, 3, CS_RGB, PRED_PAETH, 8
     px = make_pixels("photo", w, h, ch, bd)
     residuals = ref_residuals(px, w, h, ch, cs, pred, bd)
-    mod = PyraCodec._residual_mod(cs, bd)
-    offset = PyraCodec._canonical_offset(cs, bd)
+    mod = LumenCodec._residual_mod(cs, bd)
+    offset = LumenCodec._canonical_offset(cs, bd)
     res_buf = _array("i", residuals)
     canvas = _array("i", bytes(4 * (w + 4) * (h + 2) * ch))
     ok = _native.pipe_reconstruct_into(res_buf, w * ch, offset, mod, pred, ch,
@@ -1067,20 +1067,20 @@ def test_buffer_pipeline():
             w, h = 17, 11
             px = make_pixels("noise", w, h, ch, bd)
             residuals = ref_residuals(px, w, h, ch, cs, pred, bd)
-            mod = PyraCodec._residual_mod(cs, bd)
+            mod = LumenCodec._residual_mod(cs, bd)
             res_buf = _array("i", residuals)
             nat_raw = _native.encode_raw_method(res_buf, mod)
-            ref_raw = pure(PyraCodec._encode_raw, residuals, mod)
+            ref_raw = pure(LumenCodec._encode_raw, residuals, mod)
             if nat_raw != ref_raw:
                 fails.append(f"raw cs{cs} bd{bd}")
             packed = pack_residuals(residuals, mod)
             rle = rle_encode(packed)
             nat_rle = _native.encode_rle_method(rle)
-            ref_rle = pure(PyraCodec._encode_rle, rle)
+            ref_rle = pure(LumenCodec._encode_rle, rle)
             if nat_rle != ref_rle:
                 fails.append(f"rle cs{cs} bd{bd}")
             nat_lz = _native.encode_lz_method(rle)
-            ref_lz = pure(PyraCodec._encode_lz, rle)
+            ref_lz = pure(LumenCodec._encode_lz, rle)
             if nat_lz != ref_lz:
                 fails.append(f"lz cs{cs} bd{bd}")
     check(f"native method encoders == pure ({len(fails)} mismatches)", not fails)
@@ -1095,17 +1095,17 @@ def test_buffer_pipeline():
             w, h = 19, 13
             px = make_pixels("photo", w, h, ch, bd)
             residuals = ref_residuals(px, w, h, ch, cs, pred, bd)
-            mod = PyraCodec._residual_mod(cs, bd)
+            mod = LumenCodec._residual_mod(cs, bd)
             packed = pack_residuals(residuals, mod)
             rle = rle_encode(packed)
-            for method, stream in ((METHOD_RLE, pure(PyraCodec._encode_rle, rle)),
-                                   (METHOD_LZ, pure(PyraCodec._encode_lz, rle))):
+            for method, stream in ((METHOD_RLE, pure(LumenCodec._encode_rle, rle)),
+                                   (METHOD_LZ, pure(LumenCodec._encode_lz, rle))):
                 out = _array("i", bytes(4 * w * h * ch))
                 if method == METHOD_RLE:
                     ok = _native.decode_rle_method_into(stream, w * h * ch, mod, out)
                 else:
                     ok = _native.decode_lz_method_into(stream, w * h * ch, mod, out)
-                ref = pure(PyraCodec._decode_residuals, stream, method, w * h * ch, mod)
+                ref = pure(LumenCodec._decode_residuals, stream, method, w * h * ch, mod)
                 if not ok or out.tolist() != ref:
                     fails.append(f"{method} cs{cs} bd{bd}")
     check(f"native fused decode into buffer == pure ({len(fails)} mismatches)",
@@ -1118,26 +1118,26 @@ def test_buffer_pipeline():
 def test_v3_format():
     """v3 container: auto colour transform, auto row filter, adaptive predictors,
     plus backward compatibility with the v1/v2 packed residual widths."""
-    from pyra.constants import (TRANSFORM_YCOCG, TRANSFORM_NONE,
+    from lum.constants import (TRANSFORM_YCOCG, TRANSFORM_NONE,
                                 FILTER_GLOBAL, FILTER_ADAPTIVE,
                                 VERSION, VERSION_LEGACY, VERSION_V2, MAGIC)
 
     def pure(fn, *args, **kwargs):
-        old = os.environ.get("PYRA_DISABLE_NATIVE")
-        os.environ["PYRA_DISABLE_NATIVE"] = "1"
+        old = os.environ.get("LUMEN_DISABLE_NATIVE")
+        os.environ["LUMEN_DISABLE_NATIVE"] = "1"
         try:
             return fn(*args, **kwargs)
         finally:
             if old is None:
-                os.environ.pop("PYRA_DISABLE_NATIVE", None)
+                os.environ.pop("LUMEN_DISABLE_NATIVE", None)
             else:
-                os.environ["PYRA_DISABLE_NATIVE"] = old
+                os.environ["LUMEN_DISABLE_NATIVE"] = old
 
     # (1) header carries the transform / filter mode
     w, h = 40, 24
     px = make_pixels("photo", w, h, 3, 8)
-    blob = PyraCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16, METHOD_LZ)
-    meta, tiles = PyraContainer.unpack_file(blob)
+    blob = LumenCodec.encode(px, w, h, 8, CS_RGB, PRED_PAETH, 16, METHOD_LZ)
+    meta, tiles = LumenContainer.unpack_file(blob)
     check("v3 container version == 3", meta["version"] == VERSION)
     check("v3 container stores transform",
           meta["transform"] in (TRANSFORM_YCOCG, TRANSFORM_NONE))
@@ -1153,9 +1153,9 @@ def test_v3_format():
                     for filter_mode in (FILTER_GLOBAL, FILTER_ADAPTIVE):
                         for method in (METHOD_RAW, METHOD_RLE, METHOD_LZ, METHOD_MIX, -1):
                             p = make_pixels(kind, 33, 19, ch, bd)
-                            data = PyraCodec.encode(p, 33, 19, bd, cs, PRED_PAETH,
+                            data = LumenCodec.encode(p, 33, 19, bd, cs, PRED_PAETH,
                                                     16, method, transform, filter_mode)
-                            m, decoded = PyraCodec.decode(data)
+                            m, decoded = LumenCodec.decode(data)
                             if decoded != p:
                                 fails.append(f"cs{cs} bd{bd} {kind} t{transform} f{filter_mode} m{method}")
                                 continue
@@ -1171,9 +1171,9 @@ def test_v3_format():
     for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3), (CS_RGBA, 4)):
         for kind in ("gradient", "photo", "noise"):
             p = make_pixels(kind, 45, 31, ch, 8)
-            a = PyraCodec.encode(p, 45, 31, 8, cs, -1, 16, -1)
-            b = PyraCodec.encode(p, 45, 31, 8, cs, -1, 16, -1)
-            ref = pure(PyraCodec.encode, p, 45, 31, 8, cs, -1, 16, -1)
+            a = LumenCodec.encode(p, 45, 31, 8, cs, -1, 16, -1)
+            b = LumenCodec.encode(p, 45, 31, 8, cs, -1, 16, -1)
+            ref = pure(LumenCodec.encode, p, 45, 31, 8, cs, -1, 16, -1)
             if a != b:
                 fails.append(f"non-deterministic cs{cs} {kind}")
             if a != ref:
@@ -1185,9 +1185,9 @@ def test_v3_format():
 
     # (4) the plan really differs between the transforms on a real image
     p = make_pixels("photo", 60, 40, 3, 8)
-    ycocg = PyraCodec.encode(p, 60, 40, 8, CS_RGB, PRED_PAETH, 32, METHOD_LZ,
+    ycocg = LumenCodec.encode(p, 60, 40, 8, CS_RGB, PRED_PAETH, 32, METHOD_LZ,
                              TRANSFORM_YCOCG, FILTER_GLOBAL)
-    none = PyraCodec.encode(p, 60, 40, 8, CS_RGB, PRED_PAETH, 32, METHOD_LZ,
+    none = LumenCodec.encode(p, 60, 40, 8, CS_RGB, PRED_PAETH, 32, METHOD_LZ,
                             TRANSFORM_NONE, FILTER_GLOBAL)
     check("v3 transform changes the encoded stream", ycocg != none)
 
@@ -1215,19 +1215,19 @@ def test_v3_format():
         body = header + struct.pack(">I", len(index)) + bytes(index) + bytes(data)
         return body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
 
-    from pyra.tile import split_into_tiles
+    from lum.tile import split_into_tiles
     fails = []
     for cs, ch in ((CS_GRAY, 1), (CS_RGB, 3)):
         w, h = 32, 24
         p = make_pixels("photo", w, h, ch, 8)
         tiles = split_into_tiles(p, w, h, ch, 16)
-        bodies = [PyraCodec.encode_tile(t, cs, PRED_PAETH, 8, METHOD_LZ,
+        bodies = [LumenCodec.encode_tile(t, cs, PRED_PAETH, 8, METHOD_LZ,
                                         TRANSFORM_YCOCG, FILTER_GLOBAL,
                                         legacy=True)
                   for t in tiles]
         legacy = pack_legacy(VERSION_LEGACY, w, h, 8, cs, PRED_PAETH,
                              METHOD_LZ, 16, bodies)
-        m, decoded = PyraCodec.decode(legacy)
+        m, decoded = LumenCodec.decode(legacy)
         if decoded != p:
             fails.append(f"v1 decode cs{cs}")
         if m["version"] != VERSION_LEGACY or m["transform"] != TRANSFORM_YCOCG \
@@ -1245,14 +1245,14 @@ def test_v3_format():
             w, h = 32, 24
             p = make_pixels("photo", w, h, ch, 8)
             tiles = split_into_tiles(p, w, h, ch, 16)
-            bodies = [PyraCodec.encode_tile(t, cs, PRED_PAETH, 8, method,
+            bodies = [LumenCodec.encode_tile(t, cs, PRED_PAETH, 8, method,
                                             TRANSFORM_NONE, FILTER_GLOBAL,
                                             legacy=True)
                       for t in tiles]
             legacy = pack_legacy(VERSION_V2, w, h, 8, cs, PRED_PAETH,
                                  method, 16, bodies, TRANSFORM_NONE,
                                  FILTER_GLOBAL)
-            m, decoded = PyraCodec.decode(legacy)
+            m, decoded = LumenCodec.decode(legacy)
             if decoded != p:
                 fails.append(f"v2 decode cs{cs} m{method}")
             if m["version"] != VERSION_V2 or m["transform"] != TRANSFORM_NONE:
@@ -1271,7 +1271,7 @@ def test_v3_format():
         body = bytes(broken[:-4])
         broken[-4:] = struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
         try:
-            PyraContainer.unpack_file(bytes(broken))
+            LumenContainer.unpack_file(bytes(broken))
             fails.append(f"offset {offset} accepted")
         except CorruptedFileError:
             pass
@@ -1284,7 +1284,7 @@ def test_v3_format():
 
 
 def main():
-    print("=== PYRA lossless test suite ===")
+    print("=== LUMEN lossless test suite ===")
     test_roundtrips()
     test_determinism()
     test_container()

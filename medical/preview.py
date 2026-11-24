@@ -16,7 +16,7 @@ clinician a *different* image than the one that was acquired:
 * the **display window** (centre and width) is applied in the calibrated
   domain and the result is clamped to 0..255.
 
-The native C++ helper (:func:`pyra.fast.medical_preview`) does the work when
+The native C++ helper (:func:`lum.fast.medical_preview`) does the work when
 it is available; the pure-Python fallback below produces exactly the same
 bytes.
 """

@@ -1,4 +1,4 @@
-"""PYRM — the PYRA Medical container format.
+"""LUMM — the LUMEN Medical container format.
 
 A lossless, integrity-protected image format built for medical imaging:
 
@@ -14,7 +14,7 @@ A lossless, integrity-protected image format built for medical imaging:
 
 Example::
 
-    from pyra.medical import encode, decode
+    from lum.medical import encode, decode
 
     blob = encode(raw_samples, width=512, height=512, depth=32,
                   sample_format=SFMT_U16)
