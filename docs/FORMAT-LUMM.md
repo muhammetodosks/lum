@@ -1,4 +1,4 @@
-# LUMM — LUMEN Medical container format (v1)
+# LUMM — LUMEN Medical container format (v3)
 
 LUMM is the lossless container used for medical and scientific imaging: CT,
 MR, ultrasound, microscopy, pathology slides. It is designed around three
@@ -37,8 +37,8 @@ requirements that matter in a clinical setting:
 | offset | size | field | meaning |
 |-------:|-----:|-------|---------|
 | 0   | 8  | magic | `LUMM\r\n\x1a\n` |
-| 8   | 4  | version | 2 (1 is still readable) |
-| 12  | 4  | flags | reserved, 0 |
+| 8   | 4  | version | 3 (1 and 2 still decode) |
+| 12  | 4  | flags | bit 0 `FLAG_SIGNED`, bit 1 `FLAG_NEAR_LOSSLESS` |
 | 16  | 4  | width | samples per row |
 | 20  | 4  | height | rows per slice |
 | 24  | 4  | depth | number of slices (1 for a 2D image) |
