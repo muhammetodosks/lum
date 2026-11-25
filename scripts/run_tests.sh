@@ -3,7 +3,9 @@
 #
 #   scripts/run_tests.sh            # the Python suites (native + fallback)
 #   LUMEN_BUILD_TESTS=1 scripts/run_tests.sh
-#                                   # ... and the native harnesses
+#                                   # ... and the native harnesses, plus the
+#                                   # Rust unit tests, the C++ self test and
+#                                   # the WebAssembly suite (needs node)
 #
 # The Python suites are run from the *parent* of the package directory,
 # because the package is imported as `lum`.
@@ -40,6 +42,15 @@ if [ "${LUMEN_BUILD_TESTS:-0}" = "1" ]; then
         /tmp/lum_cloud_selftest
     else
         echo "g++ not found - skipping the C++ self test" >&2
+    fi
+
+    echo
+    echo "== Browser / WebAssembly suite =="
+    if command -v node >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+        ./scripts/build_wasm.sh
+        node tests/test_wasm.mjs
+    else
+        echo "node or rustc not found - skipping the WebAssembly suite" >&2
     fi
 fi
 

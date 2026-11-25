@@ -26,6 +26,7 @@ mod lum_image;
 mod lum_cloud;
 mod lum_med;
 mod lum_lossy;
+mod lum_wasm;
 
 pub const TOKEN_MATCH: u32 = 256;
 pub const TOKEN_EOF: u32 = 257;
@@ -2372,26 +2373,25 @@ pub unsafe extern "C" fn lum_plan(
         return E_PIPE_SHAPE;
     }
 
-    let costs: Vec<i64> = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(cands.len());
-        for cand in cands.iter() {
-            let px_ref = &px;
-            handles.push(scope.spawn(move || {
-                plan_candidate_cost(
-                    px_ref, width, height, channels, bit_depth, color_space,
-                    rows, cand.0, cand.1, cand.2,
-                )
-            }));
-        }
-        let mut out = Vec::with_capacity(cands.len());
-        for h in handles {
-            match h.join() {
-                Ok(c) => out.push(c),
-                Err(_) => out.push(i64::MAX),
+    let job = |c: (i32, i32, i32)| -> i64 {
+        plan_candidate_cost(
+            &px, width, height, channels, bit_depth, color_space,
+            rows, c.0, c.1, c.2,
+        )
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let costs: Vec<i64> = {
+        let job = &job;
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(cands.len());
+            for cand in cands.iter() {
+                handles.push(scope.spawn(move || job(*cand)));
             }
-        }
-        out
-    });
+            handles.into_iter().map(|h| h.join().unwrap_or(i64::MAX)).collect()
+        })
+    };
+    #[cfg(target_arch = "wasm32")]
+    let costs: Vec<i64> = cands.iter().map(|c| job(*c)).collect();
 
     let mut best_cost: i64 = i64::MAX;
     let mut best_plan: (i32, i32, i32) = (0, 0, 0);

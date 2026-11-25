@@ -129,7 +129,7 @@ def _bar_panel(formats, title, subtitle, x, width, top):
     value_pad = 15
     bar_max = width - label_w - 120
     rows = []
-    peak = max(f["mean_bytes"] for f in formats) or 1
+    peak = max((f["mean_bytes"] for f in formats), default=0) or 1
     y = top + 62
     for f in formats:
         bar = max(3, f["mean_bytes"] / peak * bar_max)
@@ -278,7 +278,8 @@ def render_html(data: dict, previews: dict | None = None) -> str:
         fidelity = ("lossless" if f["lossless"]
                     else f"{f['mean_psnr']:.1f} dB PSNR")
         image = (f'<img alt="decoded crop: {html.escape(f["label"])}" '
-                 f'src="{uri}">') if uri else ""
+                 f'src="{uri}">') if uri else \
+            '<div class="preview-missing">No previews were captured</div>'
         cards.append(
             f'<figure class="card">{image}'
             f'<figcaption><strong>{html.escape(f["label"])}</strong><br>'

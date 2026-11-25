@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LUMEN in the browser</title>
+<meta name="description" content="Decode and encode .lum images in the browser with a 290 KiB WebAssembly build of the LUMEN codec.">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e1014;
+    --panel: #171a21;
+    --line: #262b35;
+    --ink: #e7eaf0;
+    --muted: #9aa3b2;
+    --accent: #8d99ae;
+    --good: #6fcf97;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 70% -10%, #1b2030, var(--bg));
+    color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 20px 72px; }
+  header { margin-bottom: 28px; }
+  h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -0.02em; }
+  h1 span { color: var(--accent); }
+  p.lede { margin: 0; color: var(--muted); max-width: 62ch; }
+  .grid { display: grid; gap: 18px; grid-template-columns: 1.35fr 1fr; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  #drop {
+    display: grid;
+    place-items: center;
+    min-height: 180px;
+    border: 1.5px dashed #3a4150;
+    border-radius: 12px;
+    color: var(--muted);
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop.over { border-color: var(--accent); background: #1b2029; }
+  #drop strong { color: var(--ink); }
+  canvas { display: block; width: 100%; height: auto; border-radius: 10px; background: #0a0c10; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-variant-numeric: tabular-nums; }
+  dt { color: var(--muted); }
+  dd { margin: 0; text-align: right; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+  button, label.button {
+    font: inherit;
+    color: var(--ink);
+    background: #222833;
+    border: 1px solid #303845;
+    border-radius: 9px;
+    padding: 8px 13px;
+    cursor: pointer;
+  }
+  button:hover, label.button:hover { background: #2a3140; }
+  button.primary { background: #3b4a63; border-color: #4a5c7a; }
+  input[type=range] { flex: 1; min-width: 120px; accent-color: #7f8fb0; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  pre {
+    background: #0b0d11; border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; overflow: auto; margin: 14px 0 0;
+  }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .badge {
+    display: inline-block; font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+    color: #b9c4d4; border: 1px solid #3a4150; border-radius: 999px; padding: 2px 9px;
+  }
+  .badge.lossy { color: #f2c94c; border-color: #5a4a1e; }
+  .badge.lossless { color: var(--good); border-color: #24492f; }
+  footer { margin-top: 26px; color: var(--muted); font-size: 13px; }
+  a { color: #aab6c9; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>LUMEN <span>in the browser</span></h1>
+    <p class="lede">
+      A 290 KiB WebAssembly build of the same codec the CLI uses. Drop a
+      <code>.lum</code> file to decode it, or drop a PNG/JPEG to encode one —
+      pixel-for-pixel identical to <code>lum encode</code> and
+      <code>lum decode</code>.
+    </p>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <div id="drop" role="button" tabindex="0" aria-label="Drop a .lum, PNG or JPEG file">
+        <div>
+          <strong>Drop an image</strong><br>
+          <span id="dropnote">.lum to decode · PNG/JPEG/WebP to encode</span>
+        </div>
+      </div>
+      <input id="file" type="file" accept=".lum,image/lum,image/png,image/jpeg,image/webp,image/avif" hidden>
+      <div class="row">
+        <label class="button" for="file">Choose a file</label>
+        <button id="sample" class="primary">Use a generated sample</button>
+      </div>
+      <div class="row">
+        <label for="quality" style="color:var(--muted)">quality</label>
+        <input id="quality" type="range" min="0" max="100" step="1" value="90">
+        <output id="qout" for="quality">90</output>
+      </div>
+      <div class="hint">0 = lossless container · 1–100 = lossy (4:4:4)</div>
+      <div class="row">
+        <button id="savelum">Download .lum</button>
+        <button id="savepng">Download PNG</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <canvas id="view" width="1" height="1"></canvas>
+      <dl id="stats">
+        <dt>status</dt><dd id="s-status">loading the codec…</dd>
+      </dl>
+    </section>
+  </div>
+
+  <pre><code>import { Lumen } from "./lum.js";
+await Lumen.init();
+
+const image = Lumen.decode(await (await fetch("photo.lum")).arrayBuffer());
+canvas.getContext("2d").putImageData(Lumen.toImageData(image), 0, 0);
+
+// or, the other way round
+const bytes = Lumen.encode(ctx.getImageData(0, 0, w, h), { quality: 90 });</code></pre>
+
+  <p class="hint">Or just use the element: <code>&lt;lum-img src="photo.lum"&gt;</code></p>
+
+  <footer>
+    Everything here runs locally. The file never leaves the tab; the numbers
+    below are measured in this page. Serve it over HTTP
+    (<code>python3 -m http.server</code>) so the browser may fetch
+    <code>lum.wasm</code>.
+  </footer>
+</main>
+
+<script type="module">
+import { Lumen } from "./lum.js";
+
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("file");
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+const stats = document.getElementById("stats");
+const qout = document.getElementById("qout");
+const quality = document.getElementById("quality");
+
+let current = null; // { image, info, name, encoded, ms }
+
+function say(status, extra = {}) {
+  const rows = { status, ...extra };
+  stats.innerHTML = Object.entries(rows)
+    .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`)
+    .join("");
+}
+
+function human(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / 1048576).toFixed(2)} MiB`;
+}
+
+function isLum(bytes) {
+  const magic = [0x4c, 0x55, 0x4d, 0x41, 0x0d, 0x0a, 0x1a, 0x0a];
+  return bytes.length >= 8 && magic.every((b, i) => bytes[i] === b);
+}
+
+function present(image, extra) {
+  canvas.width = image.width;
+  canvas.height = image.height;
+  ctx.putImageData(Lumen.toImageData(image), 0, 0);
+  say(extra.status, extra.rows);
+}
+
+function decodedRows(name, bytes, info, image, ms) {
+  const raw = image.width * image.height * image.channels;
+  const kind = info.lossy ? `lossy q${info.quality}` : "lossless";
+  return {
+    status: `<span class="badge ${info.lossy ? "lossy" : "lossless"}">${kind}</span>`,
+    file: name,
+    size: `${image.width} × ${image.height} ${["grey", "grey+a", "rgb", "rgba"][image.channels - 1] || ""}`,
+    container: `${human(bytes)} · v${info.version}`,
+    raw: human(raw),
+    ratio: `${(raw / bytes).toFixed(2)}× (${((1 - bytes / raw) * 100).toFixed(1)}% smaller)`,
+    decode: `${ms.toFixed(1)} ms`,
+  };
+}
+
+async function openLum(bytes, name) {
+  const info = Lumen.inspect(bytes);
+  const t0 = performance.now();
+  const image = Lumen.decode(bytes);
+  const ms = performance.now() - t0;
+  current = { image, info, name, encoded: bytes };
+  present(image, { status: "", rows: decodedRows(name, bytes, info, image, ms) });
+}
+
+async function openRaster(file) {
+  const bitmap = await createImageBitmap(file);
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  ctx.drawImage(bitmap, 0, 0);
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const q = Number(quality.value);
+  const t0 = performance.now();
+  const bytes = Lumen.encode(image, { quality: q });
+  const ms = performance.now() - t0;
+  const back = Lumen.decode(bytes);
+  const info = Lumen.inspect(bytes);
+  current = { image: back, info, name: file.name, encoded: bytes, source: image };
+  present(back, {
+    status: "",
+    rows: {
+      status: `<span class="badge ${q ? "lossy" : "lossless"}">encoded ${q ? `lossy q${q}` : "lossless"}</span>`,
+      source: `${file.name} (${human(file.size)})`,
+      size: `${bitmap.width} × ${bitmap.height}`,
+      container: `${human(bytes.length)} · v${info.version}`,
+      raw: human(image.width * image.height * 4),
+      ratio: `${((image.width * image.height * 4) / bytes.length).toFixed(2)}× vs raw RGBA`,
+      "encode": `${ms.toFixed(1)} ms`,
+    },
+  });
+}
+
+async function handle(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (isLum(bytes)) return openLum(bytes, file.name);
+  return openRaster(file);
+}
+
+function sample() {
+  const w = 512, h = 384;
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const i = (y * w + x) * 4;
+      const r = Math.round(255 * (x / (w - 1)));
+      const g = Math.round(255 * (y / (h - 1)));
+      const checker = ((x >> 5) + (y >> 5)) & 1 ? 26 : -26;
+      const b = Math.round(127 + 127 * Math.sin((x + y) / 37)) + checker;
+      data[i] = Math.max(0, Math.min(255, r + checker));
+      data[i + 1] = Math.max(0, Math.min(255, g));
+      data[i + 2] = Math.max(0, Math.min(255, b));
+      data[i + 3] = 255;
+    }
+  }
+  return new ImageData(data, w, h);
+}
+
+drop.addEventListener("click", () => fileInput.click());
+drop.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") fileInput.click();
+});
+fileInput.addEventListener("change", () => {
+  if (fileInput.files[0]) handle(fileInput.files[0]);
+});
+for (const type of ["dragenter", "dragover"]) {
+  drop.addEventListener(type, (e) => {
+    e.preventDefault();
+    drop.classList.add("over");
+  });
+}
+for (const type of ["dragleave", "drop"]) {
+  drop.addEventListener(type, () => drop.classList.remove("over"));
+}
+drop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) handle(file);
+});
+
+quality.addEventListener("input", () => {
+  qout.textContent = quality.value;
+});
+
+document.getElementById("sample").addEventListener("click", () => {
+  const image = sample();
+  const q = Number(quality.value);
+  const bytes = Lumen.encode(image, { quality: q });
+  const info = Lumen.inspect(bytes);
+  const back = Lumen.decode(bytes);
+  current = { image: back, info, name: "generated-sample", encoded: bytes };
+  canvas.width = back.width;
+  canvas.height = back.height;
+  ctx.putImageData(Lumen.toImageData(back), 0, 0);
+  const raw = back.width * back.height * 4;
+  say("", {
+    status: `<span class="badge ${q ? "lossy" : "lossless"}">generated ${q ? `lossy q${q}` : "lossless"}</span>`,
+    size: `${back.width} × ${back.height}`,
+    container: human(bytes.length),
+    raw: human(raw),
+    ratio: `${(raw / bytes.length).toFixed(2)}× vs raw RGBA`,
+  });
+});
+
+document.getElementById("savelum").addEventListener("click", () => {
+  if (!current) return;
+  const blob = new Blob([current.encoded], { type: "image/lum" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = current.name.replace(/\.[^.]+$/, "") + ".lum";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+});
+
+document.getElementById("savepng").addEventListener("click", async () => {
+  if (!current) return;
+  const blob = await Lumen.toBlob(current.image);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = current.name.replace(/\.[^.]+$/, "") + ".png";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+});
+
+try {
+  const t0 = performance.now();
+  await Lumen.init();
+  const ms = performance.now() - t0;
+  say(`codec ready (${ms.toFixed(0)} ms)`);
+  const image = sample();
+  const bytes = Lumen.encode(image, { quality: 90 });
+  const info = Lumen.inspect(bytes);
+  const back = Lumen.decode(bytes);
+  current = { image: back, info, name: "generated-sample", encoded: bytes };
+  canvas.width = back.width;
+  canvas.height = back.height;
+  ctx.putImageData(Lumen.toImageData(back), 0, 0);
+  const raw = back.width * back.height * 4;
+  say("", {
+    status: `<span class="badge lossy">generated lossy q90</span>`,
+    size: `${back.width} × ${back.height}`,
+    container: human(bytes.length),
+    raw: human(raw),
+    ratio: `${(raw / bytes.length).toFixed(2)}× vs raw RGBA`,
+    wasm: "loaded",
+  });
+} catch (err) {
+  say(`failed: ${err.message}`);
+}
+</script>
+</body>
+</html>

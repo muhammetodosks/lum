@@ -14,9 +14,10 @@
 | LUMM container | **v2** (144 B header, SHA-256 content hash) · `.lumm` |
 | LUMC container | **v1** · `.lumc`, ham küp `.lumx` |
 | Kaynak dili | Python 3 (yalnızca stdlib) + Rust (std-only) + C++20 |
+| Tarayıcı | `web/lum.wasm` — aynı codec'in `wasm32-unknown-unknown` derlemesi, ≈290 KiB |
 | Kayıpsızlık | **%100** — decode edilen pikseller bayt bayt aynı |
 | Toplam LOC | 14 540 (Rust 5 030 · testler 2 179 · Python 6 838 · C++ 493) |
-| Testler | görsel **246** · kayıplı **72** · bulut **25** · tıbbi **106** · format raporu **33** kontrol |
+| Testler | görsel **246** · kayıplı **72** · bulut **25** · tıbbi **106** · format raporu **46** · wasm **24** kontrol |
 | Parite | **864** tıbbi + **540** görsel native/pure kombinasyon → bayt-aynı |
 | Repo | `/home/mami/lum` → https://github.com/muhammetodosks/lum |
 | HEAD | v1.0.0 sürüm commit'i |
@@ -53,6 +54,7 @@
 26. [Terim sözlüğü](#26-terim-sözlüğü)
 27. [Kayıplı codec — LUMEN v6](#27-kayıplı-codec--lumen-v6)
 28. [Görsel karşılaştırma — 13 format](#28-görsel-karşılaştırma--13-format)
+29. [Tarayıcı ve WebAssembly](#29-tarayıcı-ve-webassembly)
 
 ---
 
@@ -127,18 +129,28 @@ lum/
 │   ├── lum_image.rs    1104    tüm-görsel paralel codec, CRC32, escape tabanlı paketleme
 │   ├── lum_lossy.rs      ~     kayıplı mod v6 çekirdeği
 │   ├── lum_med.rs      1693    LUMM native çekirdeği: SHA-256, paralel tile'lar
-│   └── lum_cloud.rs      ~     LUMC çekirdeği: küp sıkıştırma, bant istatistiği
+│   ├── lum_cloud.rs      ~     LUMC çekirdeği: küp sıkıştırma, bant istatistiği
+│   └── lum_wasm.rs       ~     wasm32 C ABI: aynı codec'i tarayıcıya açar (§29)
+│
+├── web/
+│   ├── lum.wasm        290 KiB `scripts/build_wasm.sh` çıktısı (depoya işlenmiş)
+│   ├── lum.js           ~330    ES modül: init/decode/encode/canvas + <lum-img>
+│   ├── index.html       ~       sürükle-bırak demo: .lum çöz, PNG/JPEG kodla
+│   ├── package.json             {"type":"module"} — bundler'sız ESM
+│   └── README.md                API, MIME, sunucu yapılandırması
 │
 ├── cpp/lum_fast.cpp     493    C++20: adaptif filtreler, tıbbi önizleme, PNM I/O
 ├── cpp/lum_cloud.cpp     ~     C++20: ham küp I/O, bant istatistiği, yanlış-renk render
 ├── scripts/build_native.sh       Rust + C++ derleme betiği
-├── scripts/run_tests.sh          tüm suite'ler (native + saf Python)
+├── scripts/build_wasm.sh         web/lum.wasm (rustc --target wasm32-unknown-unknown)
+├── scripts/run_tests.sh          tüm suite'ler (native + saf Python + wasm)
 ├── tests/
 │   ├── test_lossless.py 1315    246 kontrol (saf Python: 179)
 │   ├── test_lossy.py     412     72 kontrol
 │   ├── test_medical.py  1360    106 kontrol
 │   ├── test_cloud.py     362     25 kontrol
-│   └── test_format_report.py 240 33 kontrol (grafik/galeri üreticisi)
+│   ├── test_format_report.py 240 46 kontrol (grafik/galeri üreticisi)
+│   └── test_wasm.mjs           24 kontrol: wasm ↔ Python referansı bit/bayt eşitliği
 ├── benchmarks/
 │   ├── bench_formats.py  273     13 formatı gerçek encoder'larla ölçer
 │   ├── format_report.py  347     stdlib-only: PSNR, SVG çubuklar/saçılım, HTML galeri
@@ -1546,3 +1558,127 @@ Yeniden üretmek için:
 git clone --depth 1 https://github.com/MohamedBakrAli/Kodak-Lossless-True-Color-Image-Suite.git /tmp/kodak
 python3 benchmarks/bench_formats.py --corpus /tmp/kodak/PhotoCD_PCD0992
 ```
+
+---
+
+## 29. Tarayıcı ve WebAssembly
+
+Bir formatın "site tarafından servis edilebilir" olması, tarayıcının onu
+açabilmesi demek. Bu bölüm, aynı codec'in `wasm32-unknown-unknown` derlemesini
+ve onu bir `<canvas>`'a bağlayan ince JavaScript katmanını anlatır.
+
+### 29.1 İkinci bir decoder yok
+
+`rust/lum_wasm.rs`, `lum_core` crate'inin bir **modülüdür**; `lum_image` ve
+`lum_lossy` içindeki fonksiyonları doğrudan çağırır. Yani tarayıcıda decode edilen
+bir dosya `lum decode` ile **bayt-bayt aynı** pikselleri verir, tarayıcıda encode
+edilen bir dosya `lum encode` ile **bayt-bayt aynı** container'ı üretir. Bu bir
+iddia değil, `tests/test_wasm.mjs` içindeki 24 kontrolün konusu.
+
+Yeni C ABI yalnızca bellek sözleşmesini köprüler:
+
+| Sembol | İş |
+|---|---|
+| `lum_alloc(len)` / `lum_alloc_free(ptr, len)` | wasm heap'inde tampon |
+| `lum_wasm_decode(data, len, info[5])` | info = status, w, h, kanal, tür (0 kayıpsız / 1 kayıplı) |
+| `lum_wasm_encode(data, len, w, h, ch, quality, out_len)` | quality ≤ 0 kayıpsız, 1–100 kayıplı (4:4:4) |
+| `lum_wasm_info(data, len, meta[6])` | başlık okuma; piksel decode etmez |
+| `lum_wasm_last_error()` | son hata kodu |
+
+Dönen tamponlar `Vec::into_boxed_slice` + `mem::forget` ile üretilir; JS tarafı
+`lum_free_buf(ptr, len)` ile bırakır ve veriyi bir sonraki çağrıdan önce kopyalar,
+çünkü wasm belleği büyüdüğünde `ArrayBuffer` kopar.
+
+Wasm'a özgü hata kodları: `-100` magic, `-101` sürüm, `-102` kısa akış,
+`-103` parametre, `-104` kanal sayısı. Bozuk bir dosya container'ın kendi
+(negatif) kodunu korur — CLI ile aynı teşhis.
+
+### 29.2 `wasm32`'de thread yok
+
+`std::thread::scope` wasm32'de mevcut değil. Dört kullanım yeri (üçü
+`rust/lum_image.rs`'de: refill adayları, tile encode adayları, tile decode
+pikselleri; biri `rust/lum_core.rs`'de: planlayıcının maliyet değerlendirmesi)
+`#[cfg(target_arch = "wasm32")]` ile ikiye ayrıldı. İki dal **aynı job
+closure'ını** çalıştırır: native'de `thread::scope`, wasm'da seri döngü.
+Hiçbir tile başka bir tile'a bağlı olmadığı için çıktı bayt-aynıdır; değişen
+tek şey duvar saati süresidir. Paylaşılan bellek, atomik veya
+`SharedArrayBuffer` kullanılmadığı için **COOP/COEP başlığı gerekmez**.
+
+### 29.3 `web/lum.js`
+
+Tek bir ES modülü, bundler yok:
+
+| Çağrı | Dönen |
+|---|---|
+| `await Lumen.init(url?)` | modül; `url` bir URL, `ArrayBuffer` veya `Uint8Array` olabilir (Node) |
+| `Lumen.inspect(bytes)` | `{width, height, channels, lossy, quality, version, mime, extension}` |
+| `Lumen.decode(bytes)` | `{width, height, channels, lossy, data: Uint8Array}` (interleaved 8-bit) |
+| `Lumen.encode(source, {quality})` | container baytları; `source` = `ImageData`, canvas veya `{width, height, channels, data}` |
+| `Lumen.toImageData / toCanvas / toBlob / toURL` | sunum yardımcıları (1 ve 3 kanal RGBA'ya açılır) |
+| `Lumen.memoryBytes()` | wasm heap'inin ayırdığı bayt |
+
+8 bitten geniş örnekler decode sırasında `>> (bit_depth - 8)` ile 8 bite
+indirilir — canvas'ın tutabileceği tek şey bu. Container'a dokunulmaz; CLI hâlâ
+tam duyarlılığı döndürür.
+
+### 29.4 `<lum-img>` ve MIME
+
+```html
+<script type="module" src="./web/lum.js"></script>
+<lum-img src="photo.lum" alt="bir fotoğraf"></lum-img>
+```
+
+Öğe, shadow DOM'da bir canvas üretir ve `lumload` (metadata ile) veya `lumerror`
+olayını fırlatır. MIME türü **`image/lum`**; sunucuda tek satır:
+
+```nginx
+types { image/lum lum; application/wasm wasm; }
+```
+
+`application/wasm` yoksa `WebAssembly.instantiateStreaming` başarısız olur,
+`lum.js` otomatik olarak tamponlu `instantiate()`'e düşer — yine de iki türü de
+tanımlamak doğrusu.
+
+### 29.5 Ölçülen
+
+Tek çekirdek, Node 22, 220×220 RGB fotoğraf kırpımı (0,048 MP; Kodak
+korpustan alınmış bir kırpım, yalnızca ölçüm için kullanıldı):
+
+| | wasm | not |
+|---|---|---|
+| kayıpsız decode | 25 ms | piksel başına maliyet native decoder ile aynı |
+| kayıpsız encode | 415 ms | aday listesi thread'siz seri değerlendirilir; native sürüm bunu çekirdeklere dağıtır |
+| kayıplı q90 encode | 10 ms | tek geçiş, native'e yakın |
+| 0,048 MP tur sonrası heap | 7,8 MiB | wasm belleği büyür, küçülmez |
+| modül boyutu | ≈290 KiB | `-C lto=fat -C codegen-units=1 -C panic=abort -C strip=symbols` |
+
+Ortaya çıkan tablo dürüst: **decode hızlı yol** (tarayıcı decoder'ının amacı bu),
+kayıpsız *encode* ise tek çekirdekte megapiksel başına yaklaşık bir saniye.
+
+### 29.6 Doğrulama
+
+`tests/test_wasm.mjs` bir duman testi değil. Python referansıyla fixture üretip
+wasm derlemesinin şunları yaptığını doğrular:
+
+- kayıpsız ve kayıplı (q90) dosyaları `lum decode` ile **bit-aynı** piksellere çözer,
+- aynı pikselleri `lum encode` ile **bayt-aynı** container'a yazar,
+- tarayıcıda yazılan dosyayı Python aynı piksellere çözer,
+- 16-bit gri bir dosyayı tam olarak 8 bite indirir,
+- LUMEN olmayan tamponu (`-100`) ve kırpılmış akışı (negatif kod) çöp döndürmek
+  yerine reddeder.
+
+```bash
+./scripts/build_wasm.sh && node tests/test_wasm.mjs    # 24/24
+```
+
+`node` ve `rustc` varsa `LUMEN_BUILD_TESTS=1 ./scripts/run_tests.sh` bu paketi de
+çalıştırır.
+
+### 29.7 Sınırlar
+
+- Thread yok: kayıpsız encode tek çekirdek hızında.
+- Canvas 8 bit: 16-bit dosyalar tarayıcıda 8 bite iner (container değişmez).
+- SIMD yok (varsayılan `wasm32` hedefi); WASM SIMD128 ile ayrı bir ölçüm
+  yapılmadı, bu yüzden burada bir hız iddiası yok.
+- `lum.js` yalnızca decode/encode köprüsüdür; bölgesel decode, tile yineleme ve
+  animasyon gibi CLI yetenekleri tarayıcı API'sinde yok.

@@ -1,0 +1,2 @@
+# The wasm build is a committed artifact; keep it out of diffs and merges.
+web/lum.wasm binary

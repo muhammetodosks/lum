@@ -9,7 +9,70 @@ pure-Python reference: both produce byte-identical containers.
 
 ---
 
-## v1.0.0 — 2026-11-23 — LUMEN: the format gets its name
+## Unreleased — LUMEN in the browser
+
+The codec now runs on `wasm32-unknown-unknown`. Nothing in any container
+changed: no version byte, no header field, and not a single output byte moved.
+This is a new front end for the same pipeline.
+
+### `web/lum.wasm` — the codec, compiled to WebAssembly
+
+- New crate root inclusion: `rust/lum_wasm.rs` is a module of `lum_core`, so the
+  wasm build links the *same* `lum_image` / `lum_lossy` functions the native
+  `.so` exposes — there is no second decoder to drift.
+- `wasm32` has no threads. The four `std::thread::scope` sites
+  (`rust/lum_image.rs`: refill candidates, encode tile candidates, decode tile
+  pixels; `rust/lum_core.rs`: planner cost evaluation) are now split with
+  `#[cfg(target_arch = "wasm32")]` over the *identical* job closures: serial
+  iteration on wasm, `thread::scope` on native. Output is byte-identical
+  because no tile depends on another.
+- New wasm-only C ABI: `lum_alloc`, `lum_alloc_free`,
+  `lum_wasm_decode(data, len, info[5])`, `lum_wasm_encode(...)`,
+  `lum_wasm_info(data, len, meta[6])`, `lum_wasm_last_error()`. Error codes
+  `-100`…`-104` for magic / version / truncated / parameter / channel count.
+- `scripts/build_wasm.sh` builds it with `-C lto=fat -C codegen-units=1
+  -C panic=abort -C strip=symbols` → **≈290 KiB**.
+- No `SharedArrayBuffer`, no atomics, so no COOP/COEP headers.
+
+### `web/lum.js` and the demo
+
+- ES module, no bundler: `init`, `inspect`, `decode`, `encode`,
+  `toImageData`, `toCanvas`, `toBlob`, `toURL`, `memoryBytes`, `ready`.
+  Buffers are copied out of the wasm heap and freed before the next call.
+- `<lum-img src="photo.lum">` custom element: decodes into a shadow-DOM canvas,
+  fires `lumload` / `lumerror`. Works in a page with no JavaScript at the call
+  site.
+- `web/index.html`: drag-and-drop demo — a `.lum` is decoded and drawn, a
+  PNG/JPEG/WebP/AVIF is decoded by the browser, re-encoded by LUMEN and
+  re-decoded; sizes, ratios and timings are measured in the page.
+- The MIME type is **`image/lum`**; the README documents the one-line
+  `nginx`/`Apache` registration and the `application/wasm` type.
+
+### Measured, not asserted
+
+- `tests/test_wasm.mjs` (24 checks, run by `scripts/run_tests.sh` when `node`
+  is present) encodes fixtures with the Python reference and asserts that the
+  wasm decoder returns **bit-identical pixels**, that the wasm encoder returns
+  **byte-identical containers** (lossless and lossy q90), that Python decodes
+  the browser-written file back to the same pixels, that a 16-bit greyscale
+  file downconverts exactly, and that a non-LUMEN or truncated buffer is
+  rejected with a codec error instead of garbage.
+- One core, Node 22, 220×220 RGB photo crop (0.048 MP): lossless decode
+  **25 ms**, lossless encode **415 ms** (the candidate list is serial without
+  threads; the native build spreads it over cores), lossy q90 encode **10 ms**,
+  heap after a round trip **7.8 MiB**.
+
+### Fixed on the way
+
+- `benchmarks/format_report.py` crashed with `ValueError: max() iterable
+  argument is empty` when a corpus had no lossless (or no lossy) rows — reachable
+  from `render_bars_svg` with an empty family. `max(..., default=0) or 1` fixes
+  it, and a gallery card without a preview now renders a "No previews were
+  captured" placeholder instead of an image-less figure. The format-report suite
+  therefore runs to the end now: **46** checks instead of the 33 the earlier
+  aborted run reported.
+
+---
 
 The working name *PYRA* is retired. The format is **LUMEN** — light — with the
 extension `.lum` next to `.jpg`/`.png`/`.jxl`, the CLI `lum`, and the magic

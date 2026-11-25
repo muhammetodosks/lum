@@ -376,31 +376,31 @@ unsafe fn refill_method(
     if needed.is_empty() {
         return true;
     }
-    let encoded: Vec<Option<Vec<u8>>> = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(needed.len());
-        for &i in needed.iter() {
-            let px_ref = canvas;
-            let geom_ref = &geoms[i];
-            handles.push(scope.spawn(move || {
-                let prep = prepare_tile(
-                    px_ref, src_stride, geom_ref, channels, color_space, offset, modv, pred_type,
-                    transform, filter_mode,
-                )?;
-                match method_idx {
-                    1 => rle_candidate(&prep, None),
-                    _ => lz_candidate(&prep, None),
-                }
-            }));
+    let job = |i: usize| -> Option<Vec<u8>> {
+        let prep = prepare_tile(
+            canvas, src_stride, &geoms[i], channels, color_space, offset, modv, pred_type,
+            transform, filter_mode,
+        )?;
+        match method_idx {
+            1 => rle_candidate(&prep, None),
+            _ => lz_candidate(&prep, None),
         }
-        let mut out = Vec::with_capacity(needed.len());
-        for h in handles {
-            match h.join() {
-                Ok(v) => out.push(v),
-                Err(_) => return Vec::new(),
+    };
+    // Scoped threads need an OS scheduler. The wasm build runs the same job
+    // list serially; both produce byte-identical output.
+    #[cfg(not(target_arch = "wasm32"))]
+    let encoded: Vec<Option<Vec<u8>>> = {
+        let job = &job;
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(needed.len());
+            for &i in needed.iter() {
+                handles.push(scope.spawn(move || job(i)));
             }
-        }
-        out
-    });
+            handles.into_iter().map(|h| h.join().unwrap_or(None)).collect()
+        })
+    };
+    #[cfg(target_arch = "wasm32")]
+    let encoded: Vec<Option<Vec<u8>>> = needed.iter().map(|&i| job(i)).collect();
     if encoded.len() != needed.len() {
         return false;
     }
@@ -525,36 +525,25 @@ pub unsafe extern "C" fn lum_encode_image(
         vec![method]
     };
     let ntiles = geoms.len();
-    let cands: Vec<Option<TileCandidates>> = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(ntiles);
-        for geom in geoms.iter() {
-            let px_ref = &px;
-            let wanted_ref = &wanted;
-            handles.push(scope.spawn(move || {
-                encode_tile_candidates(
-                    px_ref,
-                    src_stride,
-                    geom,
-                    channels,
-                    color_space,
-                    offset,
-                    modv,
-                    pred_type,
-                    transform,
-                    filter_mode,
-                    wanted_ref,
-                )
-            }));
-        }
-        let mut out = Vec::with_capacity(ntiles);
-        for h in handles {
-            match h.join() {
-                Ok(v) => out.push(v),
-                Err(_) => out.push(None),
+    let job = |geom: &TileGeom| -> Option<TileCandidates> {
+        encode_tile_candidates(
+            &px, src_stride, geom, channels, color_space, offset, modv, pred_type,
+            transform, filter_mode, &wanted,
+        )
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let cands: Vec<Option<TileCandidates>> = {
+        let job = &job;
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(ntiles);
+            for geom in geoms.iter() {
+                handles.push(scope.spawn(move || job(geom)));
             }
-        }
-        out
-    });
+            handles.into_iter().map(|h| h.join().unwrap_or(None)).collect()
+        })
+    };
+    #[cfg(target_arch = "wasm32")]
+    let cands: Vec<Option<TileCandidates>> = geoms.iter().map(|g| job(g)).collect();
     let mut tiles: Vec<TileCandidates> = Vec::with_capacity(ntiles);
     for c in cands {
         match c {
@@ -894,35 +883,25 @@ pub unsafe extern "C" fn lum_decode_image(
     }
 
     // decode tiles (parallel)
-    let decoded: Vec<Option<Vec<i32>>> = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(num_tiles);
-        for (i, geom) in geoms.iter().enumerate() {
-            let blob = tiles[i];
-            handles.push(scope.spawn(move || {
-                decode_tile_pixels(
-                    blob,
-                    geom,
-                    channels,
-                    color_space,
-                    offset_v,
-                    modv,
-                    pred_type,
-                    method,
-                    transform,
-                    filter_mode,
-                    width_bytes,
-                )
-            }));
-        }
-        let mut out = Vec::with_capacity(num_tiles);
-        for h in handles {
-            match h.join() {
-                Ok(v) => out.push(v),
-                Err(_) => out.push(None),
+    let job = |i: usize| -> Option<Vec<i32>> {
+        decode_tile_pixels(
+            tiles[i], &geoms[i], channels, color_space, offset_v, modv, pred_type, method,
+            transform, filter_mode, width_bytes,
+        )
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let decoded: Vec<Option<Vec<i32>>> = {
+        let job = &job;
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(num_tiles);
+            for i in 0..num_tiles {
+                handles.push(scope.spawn(move || job(i)));
             }
-        }
-        out
-    });
+            handles.into_iter().map(|h| h.join().unwrap_or(None)).collect()
+        })
+    };
+    #[cfg(target_arch = "wasm32")]
+    let decoded: Vec<Option<Vec<i32>>> = (0..num_tiles).map(job).collect();
 
     // assemble the canvas
     let total = width * height * channels;

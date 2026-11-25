@@ -53,7 +53,8 @@ are **not** decodable by 1.0.0 and vice versa. See
 | Document | Content |
 |----------|---------|
 | [`README.md`](README.md) | This file — features, measured comparison, ratios, speed, CLI |
-| [`LUMEN-DOCUMENTATION.md`](LUMEN-DOCUMENTATION.md) | The complete technical documentation of all three containers (26 sections) |
+| [`LUMEN-DOCUMENTATION.md`](LUMEN-DOCUMENTATION.md) | The complete technical documentation of all three containers (29 sections) |
+| [`web/README.md`](web/README.md) | The WebAssembly build: browser API, `<lum-img>`, MIME type, limits |
 | [`docs/FORMAT-LUMM.md`](docs/FORMAT-LUMM.md) | The LUMM medical container specification |
 | [`docs/FORMAT-LUMC.md`](docs/FORMAT-LUMC.md) | The LUMC cloud container specification |
 | [`docs/assets/formats.html`](docs/assets/formats.html) | The visual comparison: charts, decoded crops, every measurement |
@@ -700,6 +701,53 @@ does not pay off for the large alphabets that the RAW method uses.
 The native library is never required: if `rustc` or the `.so` is missing,
 `native.py` returns `None` and the pure path takes over transparently.
 
+## Web and WebAssembly
+
+The same Rust core also compiles to `wasm32-unknown-unknown`: `web/lum.wasm`
+is **≈290 KiB** and exports the decoder and the encoder, so a `.lum` file can
+be opened in a browser and a canvas can be written back to `.lum` — with no
+re-implementation of the format, and therefore no drift from the CLI. A file
+decoded in a page is bit-identical to `lum decode`; a file encoded in a page is
+byte-identical to `lum encode` (`tests/test_wasm.mjs` asserts both, 24 checks).
+
+```html
+<script type="module">
+  import { Lumen } from "./web/lum.js";
+
+  await Lumen.init();
+
+  const image = Lumen.decode(await (await fetch("photo.lum")).arrayBuffer());
+  canvas.getContext("2d").putImageData(Lumen.toImageData(image), 0, 0);
+
+  const bytes = Lumen.encode(ctx.getImageData(0, 0, w, h), { quality: 90 });
+</script>
+```
+
+```html
+<lum-img src="photo.lum" alt="a photo"></lum-img>
+```
+
+`web/` holds the module (`lum.js`, ESM, no bundler), the demo
+(`index.html` — drop a `.lum` to decode, drop a PNG/JPEG to encode) and the
+build script. The trademark claim for a new format is that sites can serve it:
+the MIME type is **`image/lum`**, one line in `nginx`/`Apache`/S3 metadata, and
+the demo page documents it.
+
+Two honest limits, both structural:
+
+- `wasm32` has no threads, so the parallel tile loops take their serial branch.
+  Decoding is unaffected in practice (25 ms for a 0.048 MP crop on one core,
+  the same per-pixel cost as the native decoder); lossless *encoding* evaluates
+  its candidate list serially and costs about a second per megapixel. Lossy
+  encoding is single-pass and stays close to native (10 ms for the same crop).
+- Samples wider than 8 bits are shifted down to 8 bits on decode, because that
+  is what a canvas can hold. The container is untouched; the CLI still returns
+  full precision.
+
+No `SharedArrayBuffer`, so no COOP/COEP headers are required. See
+[`web/README.md`](web/README.md) for the API, the error codes and the server
+configuration.
+
 ## Medical imaging (LUMM)
 
 `LUMM` is a sibling container for medical data: the same lossless
@@ -904,6 +952,7 @@ lum/
 ├── native.py          ctypes loader for _liblum_core.so — None-output fallback contract
 ├── fast.py            ctypes loader for _liblum_fast.so (C++ fast path, same contract)
 ├── rust/lum_core.rs  std-only Rust cdylib port of the hot paths (bit-exact to Python)
+├── rust/lum_wasm.rs  the wasm32 entry points behind web/lum.js (same codec)
 ├── rust/lum_image.rs whole-image encoder/decoder in Rust, one thread per tile
 ├── rust/lum_med.rs   native LUMM encoder/decoder (SHA-256, parallel tiles)
 ├── rust/lum_cloud.rs native LUMC encoder/decoder (the cloud codec, Rust only)
@@ -911,7 +960,8 @@ lum/
 ├── cpp/lum_cloud.cpp C++20 working-set layer for cloud cubes: raw I/O, statistics, rendering
 ├── cloud.py            LUMC binding: encode / decode / info / read_band + the C++ helpers
 ├── scripts/build_native.sh  builds the Rust core and, if g++ is present, the C++ cores
-├── scripts/run_tests.sh     runs every suite (native, fallback, Rust unit tests, C++ self test)
+├── scripts/build_wasm.sh    builds web/lum.wasm (rustc --target wasm32-unknown-unknown)
+├── scripts/run_tests.sh     runs every suite (native, fallback, Rust unit tests, C++ self test, wasm)
 ├── entropy.py         adaptive range coder + Fenwick tree
 ├── entropycost.py     exact integer entropy cost (used by the planner's tie-breaks)
 ├── predictors.py      7 reversible predictors + per-row adaptive selection
@@ -926,8 +976,12 @@ lum/
 ├── benchmarks/bench_formats.py   13 encoders measured on an independent corpus
 ├── benchmarks/format_report.py   stdlib-only PSNR, SVG charts and the HTML gallery
 ├── benchmarks/results/formats.json   the raw measurements behind the README table
+├── web/lum.js           browser ES module: init / decode / encode / canvas + <lum-img>
+├── web/lum.wasm         the committed wasm build (scripts/build_wasm.sh)
+├── web/index.html       the demo page: drop a .lum to decode, a PNG/JPG to encode
 └── tests/             test_lossless.py (246) + test_lossy.py (72) + test_medical.py (106)
-                       + test_cloud.py (25) + test_format_report.py (33 checks)
+                       + test_cloud.py (25) + test_format_report.py (46 checks)
+                       + test_wasm.mjs (24 checks against the Python reference)
 ```
 
 ## Running Tests
@@ -940,7 +994,10 @@ python3 -m lum.tests.test_cloud
 python3 -m lum.tests.test_format_report
 
 bash scripts/run_tests.sh              # all of the above, native and fallback
-LUMEN_BUILD_TESTS=1 bash scripts/run_tests.sh   # plus the Rust unit tests and the C++ self test
+LUMEN_BUILD_TESTS=1 bash scripts/run_tests.sh   # plus the Rust unit tests, the C++ self test
+                                                # and the WebAssembly suite (builds web/lum.wasm)
+
+./scripts/build_wasm.sh && node tests/test_wasm.mjs   # the browser build on its own
 ```
 
 Every check asserts `decoded == original` (no sampling, no approximation).

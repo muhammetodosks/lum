@@ -1,0 +1,24 @@
+{
+  "name": "lum",
+  "version": "1.0.0",
+  "description": "LUMEN image codec for the browser: a 290 KiB WebAssembly build of the reference decoder and encoder.",
+  "type": "module",
+  "main": "lum.js",
+  "exports": {
+    ".": "./lum.js",
+    "./wasm": "./lum.wasm"
+  },
+  "files": [
+    "lum.js",
+    "lum.wasm"
+  ],
+  "keywords": [
+    "lum",
+    "lumen",
+    "image",
+    "codec",
+    "lossless",
+    "webassembly"
+  ],
+  "license": "MIT"
+}
