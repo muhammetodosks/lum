@@ -64,7 +64,12 @@ function ensureScratch() {
 async function init(url) {
   if (api) return Lumen;
   if (loading) return loading;
-  const target = url || (typeof document !== "undefined" ? new URL("lum.wasm", document.baseURI) : "./lum.wasm");
+  // Resolve next to this module, not next to the page: a page at the repository
+  // root imports web/lum.js and must still find web/lum.wasm.
+  const base = typeof import.meta.url === "string"
+    ? import.meta.url
+    : typeof document !== "undefined" ? document.baseURI : null;
+  const target = url || (base ? new URL("lum.wasm", base) : "./lum.wasm");
   const isBytes = target instanceof ArrayBuffer ||
     (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(target));
   loading = (async () => {

@@ -1157,35 +1157,44 @@ where
     if n == 0 {
         return Vec::new();
     }
-    let threads = std::thread::available_parallelism()
-        .map(|v| v.get())
-        .unwrap_or(4)
-        .min(n);
-    let chunk = (n + threads - 1) / threads;
-    let mut parts: Vec<Vec<T>> = Vec::new();
-    std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        let mut start = 0usize;
-        while start < n {
-            let end = (start + chunk).min(n);
-            let fref = &f;
-            handles.push(scope.spawn(move || {
-                let mut local = Vec::with_capacity(end - start);
-                for i in start..end {
-                    local.push(fref(i));
-                }
-                local
-            }));
-            start = end;
-        }
-        for h in handles {
-            match h.join() {
-                Ok(v) => parts.push(v),
-                Err(_) => parts.push(Vec::new()),
+    // wasm32 has no thread scheduler: `thread::scope` panics there, so the same
+    // chunk loop runs serially. Order and contents are identical.
+    #[cfg(target_arch = "wasm32")]
+    {
+        return (0..n).map(f).collect();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let threads = std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(4)
+            .min(n);
+        let chunk = (n + threads - 1) / threads;
+        let mut parts: Vec<Vec<T>> = Vec::new();
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            let mut start = 0usize;
+            while start < n {
+                let end = (start + chunk).min(n);
+                let fref = &f;
+                handles.push(scope.spawn(move || {
+                    let mut local = Vec::with_capacity(end - start);
+                    for i in start..end {
+                        local.push(fref(i));
+                    }
+                    local
+                }));
+                start = end;
             }
-        }
-    });
-    parts.into_iter().flatten().collect()
+            for h in handles {
+                match h.join() {
+                    Ok(v) => parts.push(v),
+                    Err(_) => parts.push(Vec::new()),
+                }
+            }
+        });
+        parts.into_iter().flatten().collect()
+    }
 }
 
 // ----------------------------------------------------------------- encoder

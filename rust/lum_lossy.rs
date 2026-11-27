@@ -1110,10 +1110,17 @@ fn enc_all_planes(planes: &[Vec<f32>], color_space: i32, width: usize, height: u
     if planes.first().map_or(0, |p| p.len()) < PAR_MIN_PIXELS {
         return (0..planes.len()).map(job).collect();
     }
-    std::thread::scope(|sc| {
+    // Scoped threads need an OS scheduler, which wasm32 does not have. Calling
+    // `thread::scope` there panics ("operation not supported"), so the wasm
+    // build runs the same plane jobs serially. Byte output is identical.
+    #[cfg(not(target_arch = "wasm32"))]
+    let streams: Vec<Vec<u8>> = std::thread::scope(|sc| {
         let hs: Vec<_> = (0..planes.len()).map(|i| sc.spawn(move || job(i))).collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
-    })
+    });
+    #[cfg(target_arch = "wasm32")]
+    let streams: Vec<Vec<u8>> = (0..planes.len()).map(job).collect();
+    streams
 }
 
 fn enc_plane(samples: &[f32], w: usize, h: usize, q: &[f32; 64],
@@ -1265,10 +1272,15 @@ fn dec_all_planes(blob: &[u8], spans: &[(usize, usize)], color_space: i32,
     let got: Vec<Option<Vec<f32>>> = if big.0 * big.1 < PAR_MIN_PIXELS {
         (0..n).map(job).collect()
     } else {
-        std::thread::scope(|sc| {
+        // wasm32 has no thread scheduler; the serial branch is byte-identical.
+        #[cfg(not(target_arch = "wasm32"))]
+        let got: Vec<Option<Vec<f32>>> = std::thread::scope(|sc| {
             let hs: Vec<_> = (0..n).map(|i| sc.spawn(move || job(i))).collect();
             hs.into_iter().map(|h| h.join().unwrap()).collect()
-        })
+        });
+        #[cfg(target_arch = "wasm32")]
+        let got: Vec<Option<Vec<f32>>> = (0..n).map(job).collect();
+        got
     };
     let mut planes = Vec::with_capacity(n);
     for p in got {

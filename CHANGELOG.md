@@ -20,19 +20,68 @@ This is a new front end for the same pipeline.
 - New crate root inclusion: `rust/lum_wasm.rs` is a module of `lum_core`, so the
   wasm build links the *same* `lum_image` / `lum_lossy` functions the native
   `.so` exposes — there is no second decoder to drift.
-- `wasm32` has no threads. The four `std::thread::scope` sites
-  (`rust/lum_image.rs`: refill candidates, encode tile candidates, decode tile
-  pixels; `rust/lum_core.rs`: planner cost evaluation) are now split with
-  `#[cfg(target_arch = "wasm32")]` over the *identical* job closures: serial
-  iteration on wasm, `thread::scope` on native. Output is byte-identical
-  because no tile depends on another.
+- `wasm32` has no threads. All seven `std::thread::scope` sites
+  (`rust/lum_image.rs`: 3 — refill candidates, encode tile candidates, decode
+  tile pixels; `rust/lum_core.rs`: planner cost evaluation; `rust/lum_lossy.rs`:
+  2 — `enc_all_planes` / `dec_all_planes`, the plane fan-out that starts at
+  65 536 px; `rust/lum_med.rs` and `rust/lum_cloud.rs`: `parallel_map`) are
+  split with `#[cfg(target_arch = "wasm32")]` over the *identical* job
+  closures: serial iteration on wasm, `thread::scope` on native. Output is
+  byte-identical because no tile or plane depends on another.
 - New wasm-only C ABI: `lum_alloc`, `lum_alloc_free`,
   `lum_wasm_decode(data, len, info[5])`, `lum_wasm_encode(...)`,
   `lum_wasm_info(data, len, meta[6])`, `lum_wasm_last_error()`. Error codes
   `-100`…`-104` for magic / version / truncated / parameter / channel count.
 - `scripts/build_wasm.sh` builds it with `-C lto=fat -C codegen-units=1
-  -C panic=abort -C strip=symbols` → **≈290 KiB**.
+  -C panic=abort -C strip=symbols` → **≈253 KiB**.
 - No `SharedArrayBuffer`, no atomics, so no COOP/COEP headers.
+
+### The product page — measured in the visitor's browser
+
+- `index.html` at the repository root is the GitHub Pages entry point (no
+  workflow: "main / root" serves it, and `.nojekyll` is present). It is not a
+  brochure: it imports `web/lum.js`, so the page runs the same wasm codec on
+  the file the visitor drops.
+- Four counters are computed from that run: bytes saved against the uploaded
+  file, shrink percentage, PSNR over R/G/B between the source pixels and the
+  decoded pixels (`10·log10(255² / MSE)`; lossless LUMEN comes out bit-exact and
+  shows `∞`, because the comparison is actually performed), and encode/decode
+  milliseconds from `performance.now()`.
+- The comparison table puts LUMEN lossless and LUMEN q90 next to PNG, JPEG q90
+  and WebP q90 produced by **the visitor's own browser** from the same pixels
+  (`canvas.toBlob`, then decoded back for PSNR). A browser that silently returns
+  PNG when asked for WebP is detected via `blob.type` and the row is dropped
+  instead of publishing a wrong number.
+- Honest limits are printed next to the numbers: wasm has no threads, so
+  lossless encoding costs ≈6.5 s/MP (measured); LUMEN lossy runs 4:4:4 while the
+  browser's JPEG/WebP are typically 4:2:0; large images are downscaled to a
+  512 px longest edge for measurement (1024 px and "tam boyut" are selectable).
+- `scripts/site_check.py` drives the page in headless Chrome over CDP (real
+  clock, not virtual time) and asserts that wasm loads, that a PNG round trip
+  produces real byte counts and a finite PSNR at q90, and that the produced
+  container reopens through the `.lum` path.
+
+### Fix — the browser build trapped on lossy images ≥ 256 × 256
+
+`rust/lum_lossy.rs` fans the three colour planes out over `thread::scope` once an
+image reaches `PAR_MIN_PIXELS` (256 × 256 = 65 536 px). That call was not split
+for `wasm32`; on the web it panicked with "operation not supported", which
+surfaces in the page as `RuntimeError: unreachable`. Any browser lossy encode or
+decode at or above 65 536 px failed. The shipped demo sample is 220 × 220
+(48 400 px), and `tests/test_wasm.mjs` used a 64 × 48 fixture, so every check was
+green while the product page crashed on a normal photo.
+
+The two loops in `rust/lum_lossy.rs`, plus `parallel_map` in `rust/lum_med.rs`
+and `rust/lum_cloud.rs`, now have the same `#[cfg(target_arch = "wasm32")]`
+serial branch as the four earlier sites; native still uses `thread::scope`. The
+wasm build is **253 KiB** after the change (it was 290 KiB before the fix).
+Verified that 256², 330², 512², 768 × 512, 1024 × 768 and 1320² encode and decode
+in the browser, and that wasm output is byte-identical to native (256² q90:
+17 263 B in both). `tests/test_wasm.mjs` now encodes, decodes and byte-compares a
+256 × 256 lossy image so this cannot regress silently.
+
+No format or measurement changed: the 1.0.0 benchmark numbers come from the
+native codec, whose behaviour is untouched.
 
 ### `web/lum.js` and the demo
 
@@ -50,7 +99,7 @@ This is a new front end for the same pipeline.
 
 ### Measured, not asserted
 
-- `tests/test_wasm.mjs` (24 checks, run by `scripts/run_tests.sh` when `node`
+- `tests/test_wasm.mjs` (27 checks, run by `scripts/run_tests.sh` when `node`
   is present) encodes fixtures with the Python reference and asserts that the
   wasm decoder returns **bit-identical pixels**, that the wasm encoder returns
   **byte-identical containers** (lossless and lossy q90), that Python decodes

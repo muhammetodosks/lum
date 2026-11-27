@@ -14,7 +14,7 @@
 | LUMM container | **v2** (144 B header, SHA-256 content hash) · `.lumm` |
 | LUMC container | **v1** · `.lumc`, ham küp `.lumx` |
 | Kaynak dili | Python 3 (yalnızca stdlib) + Rust (std-only) + C++20 |
-| Tarayıcı | `web/lum.wasm` — aynı codec'in `wasm32-unknown-unknown` derlemesi, ≈290 KiB |
+| Tarayıcı | `web/lum.wasm` — aynı codec'in `wasm32-unknown-unknown` derlemesi, ≈253 KiB |
 | Kayıpsızlık | **%100** — decode edilen pikseller bayt bayt aynı |
 | Toplam LOC | 14 540 (Rust 5 030 · testler 2 179 · Python 6 838 · C++ 493) |
 | Testler | görsel **246** · kayıplı **72** · bulut **25** · tıbbi **106** · format raporu **46** · wasm **24** kontrol |
@@ -133,7 +133,7 @@ lum/
 │   └── lum_wasm.rs       ~     wasm32 C ABI: aynı codec'i tarayıcıya açar (§29)
 │
 ├── web/
-│   ├── lum.wasm        290 KiB `scripts/build_wasm.sh` çıktısı (depoya işlenmiş)
+│   ├── lum.wasm        253 KiB `scripts/build_wasm.sh` çıktısı (depoya işlenmiş)
 │   ├── lum.js           ~330    ES modül: init/decode/encode/canvas + <lum-img>
 │   ├── index.html       ~       sürükle-bırak demo: .lum çöz, PNG/JPEG kodla
 │   ├── package.json             {"type":"module"} — bundler'sız ESM
@@ -1595,14 +1595,34 @@ Wasm'a özgü hata kodları: `-100` magic, `-101` sürüm, `-102` kısa akış,
 
 ### 29.2 `wasm32`'de thread yok
 
-`std::thread::scope` wasm32'de mevcut değil. Dört kullanım yeri (üçü
-`rust/lum_image.rs`'de: refill adayları, tile encode adayları, tile decode
-pikselleri; biri `rust/lum_core.rs`'de: planlayıcının maliyet değerlendirmesi)
-`#[cfg(target_arch = "wasm32")]` ile ikiye ayrıldı. İki dal **aynı job
-closure'ını** çalıştırır: native'de `thread::scope`, wasm'da seri döngü.
-Hiçbir tile başka bir tile'a bağlı olmadığı için çıktı bayt-aynıdır; değişen
-tek şey duvar saati süresidir. Paylaşılan bellek, atomik veya
-`SharedArrayBuffer` kullanılmadığı için **COOP/COEP başlığı gerekmez**.
+`std::thread::scope` wasm32'de mevcut değil: çağrılırsa `std::thread::spawn`
+"operation not supported" ile panic eder ve wasm'da bu `unreachable` olarak
+görünür. Yedi kullanım yeri `#[cfg(target_arch = "wasm32")]` ile ikiye ayrıldı:
+
+| Dosya | Yer | İş |
+|---|---|---|
+| `rust/lum_image.rs` | 3 yer | refill adayları, tile encode adayları, tile decode pikselleri |
+| `rust/lum_core.rs` | 1 yer | planlayıcının maliyet değerlendirmesi |
+| `rust/lum_lossy.rs` | 2 yer | `enc_all_planes` / `dec_all_planes` (>= 65 536 pikselde devreye giren çekirdek dağıtımı) |
+| `rust/lum_med.rs`, `rust/lum_cloud.rs` | 1'er yer | `parallel_map` |
+
+İki dal **aynı job closure'ını** çalıştırır: native'de `thread::scope`, wasm'da
+seri döngü. Hiçbir tile/plane başka bir tile/plane'e bağlı olmadığı için çıktı
+bayt-aynıdır; değişen tek şey duvar saati süresidir. Paylaşılan bellek, atomik
+veya `SharedArrayBuffer` kullanılmadığı için **COOP/COEP başlığı gerekmez**.
+
+> **Düzeltme (1.0.1).** 1.0.0'da yalnızca dört yer ayrılmıştı; `lum_lossy`
+> içindeki iki plane döngüsü atlanmıştı. Sonuç: tarayıcıda 65 536 pikselden
+> büyük **kayıplı encode ve kayıplı decode** panic ediyordu (256 × 256 ve
+> üstü çöküyor, 220 × 220 örnek şans eseri çalışıyordu). `tests/test_wasm.mjs`
+> yalnızca 0,048 MP fixture kullandığı için yakalamamıştı. Düzeltmeden sonra
+> 256², 512², 1024 × 768 ve 1320² boyutlarında encode/decode doğrulandı ve
+> wasm çıktısı native çıktıyla **bayt-aynı** kaldı (256² q90: 115 374 B iki
+> tarafta da).
+
+Bu, 1.0.0'ın iddialarını değiştirmez: ölçümler native codec ile üretildi ve
+native davranış aynı kaldı. Düzeltilen şey tarayıcı derlemesinin eksik
+`cfg` dalıdır.
 
 ### 29.3 `web/lum.js`
 
@@ -1650,10 +1670,11 @@ korpustan alınmış bir kırpım, yalnızca ölçüm için kullanıldı):
 | kayıpsız encode | 415 ms | aday listesi thread'siz seri değerlendirilir; native sürüm bunu çekirdeklere dağıtır |
 | kayıplı q90 encode | 10 ms | tek geçiş, native'e yakın |
 | 0,048 MP tur sonrası heap | 7,8 MiB | wasm belleği büyür, küçülmez |
-| modül boyutu | ≈290 KiB | `-C lto=fat -C codegen-units=1 -C panic=abort -C strip=symbols` |
+| modül boyutu | ≈253 KiB | `-C lto=fat -C codegen-units=1 -C panic=abort -C strip=symbols` |
 
 Ortaya çıkan tablo dürüst: **decode hızlı yol** (tarayıcı decoder'ının amacı bu),
-kayıpsız *encode* ise tek çekirdekte megapiksel başına yaklaşık bir saniye.
+kayıpsız *encode* ise tek çekirdekte megapiksel başına ≈6,5 saniye sürer
+(ölçüldü: 0,19 MP → 1,4 s, 0,77 MP → 5,1 s, 1,74 MP → 11,2 s).
 
 ### 29.6 Doğrulama
 
@@ -1665,10 +1686,13 @@ wasm derlemesinin şunları yaptığını doğrular:
 - tarayıcıda yazılan dosyayı Python aynı piksellere çözer,
 - 16-bit gri bir dosyayı tam olarak 8 bite indirir,
 - LUMEN olmayan tamponu (`-100`) ve kırpılmış akışı (negatif kod) çöp döndürmek
-  yerine reddeder.
+  yerine reddeder,
+- 256 × 256 kayıplı bir görüntüyü encode/decode eder ve baytlarını native
+  encoder ile karşılaştırır — wasm'da thread'siz çalışan plane döngülerinin
+  regresyon testi (1.0.0'da bu boyut `unreachable` ile çöküyordu).
 
 ```bash
-./scripts/build_wasm.sh && node tests/test_wasm.mjs    # 24/24
+./scripts/build_wasm.sh && node tests/test_wasm.mjs    # 27/27
 ```
 
 `node` ve `rustc` varsa `LUMEN_BUILD_TESTS=1 ./scripts/run_tests.sh` bu paketi de
@@ -1678,6 +1702,47 @@ wasm derlemesinin şunları yaptığını doğrular:
 
 - Thread yok: kayıpsız encode tek çekirdek hızında.
 - Canvas 8 bit: 16-bit dosyalar tarayıcıda 8 bite iner (container değişmez).
+
+### 29.8 Ürün sayfası: sayılar ziyaretçinin tarayıcısında ölçülür
+
+GitHub Pages'in servis ettiği sayfa depo kökündeki `index.html`'dir (`main /`
+kökü, workflow gerekmez; `.nojekyll` eklendi). Sayfa broşür değil: `web/lum.js`'i
+import eder, yani ziyaretçinin bıraktığı dosya üzerinde **aynı wasm codec'i**
+çalışır. Ölçülen dört değer:
+
+| Gösterge | Tanım |
+|---|---|
+| Tasarruf | yüklenen dosyanın baytı − üretilen `.lum` baytı (gerçek dosya boyutları) |
+| Küçülme % | aynı farkın yüzdesi; negatifse dosya büyümüş demektir, işaret gizlenmez |
+| PSNR | kaynak pikseller ile çözülen pikseller arasında, yalnızca R, G, B üzerinden `10·log10(255²/MSE)`; alfa ayrı raporlanır |
+| Kodlama / çözme | `performance.now()` ile kodlama ve çözme çağrısının iki yanında ölçülen süre |
+
+Kayıpsız LUMEN bit-aynı pikseller verdiği için o satırda `∞` görünür — bu bir
+varsayım değil, karşılaştırmanın kendisinin sonucudur. Tablodaki PNG / JPEG q90 /
+WebP q90 satırları da **ziyaretçinin tarayıcısının kendi kodlayıcılarıyla**, aynı
+piksellerden üretilir (`canvas.toBlob`), sonra PSNR için geri çözülür.
+
+Sayfanın söylediği üç dürüstlük notu:
+
+1. LUMEN kayıplı modda **4:4:4** çalışır (yayımlanan benchmarkların ayarı);
+   tarayıcının JPEG/WebP çıktısı tipik olarak 4:2:0'dır. Karşılaştırma bu yüzden
+   "aynı ayar" değil "aynı kalite hedefi" karşılaştırmasıdır.
+2. wasm'da thread yok: kayıpsız encode megapiksel başına ≈6,5 saniye sürer
+   (ölçüldü: 0,19 MP → 1,4 s, 0,77 MP → 5,1 s, 1,74 MP → 11,2 s), bu yüzden
+   sayfa ölçümü varsayılan olarak en uzun kenarı 512 px'e indirir; 1024 px ve
+   "tam boyut" seçilebilir. Buradaki süre CLI süresi değildir.
+3. Tarayıcı `image/webp` isteğine sessizce PNG döndürebilir; sayfa `blob.type`
+   kontrolü yapar ve uyuşmazsa satırı **atar**, yanlış sayı yayımlamaz.
+
+Bu ölçüm `benchmarks/results/formats.json`'daki Kodak tablosunun yerine geçmez;
+o tablo sabit korpusta, gerçek CLI kodlayıcılarıyla üretilmiş referanstır. İki
+sayı kümesi farklı olabilir ve olmalıdır: biri korpus, diğeri ziyaretçinin
+dosyası.
+
+`scripts/site_check.py` sayfayı headless Chrome'da CDP ile sürer (sanal saat
+değil, gerçek saat) ve şunları doğrular: wasm yükleniyor, PNG turu gerçek bayt
+sayıları ve sonlu bir q90 PSNR üretiyor, üretilen container `.lum` yolundan
+yeniden açılıyor.
 - SIMD yok (varsayılan `wasm32` hedefi); WASM SIMD128 ile ayrı bir ölçüm
   yapılmadı, bu yüzden burada bir hız iddiası yok.
 - `lum.js` yalnızca decode/encode köprüsüdür; bölgesel decode, tile yineleme ve

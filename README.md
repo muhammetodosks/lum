@@ -704,11 +704,11 @@ The native library is never required: if `rustc` or the `.so` is missing,
 ## Web and WebAssembly
 
 The same Rust core also compiles to `wasm32-unknown-unknown`: `web/lum.wasm`
-is **≈290 KiB** and exports the decoder and the encoder, so a `.lum` file can
+is **≈253 KiB** and exports the decoder and the encoder, so a `.lum` file can
 be opened in a browser and a canvas can be written back to `.lum` — with no
 re-implementation of the format, and therefore no drift from the CLI. A file
 decoded in a page is bit-identical to `lum decode`; a file encoded in a page is
-byte-identical to `lum encode` (`tests/test_wasm.mjs` asserts both, 24 checks).
+byte-identical to `lum encode` (`tests/test_wasm.mjs` asserts both, 27 checks).
 
 ```html
 <script type="module">
@@ -729,16 +729,23 @@ byte-identical to `lum encode` (`tests/test_wasm.mjs` asserts both, 24 checks).
 
 `web/` holds the module (`lum.js`, ESM, no bundler), the demo
 (`index.html` — drop a `.lum` to decode, drop a PNG/JPEG to encode) and the
-build script. The trademark claim for a new format is that sites can serve it:
-the MIME type is **`image/lum`**, one line in `nginx`/`Apache`/S3 metadata, and
-the demo page documents it.
+build script. The repository root is a product page (`index.html`) with a live
+encoder: it runs this same wasm build on your file, in your browser, and shows
+the measured size, the saved bytes, the PSNR and the encode time next to PNG,
+JPEG and WebP produced by your browser's own encoders. Nothing on that page is
+a fixed number copied from a benchmark. The trademark claim for a new format is
+that sites can serve it: the MIME type is **`image/lum`**, one line in
+`nginx`/`Apache`/S3 metadata, and the demo page documents it.
 
 Two honest limits, both structural:
 
-- `wasm32` has no threads, so the parallel tile loops take their serial branch.
+- `wasm32` has no threads, so the parallel tile and plane loops take their
+  serial branch (seven `thread::scope` sites, split with `#[cfg]`).
   Decoding is unaffected in practice (25 ms for a 0.048 MP crop on one core,
   the same per-pixel cost as the native decoder); lossless *encoding* evaluates
-  its candidate list serially and costs about a second per megapixel. Lossy
+  its candidate list serially and costs about 6.5 seconds per megapixel
+  (measured in Chrome: 0.19 MP → 1.4 s, 0.77 MP → 5.1 s, 1.74 MP → 11.2 s),
+  roughly thirteen times the native threaded encoder. Lossy
   encoding is single-pass and stays close to native (10 ms for the same crop).
 - Samples wider than 8 bits are shifted down to 8 bits on decode, because that
   is what a canvas can hold. The container is untouched; the CLI still returns

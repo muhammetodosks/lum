@@ -9,7 +9,7 @@ to one encoded by the CLI.
 
 | File | What it is |
 |------|-----------|
-| `lum.wasm` | the codec, ≈290 KiB, built by `scripts/build_wasm.sh` |
+| `lum.wasm` | the codec, ≈253 KiB, built by `scripts/build_wasm.sh` |
 | `lum.js` | the ES module: `init` / `decode` / `encode` / `inspect` / canvas helpers + `<lum-img>` |
 | `index.html` | a self-contained demo: drop a `.lum` to decode, drop a PNG/JPEG to encode |
 | `package.json` | `{"type": "module"}`, so `lum.js` imports as ESM without a bundler |
@@ -21,6 +21,12 @@ anything under `rust/`:
 ```bash
 ./scripts/build_wasm.sh          # rustc --target wasm32-unknown-unknown -> web/lum.wasm
 ```
+
+The repository root also has a product page (`index.html`, served by GitHub
+Pages) that imports this module and measures the codec on the visitor's own
+file: saved bytes, PSNR in dB and encode/decode milliseconds, next to PNG, JPEG
+and WebP produced by the visitor's browser. `scripts/site_check.py` drives that
+page in headless Chrome over CDP and fails if the numbers stop being real.
 
 ## Quick start
 
@@ -126,8 +132,10 @@ changes. Measured in Node 22 on a 220×220 RGB photo crop (0.048 MP, one core):
 | heap after a 0.048 MP round trip | 7.8 MiB | wasm memory grows and never shrinks |
 
 So decoding is the fast path — which is the point of shipping a browser
-decoder — and lossless *encoding* in a page costs about a second per
-megapixel on one core. The demo defaults to quality 90 for dropped rasters.
+decoder — and lossless *encoding* in a page costs about 6.5 seconds per
+megapixel on one core (measured: 0.19 MP → 1.4 s, 0.77 MP → 5.1 s, 1.74 MP →
+11.2 s). The demo defaults to quality 90 for dropped rasters; the product page
+measures at a 512 px longest edge by default for the same reason.
 
 ## Verification
 
@@ -142,7 +150,7 @@ reference, then asserts that the wasm build
   instead of returning garbage.
 
 ```bash
-./scripts/build_wasm.sh && node tests/test_wasm.mjs    # 24/24 checks
+./scripts/build_wasm.sh && node tests/test_wasm.mjs    # 27/27 checks
 ```
 
 `LUMEN_BUILD_TESTS=1 ./scripts/run_tests.sh` runs it with the rest of the

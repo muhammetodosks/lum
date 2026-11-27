@@ -139,6 +139,59 @@ for (let i = 0; i < width * height; i += 1) {
 }
 ok(greyOk, "16-bit greyscale: downconverts to 8 bit exactly");
 
+// Regression: the plane loops in lum_lossy.rs go parallel above 65 536 px and
+// used to call thread::scope unconditionally, which traps on wasm. A 220x220
+// sample is below that threshold, so the browser shipped with a crash that no
+// test covered. 256x256 is the smallest size that takes the threaded branch.
+{
+  const W = 256;
+  const H = 256;
+  const big = new Uint8Array(W * H * 3);
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      const i = (y * W + x) * 3;
+      big[i] = (x * 3 + y) & 0xff;
+      big[i + 1] = (y * 5) & 0xff;
+      big[i + 2] = (x ^ y) & 0xff;
+    }
+  }
+  let bigBlob = null;
+  let bigErr = null;
+  try {
+    bigBlob = Lumen.encode({ width: W, height: H, channels: 3, data: big }, { quality: 90 });
+  } catch (err) {
+    bigErr = err;
+  }
+  ok(
+    bigBlob && bigBlob.length > 0,
+    `256x256 lossy encode does not trap (${bigBlob ? `${bigBlob.length} B` : bigErr})`,
+  );
+  let bigImage = null;
+  try {
+    if (bigBlob) bigImage = Lumen.decode(bigBlob);
+  } catch (err) {
+    bigErr = err;
+  }
+  ok(
+    bigImage && bigImage.width === W && bigImage.height === H,
+    "256x256 lossy decode returns 256x256",
+  );
+
+  const bigPPM = path.join(work, "big.ppm");
+  fs.writeFileSync(bigPPM, Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), Buffer.from(big)]));
+  const bigLum = path.join(work, "big-native.lum");
+  execFileSync(
+    "python3",
+    ["-c", "import sys; from lum import api; api.encode_file(sys.argv[1], sys.argv[2], quality=90)", bigPPM, bigLum],
+    { cwd: PARENT },
+  );
+  const nativeBytes = new Uint8Array(fs.readFileSync(bigLum));
+  ok(
+    bigBlob && sameBytes(bigBlob, nativeBytes),
+    `256x256 wasm lossy bytes match native (${nativeBytes.length} B)`,
+  );
+}
+
 const junk = new Uint8Array(24);
 junk.set(new Uint8Array(fs.readFileSync(path.join(work, "lossless.lum"))).subarray(0, 24));
 let threw = null;
