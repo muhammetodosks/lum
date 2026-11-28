@@ -60,6 +60,26 @@ This is a new front end for the same pipeline.
   clock, not virtual time) and asserts that wasm loads, that a PNG round trip
   produces real byte counts and a finite PSNR at q90, and that the produced
   container reopens through the `.lum` path.
+- Uploads are capped at **100 MB** (`100 * 1000 * 1000` bytes) and rejected
+  before a single pixel is read, with a Turkish message that points at the CLI.
+- The codec now runs in `web/lum-worker.js` (an ES module worker) instead of on
+  the main thread. Encode, decode and PSNR all happen off-thread; the page
+  animates at 60 fps while lossless encoding grinds through its candidate list,
+  progress is real, replies carry a run id so a stale file cannot overwrite a
+  newer result, and **Cancel** terminates the worker and spawns a fresh one.
+  `scripts/site_check_extra.py` drops a 3.2 MB synthetic photo, asserts that
+  requestAnimationFrame keeps ticking, that Cancel lands, and that the 100 MB
+  guard rejects an oversized file.
+- A downloaded `.lum` opens three ways: back on the page, in the CLI, and in
+  **`web/lum-viewer.html`** — a single HTML file with the wasm embedded as
+  base64 that works from `file://` with no install and no network, on Windows,
+  macOS, Linux and mobile. `scripts/build_viewer.py` regenerates it.
+- The page is a PWA (`manifest.webmanifest`, `web/icon.svg` + 192/512 PNG
+  icons, `sw.js` network-first) so it installs and still opens offline without
+  ever serving a stale codec.
+- The layout was rebuilt as a light, responsive product page (`web/site.css`,
+  `web/site.js`): downloads per platform, a format reference, a measured Kodak
+  comparison, an FAQ, and a 320 px-wide layout with no horizontal overflow.
 
 ### Fix — the browser build trapped on lossy images ≥ 256 × 256
 

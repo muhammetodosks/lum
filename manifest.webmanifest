@@ -1,0 +1,16 @@
+{
+  "name": "LUMEN — görüntü codec'i",
+  "short_name": "LUMEN",
+  "description": "Kayıpsız ve kayıplı görüntü codec'i. Gerçek wasm kodlayıcı tarayıcınızda çalışır; dosyanız yüklenmez.",
+  "lang": "tr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7fb",
+  "theme_color": "#4338ca",
+  "icons": [
+    { "src": "web/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "web/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "web/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

@@ -727,15 +727,21 @@ byte-identical to `lum encode` (`tests/test_wasm.mjs` asserts both, 27 checks).
 <lum-img src="photo.lum" alt="a photo"></lum-img>
 ```
 
-`web/` holds the module (`lum.js`, ESM, no bundler), the demo
-(`index.html` — drop a `.lum` to decode, drop a PNG/JPEG to encode) and the
-build script. The repository root is a product page (`index.html`) with a live
-encoder: it runs this same wasm build on your file, in your browser, and shows
-the measured size, the saved bytes, the PSNR and the encode time next to PNG,
-JPEG and WebP produced by your browser's own encoders. Nothing on that page is
-a fixed number copied from a benchmark. The trademark claim for a new format is
-that sites can serve it: the MIME type is **`image/lum`**, one line in
-`nginx`/`Apache`/S3 metadata, and the demo page documents it.
+`web/` holds the module (`lum.js`, ESM, no bundler), the worker that keeps the
+page responsive (`lum-worker.js`), the demo (`index.html` — drop a `.lum` to
+decode, drop a PNG/JPEG to encode) and the build script. The repository root is
+a product page (`index.html`) with a live encoder: it runs this same wasm build
+on your file, in your browser, and shows the measured size, the saved bytes,
+the PSNR and the encode time next to PNG, JPEG and WebP produced by your
+browser's own encoders. Nothing on that page is a fixed number copied from a
+benchmark. Uploads are capped at 100 MB and rejected before any work starts;
+the codec runs in a worker, so a multi-megapixel photo never freezes the tab,
+and a Cancel button stops it. A downloaded `.lum` opens again on the page, and
+`web/lum-viewer.html` — one HTML file with the wasm inlined — opens it offline
+from `file://` on Windows, macOS, Linux and mobile. The site is also a PWA:
+manifest, icons and a network-first service worker. The trademark claim for a
+new format is that sites can serve it: the MIME type is **`image/lum`**, one
+line in `nginx`/`Apache`/S3 metadata, and the demo page documents it.
 
 Two honest limits, both structural:
 

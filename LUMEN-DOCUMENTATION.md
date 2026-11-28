@@ -1742,7 +1742,35 @@ dosyası.
 `scripts/site_check.py` sayfayı headless Chrome'da CDP ile sürer (sanal saat
 değil, gerçek saat) ve şunları doğrular: wasm yükleniyor, PNG turu gerçek bayt
 sayıları ve sonlu bir q90 PSNR üretiyor, üretilen container `.lum` yolundan
-yeniden açılıyor.
+yeniden açılıyor. `scripts/site_check_extra.py` bunun üstüne üç şikâyeti
+kapatır: 100 MB üstü dosya hiç iş başlamadan reddediliyor, 3,2 MB'lık bir
+fotoğraf yüklenirken `requestAnimationFrame` saymaya devam ediyor (codec
+worker'da), **İptal** gerçekten durduruyor; indirilen `.lum` hem sayfada hem de
+çevrimdışı görüntüleyicide açılıyor.
+
+### 29.9 Worker, 100 MB sınırı ve çevrimdışı görüntüleyici
+
+Sayfa codec'i ana iş parçacığında çalıştırmaz. `web/lum-worker.js` bir ES modül
+worker'ıdır ve küçük bir mesaj protokolü vardır: `ping`, `prepare`, `measure`,
+`encode`, `decode`. Her koşu bir `id` taşır; eski `id` ile gelen yanıt atılır,
+böylece eski bir dosyanın sonucu yeni sonucun üstüne yazamaz. İptal, worker'ı
+sonlandırıp yenisini açar; kayıpsız encode aday listesini değerlendirirken bile
+sayfa 60 fps'te kalır.
+
+Yükleme sınırı **100 MB** (`100 * 1000 * 1000` bayt) ve tek piksel okunmadan
+önce uygulanır; mesaj Türkçe ve CLI'yi işaret eder. Ölçüm varsayılan olarak en
+uzun kenarı 512 px'e indirir; 320 px, 1024 px ve tam boyut seçilebilir.
+
+İndirilen `.lum` üç yoldan açılır: sayfada yeniden, CLI ile (`decode` PNM yazar)
+ve **`web/lum-viewer.html`** ile. Görüntüleyici tek bir HTML dosyasıdır; wasm
+base64 olarak içine gömülüdür, bu yüzden `file://` üzerinden çalışır — kurulum,
+sunucu ve internet gerekmez. Windows'ta çift tıklama, Linux/macOS'ta tarayıcıda
+açma ve mobilde dosya seçme yeterlidir; çözülen görüntü PNG olarak indirilir.
+`scripts/build_viewer.py` codec değişince dosyayı yeniden üretir.
+
+Site bir PWA'dır: `manifest.webmanifest`, `web/icon.svg` + 192/512 PNG ikonlar ve
+`sw.js` (network-first; çevrimdışıyken önbellekten servis eder, bayat codec
+servis etmez). Sayfa 320 px genişliğe kadar yatay taşma yapmaz.
 - SIMD yok (varsayılan `wasm32` hedefi); WASM SIMD128 ile ayrı bir ölçüm
   yapılmadı, bu yüzden burada bir hız iddiası yok.
 - `lum.js` yalnızca decode/encode köprüsüdür; bölgesel decode, tile yineleme ve

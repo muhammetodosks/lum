@@ -11,8 +11,21 @@ to one encoded by the CLI.
 |------|-----------|
 | `lum.wasm` | the codec, ≈253 KiB, built by `scripts/build_wasm.sh` |
 | `lum.js` | the ES module: `init` / `decode` / `encode` / `inspect` / canvas helpers + `<lum-img>` |
-| `index.html` | a self-contained demo: drop a `.lum` to decode, drop a PNG/JPEG to encode |
+| `lum-worker.js` | a module worker that runs encode/decode/PSNR off the main thread, so a multi-megapixel file never freezes the page |
+| `lum-viewer.html` | a single-file offline viewer with the wasm embedded as base64 — opens from `file://` on Windows, macOS, Linux and mobile |
+| `index.html` | the minimal demo: drop a `.lum` to decode, drop a PNG/JPEG to encode |
 | `package.json` | `{"type": "module"}`, so `lum.js` imports as ESM without a bundler |
+
+The repository root also has the product page (`index.html`, served by GitHub
+Pages) with its own `site.css` / `site.js`, a web app manifest and a service
+worker: it imports this module, runs it in `lum-worker.js` and measures the
+codec on the visitor's own file — saved bytes, PSNR in dB and encode/decode
+milliseconds, next to PNG, JPEG and WebP produced by the visitor's browser.
+Uploads are capped at 100 MB and the cap is enforced before any work starts.
+`scripts/site_check.py` and `scripts/site_check_extra.py` drive that page in
+headless Chrome over CDP and fail if the numbers stop being real, if the cap
+is bypassed, if the worker stops keeping the page responsive, or if the
+downloaded `.lum` no longer opens in the page or in the offline viewer.
 
 `lum.wasm` is committed on purpose: the demo then works from a plain static
 host (GitHub Pages included) with no toolchain. Rebuild it after changing
@@ -63,6 +76,30 @@ Or the element, which needs no JavaScript at the call site:
 `<lum-img>` decodes into a shadow-DOM canvas and fires `lumload` with the
 container metadata; if the bytes turn out not to be a LUMEN file it fires
 `lumerror` and shows the `alt` text.
+
+## Worker and offline viewer
+
+The product page never calls the codec on the main thread. `lum-worker.js` is
+an ES module worker with a tiny message protocol:
+
+| Message | Payload | Reply |
+|---------|---------|-------|
+| `ping` | — | `pong` |
+| `prepare` | `{width, height, hasAlpha, rgba}` | `prepared` (transfers one RGBA copy) |
+| `measure` | `{id, quality}` | `{lossless, lossy, chosen}` with bytes, PSNR and timings |
+| `encode` | `{id, quality}` | `.lum` bytes |
+| `decode` | `{id, bytes}` | RGBA + metadata |
+
+A run gets an `id`; replies carrying an older id are dropped, so a stale file
+can never overwrite a newer result. Cancelling terminates the worker and spawns
+a fresh one — the page stays interactive even while lossless encoding is
+evaluating its candidate list (≈6.5 s/MP on one core).
+
+`lum-viewer.html` is the "double-click a `.lum`" answer. It is one HTML file
+with the wasm inlined as base64, so it works with no server, no install and no
+network: download it once, open it from `file://`, drop a `.lum` in, and save
+the decoded image as PNG. `scripts/build_viewer.py` regenerates it after a
+codec change.
 
 ## API
 

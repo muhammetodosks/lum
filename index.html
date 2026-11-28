@@ -4,497 +4,34 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LUMEN — tarayıcıda çalışan kayıpsız görüntü codec'i</title>
-<meta name="description" content="LUMEN, kayıpsız ve kayıplı sıkıştırma yapan açık kaynaklı bir görüntü formatı. Bu sayfa gerçek codec'i WebAssembly ile çalıştırır: dosyanız yüklenmez, boyut ve PSNR burada ölçülür.">
-<meta name="theme-color" content="#08080c">
+<meta name="description" content="LUMEN, kayıpsız ve kayıplı sıkıştırma yapan açık kaynaklı bir görüntü formatı. Gerçek codec WebAssembly ile tarayıcınızda çalışır; dosyanız yüklenmez. En fazla 100 MB.">
+<meta name="theme-color" content="#f6f7fb">
+<meta name="color-scheme" content="light">
 <meta property="og:title" content="LUMEN — görüntü codec'i, tarayıcıda">
-<meta property="og:description" content="Dosyanızı bırakın: gerçek LUMEN kodlayıcısı çalışır, kaç MB düştüğünü ve kaç dB kaybettiğini bu sayfa ölçer.">
+<meta property="og:description" content="Görüntünüzü bırakın: gerçek LUMEN kodlayıcısı çalışır, boyutu ve PSNR'i kendi tarayıcınızda ölçer. Dosya sunucuya gitmez.">
 <meta property="og:type" content="website">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%2308080c'/><circle cx='32' cy='32' r='13' fill='none' stroke='%237c6cff' stroke-width='7'/></svg>">
-<style>
-  :root {
-    color-scheme: dark;
-    --bg: #08080c;
-    --bg2: #0c0c13;
-    --panel: rgba(255, 255, 255, .035);
-    --panel-2: rgba(255, 255, 255, .055);
-    --line: rgba(255, 255, 255, .09);
-    --line-2: rgba(255, 255, 255, .16);
-    --ink: #eceef5;
-    --muted: #9aa1b4;
-    --dim: #6b7285;
-    --accent: #7c6cff;
-    --accent-2: #38e1b0;
-    --warn: #ff9f6b;
-    --bad: #ff6b81;
-    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--ink);
-    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    background:
-      radial-gradient(900px 500px at 15% -8%, rgba(124, 108, 255, .20), transparent 70%),
-      radial-gradient(760px 460px at 92% 4%, rgba(56, 225, 176, .10), transparent 70%);
-  }
-  body::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    opacity: .35;
-    background-image:
-      linear-gradient(rgba(255, 255, 255, .028) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, .028) 1px, transparent 1px);
-    background-size: 64px 64px;
-    mask-image: radial-gradient(1200px 700px at 50% 0%, #000 30%, transparent 85%);
-  }
-  main, header.nav, footer { position: relative; z-index: 1; }
-
-  /* ---------------------------------------------------------------- nav */
-  header.nav {
-    position: sticky;
-    top: 0;
-    backdrop-filter: blur(14px);
-    background: rgba(8, 8, 12, .72);
-    border-bottom: 1px solid var(--line);
-  }
-  .nav-inner {
-    max-width: 1120px;
-    margin: 0 auto;
-    padding: 14px 22px;
-    display: flex;
-    align-items: center;
-    gap: 26px;
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-weight: 700;
-    letter-spacing: .13em;
-    font-size: 14px;
-    text-decoration: none;
-    color: var(--ink);
-  }
-  .brand i {
-    width: 11px; height: 11px;
-    border-radius: 50%;
-    border: 3px solid var(--accent);
-    box-shadow: 0 0 14px rgba(124, 108, 255, .8);
-    display: inline-block;
-  }
-  .nav-links { display: flex; gap: 22px; margin-left: auto; }
-  .nav-links a {
-    color: var(--muted);
-    text-decoration: none;
-    font-size: 14px;
-  }
-  .nav-links a:hover { color: var(--ink); }
-  .ghost {
-    border: 1px solid var(--line-2);
-    border-radius: 8px;
-    padding: 6px 12px;
-    color: var(--ink) !important;
-    font-size: 13px !important;
-  }
-  .ghost:hover { background: var(--panel-2); }
-  @media (max-width: 720px) { .nav-links a:not(.ghost) { display: none; } }
-
-  /* --------------------------------------------------------------- hero */
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 22px; }
-  .hero { padding: 72px 0 24px; }
-  .eyebrow {
-    font: 600 11px/1 var(--mono);
-    letter-spacing: .22em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin: 0 0 18px;
-  }
-  h1 {
-    margin: 0;
-    font-size: clamp(38px, 6.6vw, 72px);
-    line-height: 1.02;
-    letter-spacing: -.035em;
-    font-weight: 700;
-    max-width: 20ch;
-  }
-  h1 em { font-style: normal; color: var(--accent); }
-  .lede {
-    margin: 22px 0 0;
-    max-width: 62ch;
-    font-size: clamp(16px, 1.6vw, 19px);
-    color: #b8bfd0;
-  }
-  .lede strong { color: var(--ink); font-weight: 600; }
-  .facts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin: 30px 0 0;
-    padding: 0;
-    list-style: none;
-  }
-  .facts li {
-    border: 1px solid var(--line);
-    background: var(--panel);
-    border-radius: 999px;
-    padding: 7px 14px;
-    font: 500 12.5px/1 var(--mono);
-    color: #c3cadb;
-    letter-spacing: .01em;
-  }
-  .facts b { color: var(--ink); font-weight: 600; }
-
-  /* ---------------------------------------------------------------- lab */
-  section { padding: 46px 0; }
-  .sec-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
-  h2 {
-    margin: 0;
-    font-size: clamp(24px, 3vw, 32px);
-    letter-spacing: -.02em;
-    font-weight: 650;
-  }
-  .sec-head p { margin: 0; color: var(--muted); font-size: 15px; }
-  .panel {
-    background: linear-gradient(180deg, rgba(255, 255, 255, .05), rgba(255, 255, 255, .022));
-    border: 1px solid var(--line);
-    border-radius: 18px;
-  }
-
-  #drop {
-    display: grid;
-    place-items: center;
-    gap: 14px;
-    text-align: center;
-    padding: 46px 22px;
-    border: 1.5px dashed rgba(255, 255, 255, .18);
-    border-radius: 16px;
-    cursor: pointer;
-    transition: border-color .15s, background .15s;
-    background: rgba(255, 255, 255, .012);
-  }
-  #drop:hover, #drop:focus-visible { border-color: var(--accent); background: rgba(124, 108, 255, .07); outline: none; }
-  #drop.over { border-color: var(--accent); background: rgba(124, 108, 255, .12); }
-  #drop .big { font-size: 17px; font-weight: 600; }
-  #drop .small { color: var(--muted); font-size: 13.5px; max-width: 52ch; }
-  #drop .formats { font: 500 11.5px/1 var(--mono); color: var(--dim); letter-spacing: .04em; }
-  .drop-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-
-  button, .btn {
-    font: inherit;
-    font-size: 14px;
-    color: var(--ink);
-    background: rgba(255, 255, 255, .06);
-    border: 1px solid var(--line-2);
-    border-radius: 10px;
-    padding: 9px 16px;
-    cursor: pointer;
-    transition: background .15s, border-color .15s, transform .06s;
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-  }
-  button:hover, .btn:hover { background: rgba(255, 255, 255, .11); }
-  button:active, .btn:active { transform: translateY(1px); }
-  button.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #0a0a12;
-    font-weight: 600;
-  }
-  button.primary:hover { background: #8d7fff; }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button.quiet { background: transparent; }
-
-  .status {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 14px 4px 0;
-    color: var(--muted);
-    font-size: 13.5px;
-    min-height: 22px;
-  }
-  .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--dim);
-    flex: none;
-  }
-  .dot.busy { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
-  .dot.ok { background: var(--accent-2); }
-  .dot.err { background: var(--bad); }
-  @keyframes pulse { 50% { opacity: .25; } }
-
-  /* ------------------------------------------------------------ results */
-  #results { display: none; }
-  #results.on { display: block; animation: rise .4s ease both; }
-  @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
-  @media (prefers-reduced-motion: reduce) { #results.on { animation: none; } }
-
-  .meta-line {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 18px;
-    align-items: center;
-    padding: 16px 0 0;
-    color: var(--muted);
-    font-size: 13px;
-  }
-  .meta-line b { color: var(--ink); font-weight: 600; }
-  .chip {
-    font: 500 11.5px/1 var(--mono);
-    border: 1px solid var(--line-2);
-    border-radius: 6px;
-    padding: 5px 8px;
-    color: #c8cfe0;
-    letter-spacing: .04em;
-  }
-  .chip.warn { border-color: rgba(255, 159, 107, .5); color: var(--warn); }
-
-  .counters {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 12px;
-    margin: 22px 0 0;
-  }
-  @media (max-width: 860px) { .counters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  .counter {
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 16px 18px 14px;
-    background: var(--panel);
-    overflow: hidden;
-  }
-  .counter .k {
-    font: 600 10.5px/1 var(--mono);
-    letter-spacing: .18em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-  .counter .v {
-    margin: 12px 0 4px;
-    font: 600 clamp(26px, 3.2vw, 38px)/1 var(--mono);
-    letter-spacing: -.02em;
-    font-variant-numeric: tabular-nums;
-    color: var(--ink);
-    white-space: nowrap;
-  }
-  .counter .v small { font-size: .5em; color: var(--muted); letter-spacing: .02em; margin-left: 4px; }
-  .counter .s { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
-  .counter.good .v { color: var(--accent-2); }
-  .counter.bad .v { color: var(--warn); }
-  .counter.accent .v { color: #a99cff; }
-
-  .split {
-    display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-    gap: 18px;
-    margin-top: 18px;
-    align-items: start;
-  }
-  @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
-
-  .compare { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #06060a; }
-  .compare .stage { position: relative; line-height: 0; }
-  .compare canvas { display: block; width: 100%; height: auto; }
-  #after { position: absolute; inset: 0; }
-  #after > canvas { position: absolute; inset: 0; }
-  .compare .tagline {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--line);
-    font: 500 11px/1.3 var(--mono);
-    color: var(--muted);
-    letter-spacing: .05em;
-    line-height: 1.4;
-  }
-  .compare .slider { padding: 10px 12px; border-top: 1px solid var(--line); }
-  input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 4px;
-    border-radius: 4px;
-    background: linear-gradient(90deg, var(--accent), var(--accent-2));
-    outline: none;
-  }
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 17px; height: 17px;
-    border-radius: 50%;
-    background: #fff;
-    border: 3px solid var(--accent);
-    cursor: grab;
-  }
-  input[type="range"]::-moz-range-thumb {
-    width: 14px; height: 14px;
-    border-radius: 50%;
-    background: #fff;
-    border: 3px solid var(--accent);
-    cursor: grab;
-  }
-
-  .side { display: grid; gap: 14px; }
-  .controls { border: 1px solid var(--line); border-radius: 14px; padding: 16px; background: var(--panel); }
-  .controls h3 { margin: 0 0 12px; font: 600 10.5px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--dim); }
-  .segs { display: flex; gap: 6px; flex-wrap: wrap; }
-  .segs button {
-    font: 500 13px/1 var(--mono);
-    padding: 8px 11px;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, .04);
-    border: 1px solid var(--line);
-  }
-  .segs button[aria-pressed="true"] {
-    background: rgba(124, 108, 255, .18);
-    border-color: rgba(124, 108, 255, .75);
-    color: #cfc7ff;
-  }
-  .rows { display: grid; gap: 10px; margin-top: 14px; }
-  .ctl-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); }
-  select {
-    font: inherit;
-    font-size: 13px;
-    color: var(--ink);
-    background: rgba(255, 255, 255, .05);
-    border: 1px solid var(--line-2);
-    border-radius: 8px;
-    padding: 7px 9px;
-  }
-  .note { font-size: 12px; color: var(--dim); line-height: 1.5; margin: 12px 0 0; }
-
-  /* --------------------------------------------------------------- table */
-  .tablebox { margin-top: 18px; border: 1px solid var(--line); border-radius: 14px; overflow: auto; background: var(--panel); }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 620px; }
-  th, td { padding: 11px 14px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th {
-    font: 600 10.5px/1 var(--mono);
-    letter-spacing: .16em;
-    text-transform: uppercase;
-    color: var(--dim);
-    background: rgba(255, 255, 255, .025);
-    position: sticky;
-    top: 0;
-  }
-  tbody tr:last-child td { border-bottom: none; }
-  td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
-  tr.subject td { background: rgba(124, 108, 255, .075); }
-  tr.subject td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-  .fmt { display: flex; align-items: center; gap: 8px; }
-  .fmt b { font-weight: 600; }
-  .fmt span { color: var(--dim); font-size: 12px; }
-  .badge {
-    font: 600 9.5px/1 var(--mono);
-    letter-spacing: .12em;
-    text-transform: uppercase;
-    border-radius: 4px;
-    padding: 4px 6px;
-    border: 1px solid var(--line-2);
-    color: var(--muted);
-  }
-  .badge.win { border-color: rgba(56, 225, 176, .55); color: var(--accent-2); }
-  .badge.wasm { border-color: rgba(124, 108, 255, .5); color: #b3a7ff; }
-
-  /* ------------------------------------------------------------- method */
-  .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-  @media (max-width: 820px) { .cards { grid-template-columns: 1fr; } }
-  .card {
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 20px;
-    background: var(--panel);
-  }
-  .card h3 { margin: 0 0 8px; font-size: 15.5px; font-weight: 650; letter-spacing: -.01em; }
-  .card p { margin: 0; color: var(--muted); font-size: 14px; }
-  .card p + p { margin-top: 10px; }
-  .card code, .inline-code {
-    font: 500 12px/1.5 var(--mono);
-    background: rgba(255, 255, 255, .06);
-    border: 1px solid var(--line);
-    border-radius: 5px;
-    padding: 1px 5px;
-    color: #d6dbe8;
-  }
-  .num-badge {
-    display: inline-grid;
-    place-items: center;
-    width: 24px; height: 24px;
-    border-radius: 6px;
-    background: rgba(124, 108, 255, .16);
-    border: 1px solid rgba(124, 108, 255, .35);
-    color: #c3b8ff;
-    font: 600 11px/1 var(--mono);
-    margin-bottom: 12px;
-  }
-
-  /* -------------------------------------------------------------- format */
-  .kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 30px; }
-  @media (max-width: 720px) { .kv { grid-template-columns: 1fr; } }
-  .kv div { display: flex; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
-  .kv dt { color: var(--muted); margin: 0; }
-  .kv dd { margin: 0; font-family: var(--mono); font-size: 13px; color: var(--ink); text-align: right; }
-  pre {
-    margin: 18px 0 0;
-    padding: 16px 18px;
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    background: #06060a;
-    overflow: auto;
-    font: 500 12.5px/1.7 var(--mono);
-    color: #c9d0e0;
-  }
-  pre .c { color: #6b7285; }
-  pre .k { color: #b3a7ff; }
-  pre .s { color: #7ee2c0; }
-
-  /* --------------------------------------------------------------- misc */
-  .refnote { color: var(--dim); font-size: 13px; margin: 14px 0 0; max-width: 74ch; }
-  .mini { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 560px; }
-  .mini th, .mini td { padding: 9px 12px; }
-  .mini td.best { color: var(--accent-2); font-weight: 600; }
-  footer {
-    border-top: 1px solid var(--line);
-    margin-top: 40px;
-    padding: 28px 0 44px;
-    color: var(--dim);
-    font-size: 13px;
-  }
-  footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
-  footer a { color: var(--muted); text-decoration: none; }
-  footer a:hover { color: var(--ink); }
-  .sr-only {
-    position: absolute; width: 1px; height: 1px;
-    padding: 0; margin: -1px; overflow: hidden;
-    clip: rect(0 0 0 0); white-space: nowrap; border: 0;
-  }
-</style>
+<meta property="og:url" content="https://muhammetodosks.github.io/lum/">
+<link rel="canonical" href="https://muhammetodosks.github.io/lum/">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%234338ca'/><circle cx='32' cy='32' r='13' fill='none' stroke='white' stroke-width='7'/></svg>">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="web/icon-192.png">
+<link rel="stylesheet" href="web/site.css">
 </head>
 <body>
+<a class="skip" href="#lab">İçeriğe geç</a>
 
 <header class="nav">
   <div class="nav-inner">
-    <a class="brand" href="#top"><i></i>LUMEN</a>
-    <nav class="nav-links">
+    <a class="brand" href="#top"><i aria-hidden="true"></i>LUMEN</a>
+    <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Menüyü aç">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <nav class="nav-links" id="nav-links">
       <a href="#lab">Kodlayıcı</a>
-      <a href="#method">Ölçüm yöntemi</a>
+      <a href="#indir">İndir</a>
+      <a href="#method">Yöntem</a>
       <a href="#format">Format</a>
-      <a href="#reference">Referans ölçüm</a>
+      <a href="#sss">SSS</a>
       <a class="ghost" href="https://github.com/muhammetodosks/lum">GitHub</a>
     </nav>
   </div>
@@ -504,158 +41,262 @@
 
   <!-- ================================================================ hero -->
   <div class="wrap hero">
-    <p class="eyebrow">Kayıpsız · kayıplı · açık kaynak</p>
-    <h1>Görüntü sıkıştırması, <em>tarayıcıda</em> ve gerçek.</h1>
-    <p class="lede">
-      LUMEN, PNG'nin yerini alacak şekilde tasarlanmış bir görüntü container'ı:
-      kayıpsız modda kaynak pikselleri <strong>bit-bit</strong> korur, kayıplı modda
-      JPEG'in yerini alır. Bu sayfa süs değil — codec'in kendisi
-      <strong>WebAssembly</strong> olarak burada çalışıyor. Dosyanız hiçbir sunucuya
-      gitmiyor; aşağıdaki boyut, yüzde, dB ve süre değerleri sizin dosyanız üzerinde,
-      sizin tarayıcınızda ölçülüyor.
-    </p>
-    <ul class="facts">
-      <li><b>13</b> format, aynı korpusta ölçüldü</li>
-      <li><b>246</b> kayıpsız + <b>72</b> kayıplı test</li>
-      <li><b>253 KiB</b> wasm modülü</li>
-      <li><b>MIT</b> lisans, bağımlılık yok</li>
-    </ul>
+    <div class="hero-grid">
+      <div>
+        <p class="eyebrow">Kayıpsız · kayıplı · açık kaynak</p>
+        <h1>Görüntü sıkıştırması, <em>tarayıcıda</em> ve gerçek.</h1>
+        <p class="lede">
+          LUMEN, PNG'nin yerini alacak şekilde tasarlanmış bir görüntü container'ı:
+          kayıpsız modda kaynak pikselleri <strong>bit-bit</strong> korur, kayıplı modda
+          JPEG'in yerini alır. Bu sayfa süs değil — codec'in kendisi
+          <strong>WebAssembly</strong> olarak burada çalışıyor. Dosyanız hiçbir sunucuya
+          gitmiyor; boyut, yüzde, dB ve süre değerleri sizin dosyanız üzerinde ölçülüyor.
+        </p>
+        <div class="hero-actions">
+          <a class="btn primary" href="#lab">Kendi görüntünüzü deneyin</a>
+          <a class="btn" href="#indir">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 19h16"/></svg>
+            Görüntüleyiciyi indir
+          </a>
+        </div>
+        <ul class="facts">
+          <li><b>253 KiB</b>wasm modülü, bağımlılık yok</li>
+          <li><b>%57</b>Kodak korpusunda PNG'den küçük</li>
+          <li><b>13</b>format, aynı korpusta ölçüldü</li>
+          <li><b>MIT</b>lisans, açık kaynak</li>
+        </ul>
+      </div>
+
+      <aside class="hero-card" aria-label="Örnek ölçüm">
+        <div class="head">
+          <span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span class="name">ornek-kodak-kirpimi.lum</span>
+        </div>
+        <div class="body">
+          <div class="metric-row"><span class="k">Kayıplı q90</span><span class="v accent">24,7<small>KB</small></span></div>
+          <div class="metric-row"><span class="k">PSNR</span><span class="v good">43,53<small>dB</small></span></div>
+          <div class="metric-row"><span class="k">Aynı piksellerde PNG</span><span class="v">129,1<small>KB</small></span></div>
+          <div class="bar" aria-hidden="true"><span style="width:19%"></span></div>
+          <p class="foot">
+            220 × 220 Kodak kırpımı · bu tarayıcıda ölçüldü. Sizin dosyanız için
+            aşağıdaki canlı laboratuvar aynı ölçümü yapar.
+          </p>
+        </div>
+      </aside>
+    </div>
   </div>
 
   <!-- ================================================================= lab -->
   <section id="lab" class="wrap">
     <div class="sec-head">
       <h2>Kodlayıcı — canlı</h2>
-      <p>Bir görüntü bırakın; gerçek codec çalışır ve sonucu ölçer.</p>
+      <p>Bir görüntü bırakın; gerçek codec çalışır, sonucu ölçer ve karşılaştırır. İşlem arka planda yürür, sayfa donmaz.</p>
     </div>
 
-    <div class="panel" style="padding:18px">
-      <div id="drop">
-        <div class="big">Dosyayı buraya bırakın</div>
-        <div class="small">Bir fotoğraf (PNG, JPEG, WebP, AVIF, GIF, BMP) veya zaten LUMEN ile kodlanmış bir <code>.lum</code> dosyası. Dosya cihazınızdan çıkmaz.</div>
-        <div class="drop-actions">
-          <button class="primary" id="pick" type="button">Dosya seç</button>
-          <button id="sample" type="button">Örnek görüntüyü dene</button>
+    <div class="lab-grid">
+      <div class="panel drop-card">
+        <div id="drop" tabindex="0" role="button" aria-label="Görüntü dosyası seç veya bırak">
+          <div class="icon" aria-hidden="true">
+            <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          </div>
+          <div class="big">Dosyayı buraya bırakın</div>
+          <div class="small">PNG, JPEG, WebP, AVIF, GIF, BMP veya hazır bir <code>.lum</code> dosyası. Dosya cihazınızdan çıkmaz.</div>
+          <div class="drop-actions">
+            <button class="btn primary" id="pick" type="button">Dosya seç</button>
+            <button class="btn" id="sample" type="button">Örnek görüntü</button>
+          </div>
+          <div class="limit-note">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+            <span>En fazla <b>100 MB</b> · daha büyük dosyalar reddedilir</span>
+          </div>
+          <div class="formats">PNG · JPEG · WEBP · AVIF · GIF · BMP → LUM · image/lum</div>
         </div>
-        <div class="formats">PNG · JPEG · WEBP · AVIF · GIF · BMP → LUM · image/lum</div>
+        <input id="file" type="file" accept=".lum,image/lum,image/png,image/jpeg,image/webp,image/avif,image/gif,image/bmp" class="sr-only">
+        <div class="status" aria-live="polite">
+          <span class="dot" id="dot"></span>
+          <span id="status">Codec yükleniyor…</span>
+          <button class="btn small quiet" id="cancel" type="button" hidden>İptal</button>
+        </div>
       </div>
-      <input id="file" type="file" accept=".lum,image/lum,image/png,image/jpeg,image/webp,image/avif,image/gif,image/bmp" class="sr-only">
 
-      <div class="status" aria-live="polite">
-        <span class="dot" id="dot"></span>
-        <span id="status">Codec yükleniyor…</span>
-      </div>
-
-      <!-- ------------------------------------------------ sonuçlar -->
-      <div id="results" aria-live="polite">
-        <div class="meta-line" id="meta"></div>
-
-        <div class="counters">
-          <div class="counter good" id="c-save">
-            <div class="k">Tasarruf</div>
-            <div class="v"><span data-v>—</span></div>
-            <div class="s" id="c-save-sub">&nbsp;</div>
-          </div>
-          <div class="counter accent" id="c-ratio">
-            <div class="k">Küçülme</div>
-            <div class="v"><span data-v>—</span><small>%</small></div>
-            <div class="s" id="c-ratio-sub">&nbsp;</div>
-          </div>
-          <div class="counter" id="c-psnr">
-            <div class="k">PSNR</div>
-            <div class="v"><span data-v>—</span><small>dB</small></div>
-            <div class="s" id="c-psnr-sub">&nbsp;</div>
-          </div>
-          <div class="counter" id="c-time">
-            <div class="k">Kodlama / çözme</div>
-            <div class="v"><span data-v>—</span><small>ms</small></div>
-            <div class="s" id="c-time-sub">&nbsp;</div>
+      <div class="panel controls">
+        <div>
+          <h3>LUMEN ayarı</h3>
+          <div class="segs" id="segs" role="group" aria-label="Sıkıştırma modu">
+            <button type="button" data-q="0">Kayıpsız</button>
+            <button type="button" data-q="95">q95</button>
+            <button type="button" data-q="90">q90</button>
+            <button type="button" data-q="75">q75</button>
+            <button type="button" data-q="50">q50</button>
           </div>
         </div>
-
-        <div class="split">
-          <div class="compare">
-            <div class="stage">
-              <canvas id="before" width="4" height="3"></canvas>
-              <div id="after"><canvas id="cv-after" width="4" height="3"></canvas></div>
-            </div>
-            <div class="slider">
-              <label for="split" class="sr-only">Karşılaştırma kaydırıcısı</label>
-              <input id="split" type="range" min="0" max="100" value="50">
-            </div>
-            <div class="tagline">
-              <span id="cap-before">kaynak</span>
-              <span id="cap-after">LUMEN</span>
-            </div>
+        <div class="rows">
+          <div class="ctl-row">
+            <label for="maxedge">Ölçüm boyutu</label>
+            <select id="maxedge">
+              <option value="320">en uzun kenar 320 px</option>
+              <option value="512" selected>512 px · önerilen</option>
+              <option value="1024">1024 px · yavaş</option>
+              <option value="0">tam boyut · çok yavaş</option>
+            </select>
           </div>
-
-          <div class="side">
-            <div class="controls">
-              <h3>LUMEN ayarı</h3>
-              <div class="segs" id="segs" role="group" aria-label="Sıkıştırma modu">
-                <button type="button" data-q="0">Kayıpsız</button>
-                <button type="button" data-q="95">q95</button>
-                <button type="button" data-q="90">q90</button>
-                <button type="button" data-q="75">q75</button>
-                <button type="button" data-q="50">q50</button>
-              </div>
-              <div class="rows">
-                <div class="ctl-row">
-                  <span>Ölçüm boyutu</span>
-                  <select id="maxedge">
-                    <option value="320">en uzun kenar 320 px</option>
-                    <option value="512" selected>512 px</option>
-                    <option value="1024">1024 px (yavaş)</option>
-                    <option value="0">tam boyut (çok yavaş)</option>
-                  </select>
-                </div>
-              </div>
-              <p class="note" id="scale-note" hidden></p>
-              <p class="note">Karşılaştırma satırlarındaki PNG/JPEG/WebP dosyaları da <em>bu tarayıcının</em> kendi kodlayıcısıyla, aynı piksellerden üretilir. Yani tablo bir broşür değil, yerel ölçüm.</p>
-              <div class="rows" style="grid-template-columns:1fr 1fr; display:grid">
-                <button id="dl-lum" class="primary" type="button">.lum indir</button>
-                <button id="dl-png" type="button">PNG indir</button>
-              </div>
-            </div>
-
-            <div class="controls">
-              <h3>Sayfada kullanımı</h3>
-              <p class="note" style="margin-top:0">Kendi projenizde, tek satır HTML ile:</p>
-              <pre style="margin-top:10px; font-size:11.5px"><code><span class="c">&lt;!-- 1. modülü yükle --&gt;</span>
+          <p class="note" id="scale-note" hidden></p>
+          <p class="note">
+            Boyut ve PSNR ölçümü için görüntü bu kenara indirilir. <b>İndirdiğiniz .lum
+            dosyası</b> da bu boyutta kodlanır; tam çözünürlük için “tam boyut” seçin.
+          </p>
+        </div>
+        <div class="rows">
+          <div class="actions">
+            <button id="dl-lum" class="btn primary" type="button" disabled>.lum indir</button>
+            <button id="dl-png" class="btn" type="button" disabled>PNG indir</button>
+          </div>
+          <p class="note">İndirilen <code>.lum</code> dosyasını bu sayfa, aşağıdaki çevrimdışı görüntüleyici veya CLI açar.</p>
+        </div>
+        <div>
+          <h3>Sayfada kullanım</h3>
+          <p class="note" style="margin-top:6px">Kendi projenizde tek satır HTML ile:</p>
+          <pre style="margin-top:10px; font-size:11px"><code><span class="c">&lt;!-- modülü yükle --&gt;</span>
 &lt;script type=<span class="s">"module"</span> src=<span class="s">"./web/lum.js"</span>&gt;&lt;/script&gt;
-<span class="c">&lt;!-- 2. dosyayı göster --&gt;</span>
+<span class="c">&lt;!-- dosyayı göster --&gt;</span>
 &lt;lum-img src=<span class="s">"foto.lum"</span> alt=<span class="s">"açıklama"</span>&gt;&lt;/lum-img&gt;</code></pre>
-              <div class="rows">
-                <button id="copy" type="button" class="quiet" style="justify-self:start">JS örneğini kopyala</button>
-              </div>
-            </div>
+          <div class="rows" style="margin-top:10px">
+            <button id="copy" type="button" class="btn small quiet" style="justify-self:start">JS örneğini kopyala</button>
           </div>
         </div>
-
-        <div class="tablebox">
-          <table aria-label="Format karşılaştırması, bu tarayıcıda ölçüldü">
-            <thead>
-              <tr>
-                <th>Format</th>
-                <th class="num">Boyut</th>
-                <th class="num">Orijinale göre</th>
-                <th class="num">PSNR</th>
-                <th class="num">Kodlama</th>
-              </tr>
-            </thead>
-            <tbody id="tbody"></tbody>
-          </table>
-        </div>
-        <p class="note" id="table-note"></p>
       </div>
     </div>
+
+    <div class="panel pad" id="results" aria-live="polite">
+      <div class="meta-line" id="meta"></div>
+
+      <div class="counters">
+        <div class="counter good" id="c-save">
+          <div class="k">Tasarruf</div>
+          <div class="v"><span data-v>—</span></div>
+          <div class="s" id="c-save-sub">&nbsp;</div>
+        </div>
+        <div class="counter accent" id="c-ratio">
+          <div class="k">Küçülme</div>
+          <div class="v"><span data-v>—</span><small>%</small></div>
+          <div class="s" id="c-ratio-sub">&nbsp;</div>
+        </div>
+        <div class="counter" id="c-psnr">
+          <div class="k">PSNR</div>
+          <div class="v"><span data-v>—</span><small>dB</small></div>
+          <div class="s" id="c-psnr-sub">&nbsp;</div>
+        </div>
+        <div class="counter" id="c-time">
+          <div class="k">Kodlama / çözme</div>
+          <div class="v"><span data-v>—</span><small>ms</small></div>
+          <div class="s" id="c-time-sub">&nbsp;</div>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="compare">
+          <div class="stage">
+            <canvas id="before" width="4" height="3"></canvas>
+            <div id="after"><canvas id="cv-after" width="4" height="3"></canvas></div>
+          </div>
+          <div class="slider">
+            <label for="split" class="sr-only">Karşılaştırma kaydırıcısı</label>
+            <input id="split" type="range" min="0" max="100" value="50">
+          </div>
+          <div class="tagline">
+            <span id="cap-before">kaynak</span>
+            <span id="cap-after">LUMEN</span>
+          </div>
+        </div>
+        <div>
+          <div class="tablebox" style="margin-top:0">
+            <table aria-label="Format karşılaştırması, bu tarayıcıda ölçüldü">
+              <thead>
+                <tr>
+                  <th>Format</th>
+                  <th class="num">Boyut</th>
+                  <th class="num">Orijinale göre</th>
+                  <th class="num">PSNR</th>
+                  <th class="num">Kodlama</th>
+                </tr>
+              </thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <p class="note" id="table-note" style="margin-top:10px"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= downloads -->
+  <section id="indir" class="wrap">
+    <div class="sec-head">
+      <h2>.lum dosyanızı her cihazda açın</h2>
+      <p>.lum standart bir işletim sistemi formatı değildir; çift tıklayınca doğrudan açılmaz. Tek dosyalık görüntüleyici bu eksiği kapatır: kurulum yok, internet gerekmez.</p>
+    </div>
+
+    <div class="downloads">
+      <div class="dl-card">
+        <div class="ico" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg>
+        </div>
+        <h3>Web</h3>
+        <p>Bu sayfada kodlayın, açın ve indirin. Hiçbir dosya sunucuya gitmez.</p>
+        <a class="btn" href="#lab">Kodlayıcıyı aç</a>
+        <span class="sub">Chrome, Edge, Firefox, Safari</span>
+      </div>
+
+      <div class="dl-card">
+        <div class="ico" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.4v7.1H3zM11.6 4.2 21 3v8.5h-9.4zM3 12.6h7.5v7.1L3 18.5zM11.6 12.6H21V21l-9.4-1.3z"/></svg>
+        </div>
+        <h3>Windows</h3>
+        <p>Görüntüleyiciyi indirin, çift tıklayın, tarayıcıda açılır. Kurulum ve yönetici izni gerekmez.</p>
+        <a class="btn primary" href="web/lum-viewer.html" download>Görüntüleyiciyi indir</a>
+        <span class="sub">Tek HTML dosyası · çevrimdışı</span>
+      </div>
+
+      <div class="dl-card">
+        <div class="ico" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        </div>
+        <h3>Ubuntu / Linux</h3>
+        <p>Aynı görüntüleyiciyi indirin ya da CLI ile çözün. Python 3 dışında bağımlılık yok; CLI PNM yazar.</p>
+        <a class="btn primary" href="web/lum-viewer.html" download>Görüntüleyiciyi indir</a>
+        <span class="sub"><code>python3 -m lum.cli decode foto.lum foto.ppm</code></span>
+      </div>
+
+      <div class="dl-card">
+        <div class="ico" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
+        </div>
+        <h3>Android / iOS</h3>
+        <p>Görüntüleyiciyi indirin, tarayıcıda açın ve .lum dosyasını seçin. Dosya cihazdan çıkmaz.</p>
+        <a class="btn primary" href="web/lum-viewer.html">Görüntüleyiciyi aç</a>
+        <span class="sub">İndirilen dosya tarayıcıda açılır</span>
+      </div>
+    </div>
+
+    <div class="viewer-callout">
+      <div>
+        <h3>LUMEN Viewer — tek dosya, sıfır kurulum</h3>
+        <p>Codec HTML'in içine gömülü. Windows, Ubuntu, Android ve iOS'ta <code>file://</code> üzerinden çalışır; .lum dosyasını açar, PNG olarak kaydeder.</p>
+      </div>
+      <a class="btn" href="web/lum-viewer.html">Tarayıcıda aç</a>
+    </div>
+    <p class="note mt-18">
+      Denemek için <a href="docs/assets/formats/ornek.lum" download>örnek .lum dosyası</a> indirin.
+      Görüntüleyiciye bırakın; 220 × 220 Kodak kırpımı çözülür.
+      Masaüstünde dosya ilişkilendirmesi henüz yok — bu yüzden görüntüleyici ayrı bir dosya.
+    </p>
   </section>
 
   <!-- ============================================================== method -->
   <section id="method" class="wrap">
     <div class="sec-head">
       <h2>Sayılar nereden geliyor?</h2>
-      <p>Dört ölçüm, dört dürüst tanım.</p>
+      <p>Dört ölçüm, dört dürüst tanım. Hiçbiri broşür değeri değil.</p>
     </div>
     <div class="cards">
       <div class="card">
@@ -666,14 +307,14 @@
         <code>lum_lossy</code> fonksiyonları çağrılıyor. Bu yüzden tarayıcıda çözülen
         pikseller <code>lum decode</code> ile <strong>bit-aynı</strong>, tarayıcıda yazılan
         dosya <code>lum encode</code> ile <strong>bayt-aynı</strong>.</p>
-        <p>Bu söylenmiyor, test ediliyor: <code>tests/test_wasm.mjs</code> 24 kontrolle
+        <p>Bu söylenmiyor, test ediliyor: <code>tests/test_wasm.mjs</code> 27 kontrolle
         referans Python çıktısıyla karşılaştırır.</p>
       </div>
       <div class="card">
         <div class="num-badge">02</div>
         <h3>Boyut: container'ın kendi baytı</h3>
-        <p>"Tasarruf" = orijinal dosyanın boyutu − üretilen <code>.lum</code> dosyasının
-        boyutu. İkisi de gerçek dosya; hiçbir yuvarlama yok. Ham piksel boyutu ayrıca
+        <p>“Tasarruf” = orijinal dosyanın boyutu − üretilen <code>.lum</code> dosyasının
+        boyutu. İkisi de gerçek dosya; yuvarlama yok. Ham piksel boyutu ayrıca
         <code>genişlik × yükseklik × kanal</code> olarak gösterilir.</p>
       </div>
       <div class="card">
@@ -693,8 +334,10 @@
         öncesi ve sonrasında alınır. WebAssembly'de thread yok: kayıpsız kodlayıcı aday
         listesini seri değerlendirir ve bu tarayıcıda <strong>megapiksel başına ≈6,5
         saniye</strong> sürer (ölçüldü: 0,19 MP → 1,4 s, 0,77 MP → 5,1 s, 1,74 MP → 11,2 s).
-        Native CLI sürümü aynı işi çekirdeklere dağıtır — buradaki süreyi "CLI hızı"
+        Native CLI sürümü aynı işi çekirdeklere dağıtır — buradaki süreyi “CLI hızı”
         sanmayın.</p>
+        <p>Kodlama bir Web Worker'da çalışır; uzun sürse bile sayfa donmaz ve
+        <strong>İptal</strong> düğmesi işi durdurur.</p>
       </div>
     </div>
   </section>
@@ -705,7 +348,7 @@
       <h2>Format</h2>
       <p>Üç container, tek codec çekirdeği.</p>
     </div>
-    <div class="panel" style="padding:22px">
+    <div class="panel pad">
       <dl class="kv">
         <div><dt>Uzantı</dt><dd>.lum</dd></div>
         <div><dt>MIME</dt><dd>image/lum</dd></div>
@@ -738,9 +381,9 @@ canvas.getContext(<span class="s">"2d"</span>).putImageData(Lumen.toImageData(im
       <h2>Referans ölçüm: Kodak korpusu</h2>
       <p>24 görüntü, aynı pikseller, gerçek kodlayıcılar.</p>
     </div>
-    <div class="panel" style="padding:22px">
+    <div class="panel pad">
       <div class="tablebox" style="margin-top:0">
-        <table class="mini" aria-label="Kodak korpusu referans ölçümü">
+        <table aria-label="Kodak korpusu kayıpsız referans ölçümü">
           <thead>
             <tr>
               <th>Kayıpsız</th>
@@ -749,7 +392,7 @@ canvas.getContext(<span class="s">"2d"</span>).putImageData(Lumen.toImageData(im
             </tr>
           </thead>
           <tbody>
-            <tr class="subject"><td class="fmt"><b>LUMEN</b> <span>kayıpsız</span></td><td class="num best">285,9 KB</td><td class="num">727,0</td></tr>
+            <tr class="subject"><td><span class="fmt"><b>LUMEN</b><span>kayıpsız</span><span class="badge win">en küçük</span></span></td><td class="num">285,9 KB</td><td class="num">727,0</td></tr>
             <tr><td>JPEG XL (lossless)</td><td class="num">425,0 KB</td><td class="num">1080,9</td></tr>
             <tr><td>WebP (lossless)</td><td class="num">475,3 KB</td><td class="num">1208,7</td></tr>
             <tr><td>PNG</td><td class="num">673,5 KB</td><td class="num">1712,9</td></tr>
@@ -763,7 +406,7 @@ canvas.getContext(<span class="s">"2d"</span>).putImageData(Lumen.toImageData(im
         PNG 673,5 KB tutarken LUMEN 285,9 KB tutuyor. Kayıplı tarafta durum daha
         nüanslı — q90'da LUMEN 161,5 KB / 43,70 dB üretiyor; AVIF 133,4 KB / 40,95 dB,
         JPEG 142,9 KB / 39,09 dB. Yani LUMEN daha büyük dosya yazıp daha yüksek
-        sadakat veriyor; "her eksende en iyi" değil. Ölçümün ham verisi
+        sadakat veriyor; “her eksende en iyi” değil. Ölçümün ham verisi
         <code>benchmarks/results/formats.json</code> içinde, yöntem README'de.
       </p>
       <p class="refnote">
@@ -773,777 +416,90 @@ canvas.getContext(<span class="s">"2d"</span>).putImageData(Lumen.toImageData(im
       </p>
     </div>
   </section>
+
+  <!-- ================================================================= FAQ -->
+  <section id="sss" class="wrap">
+    <div class="sec-head">
+      <h2>Sık sorulan sorular</h2>
+      <p>İndirme, gizlilik ve platform davranışı hakkında kısa cevaplar.</p>
+    </div>
+    <div class="faq">
+      <details open>
+        <summary>.lum dosyası neden çift tıklayınca açılmıyor?</summary>
+        <div class="answer">
+          Çünkü <code>.lum</code> henüz Windows, macOS veya Linux'ta kayıtlı bir sistem
+          formatı değil. İşletim sistemi dosyayı tanımıyor. Çözüm: tek dosyalık
+          <a href="web/lum-viewer.html" download>LUMEN Viewer</a>'ı indirin ve .lum dosyasını
+          içine bırakın. Görüntüleyici codec'i kendi içinde taşır; kurulum istemez.
+        </div>
+      </details>
+      <details>
+        <summary>Görüntüm bir sunucuya yükleniyor mu?</summary>
+        <div class="answer">
+          Hayır. Kodlama ve çözme tamamen tarayıcınızda, WebAssembly ile yapılır.
+          Sayfa yalnızca <code>web/lum.wasm</code> dosyasını indirir; görüntü baytlarınız
+          ağ üzerinden hiçbir yere gitmez. Sayfayı çevrimdışı açtığınızda da çalışır.
+        </div>
+      </details>
+      <details>
+        <summary>Neden 100 MB sınırı var?</summary>
+        <div class="answer">
+          Tarayıcı sekmesinin belleğini korumak için. 100 MB'lık bir dosya çözüldüğünde
+          yüz milyonlarca piksel ve birkaç yüz MB geçici bellek gerekebilir; bu da
+          düşük RAM'li telefonlarda sekmeyi çökertir. Sınırı aşan dosyalar yüklenmeden,
+          açık bir Türkçe hata ile reddedilir. Daha büyük dosyalar için CLI'yi kullanın.
+        </div>
+      </details>
+      <details>
+        <summary>Ölçüm neden görüntünün tam boyutunda değil?</summary>
+        <div class="answer">
+          Kayıpsız kodlayıcı wasm'da tek çekirdek çalışır ve megapiksel başına yaklaşık
+          6,5 saniye sürer. Varsayılan 512 px, bir telefon fotoğrafını makul sürede
+          ölçer. Daha büyük ölçüm için “1024 px” veya “tam boyut” seçin; süre uzar,
+          yöntem değişmez. İndirdiğiniz dosya da seçtiğiniz ölçüm boyutunda kodlanır.
+        </div>
+      </details>
+      <details>
+        <summary>Windows veya Ubuntu'da nasıl açarım?</summary>
+        <div class="answer">
+          <b>Windows:</b> görüntüleyici HTML dosyasını indirin, çift tıklayın, .lum dosyasını
+          pencereye bırakın. <b>Ubuntu:</b> aynı dosyayı indirip tarayıcıda açın ya da
+          <code>python3 -m lum.cli decode foto.lum foto.ppm</code> çalıştırın
+          (CLI PNM yazar; PNG için görüntüleyiciyi kullanın).
+          <b>Android/iOS:</b> görüntüleyiciyi tarayıcıda açıp .lum dosyasını seçin.
+        </div>
+      </details>
+      <details>
+        <summary>Kayıpsız mod gerçekten kayıpsız mı?</summary>
+        <div class="answer">
+          Evet. Kayıpsız modda çözülen pikseller kaynakla bit-bit aynıdır; PSNR
+          <code>∞</code> çıkar. Bu, test paketinde referans Python çıktısıyla
+          karşılaştırılarak doğrulanır. Kayıplı mod (q95…q50) ise JPEG gibi bilinçli
+          kayıp yapar; PSNR ve alfa farkı ayrıca raporlanır.
+        </div>
+      </details>
+      <details>
+        <summary>Siteyi telefona uygulama gibi kurabilir miyim?</summary>
+        <div class="answer">
+          Evet. Chrome/Edge'de adres çubuğundaki “Yükle” simgesini, Safari'de
+          “Ana Ekrana Ekle”yi kullanın. Site çevrimdışı açılır ve kodlayıcı önbellekten
+          yüklenir. Görüntüleyici HTML dosyasını da cihazda saklayabilirsiniz.
+        </div>
+      </details>
+    </div>
+  </section>
 </main>
 
 <footer>
-  <div class="wrap">
+  <div class="wrap inner">
     <span>LUMEN 1.0.0 · MIT</span>
     <a href="https://github.com/muhammetodosks/lum">github.com/muhammetodosks/lum</a>
     <a href="LUMEN-DOCUMENTATION.md">Teknik dokümantasyon</a>
     <a href="web/">Paket içi demo</a>
-    <span style="margin-left:auto">Bu sayfadaki hiçbir dosya yüklenmez.</span>
+    <span class="spacer">Bu sayfadaki hiçbir dosya sunucuya yüklenmez.</span>
   </div>
 </footer>
 
-<script type="module">
-import { Lumen } from "./web/lum.js";
-
-const $ = (id) => document.getElementById(id);
-
-const el = {
-  drop: $("drop"), file: $("file"), pick: $("pick"), sample: $("sample"),
-  dot: $("dot"), status: $("status"), results: $("results"), meta: $("meta"),
-  tbody: $("tbody"), tableNote: $("table-note"), segs: $("segs"),
-  maxedge: $("maxedge"), scaleNote: $("scale-note"),
-  before: $("before"), after: $("cv-after"), split: $("split"),
-  capBefore: $("cap-before"), capAfter: $("cap-after"),
-  dlLum: $("dl-lum"), dlPng: $("dl-png"), copy: $("copy"),
-};
-
-const state = {
-  ready: false,
-  quality: 90,          // 0 = lossless
-  source: null,         // { pixels, image, name, originalBytes, width, height, scaled, hasAlpha }
-  browserRows: [],      // PNG / JPEG / WebP measurements, reused on quality change
-  lum: null,            // { bytes, info, image, encodeMs, decodeMs }
-  file: null,
-  name: "goruntu",
-};
-
-const MAX_EDGE_DEFAULT = 512;
-const ACCENT_ROW = "LUMEN";
-
-// ---------------------------------------------------------------- utilities
-
-const tr = (x, d = 1) =>
-  x.toLocaleString("tr-TR", { minimumFractionDigits: d, maximumFractionDigits: d });
-
-function bytesText(n) {
-  const a = Math.abs(n);
-  if (a < 1000) return `${Math.round(n)} B`;
-  if (a < 1e6) return `${tr(n / 1000, 1)} KB`;
-  return `${tr(n / 1e6, 2)} MB`;
-}
-
-function bytesShort(n) {
-  const a = Math.abs(n);
-  if (a < 1000) return `${Math.round(n)} B`;
-  if (a < 1e6) return `${Math.round(n / 1000)} KB`;
-  return `${tr(n / 1e6, 1)} MB`;
-}
-
-function say(text, kind = "") {
-  el.status.textContent = text;
-  el.dot.className = `dot ${kind}`;
-}
-
-const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
-
-const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-
-/** Count a real measured value up on screen. The final frame is the measurement. */
-function animate(node, to, format) {
-  if (node._raf) cancelAnimationFrame(node._raf);
-  // The exact target, readable while the count-up is still running.
-  node.dataset.final = String(to);
-  if (reduceMotion || !isFinite(to) || to === 0) {
-    node.textContent = format(to);
-    return;
-  }
-  const from = 0;
-  const t0 = performance.now();
-  const dur = 520;
-  const step = (t) => {
-    const k = Math.min(1, (t - t0) / dur);
-    const eased = 1 - Math.pow(1 - k, 3);
-    node.textContent = format(from + (to - from) * eased);
-    if (k < 1) node._raf = requestAnimationFrame(step);
-    else node.textContent = format(to);   // exact measured value, no easing residue
-  };
-  node._raf = requestAnimationFrame(step);
-}
-
-function isLum(bytes) {
-  const magic = [0x4c, 0x55, 0x4d, 0x41, 0x0d, 0x0a, 0x1a, 0x0a];
-  return bytes.length >= 8 && magic.every((b, i) => bytes[i] === b);
-}
-
-function drawTo(image) {
-  const canvas = document.createElement("canvas");
-  canvas.width = image.width;
-  canvas.height = image.height;
-  canvas.getContext("2d", { willReadFrequently: true }).putImageData(
-    typeof ImageData !== "undefined" && image instanceof ImageData
-      ? image
-      : Lumen.toImageData(image),
-    0, 0,
-  );
-  return canvas;
-}
-
-// ------------------------------------------------------------------ metrics
-
-/** PSNR over R, G, B of two RGBA buffers (alpha is reported separately). */
-function psnrRgb(a, b) {
-  const da = a.data, db = b.data;
-  const n = Math.min(da.length, db.length);
-  let sum = 0;
-  let count = 0;
-  for (let i = 0; i < n; i += 4) {
-    for (let c = 0; c < 3; c += 1) {
-      const d = da[i + c] - db[i + c];
-      sum += d * d;
-      count += 1;
-    }
-  }
-  const mse = sum / count;
-  return mse === 0 ? Infinity : 10 * Math.log10(65025 / mse);
-}
-
-/** Largest absolute alpha difference, and how many pixels differ. */
-function alphaError(a, b) {
-  let worst = 0;
-  let differing = 0;
-  for (let i = 3; i < a.data.length; i += 4) {
-    const d = Math.abs(a.data[i] - b.data[i]);
-    if (d) {
-      differing += 1;
-      if (d > worst) worst = d;
-    }
-  }
-  return { worst, differing };
-}
-
-function hasTransparency(image) {
-  const d = image.data;
-  for (let i = 3; i < d.length; i += 4) if (d[i] !== 255) return true;
-  return false;
-}
-
-/** Interleaved RGB copy — what the codec is asked to store for opaque photos. */
-function toRgb(image) {
-  const n = image.width * image.height;
-  const out = new Uint8Array(n * 3);
-  for (let i = 0, j = 0, k = 0; i < n; i += 1, j += 4, k += 3) {
-    out[k] = image.data[j];
-    out[k + 1] = image.data[j + 1];
-    out[k + 2] = image.data[j + 2];
-  }
-  return { width: image.width, height: image.height, channels: 3, data: out };
-}
-
-function rgbaCopy(image) {
-  const n = image.width * image.height;
-  if (image.data.length === n * 4) {
-    return { width: image.width, height: image.height, channels: 4, data: new Uint8Array(image.data) };
-  }
-  return { width: image.width, height: image.height, channels: 4, data: Lumen.toRGBA(image) };
-}
-
-// ------------------------------------------------------------------- encode
-
-async function pixelsOfBlob(blob) {
-  const bitmap = await createImageBitmap(blob);
-  const canvas = document.createElement("canvas");
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(bitmap, 0, 0);
-  if (bitmap.close) bitmap.close();
-  return ctx.getImageData(0, 0, canvas.width, canvas.height);
-}
-
-async function browserEncode(source, type, quality) {
-  const canvas = drawTo(source);
-  const t0 = performance.now();
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, quality));
-  const ms = performance.now() - t0;
-  if (!blob || blob.type !== type) return null;
-  const decoded = await pixelsOfBlob(blob);
-  return {
-    bytes: blob.size,
-    ms,
-    psnr: psnrRgb(source, decoded),
-    alpha: alphaError(source, decoded),
-    decoded,
-  };
-}
-
-function encodeLum(pixels, quality) {
-  const t0 = performance.now();
-  const bytes = Lumen.encode(pixels, { quality });
-  const encodeMs = performance.now() - t0;
-  const t1 = performance.now();
-  const image = Lumen.decode(bytes);
-  const decodeMs = performance.now() - t1;
-  const rgba = Lumen.toImageData(image);
-  return { bytes, image, encodeMs, decodeMs, rgba };
-}
-
-// --------------------------------------------------------------------- rows
-
-function rowOf(label, kind, isSubject, m, baseline, source, note) {
-  return {
-    label,
-    kind,
-    subject: isSubject,
-    bytes: m.bytes,
-    meanMs: m.ms ?? m.encodeMs,
-    decodeMs: m.decodeMs ?? null,
-    psnr: m.psnr,
-    alpha: m.alpha ?? null,
-    delta: baseline ? baseline - m.bytes : 0,
-    note: note || "",
-    source,
-  };
-}
-
-// --------------------------------------------------------------------- flow
-
-function resetView() {
-  el.results.classList.remove("on");
-  el.tbody.innerHTML = "";
-  el.tableNote.textContent = "";
-}
-
-async function load(file) {
-  if (!state.ready) {
-    say("Codec henüz hazır değil, bir saniye…");
-    return;
-  }
-  resetView();
-  state.file = file;
-  state.name = (file.name || "goruntu").replace(/\.[^.]+$/, "");
-  say("Dosya okunuyor…", "busy");
-  let bytes;
-  try {
-    bytes = new Uint8Array(await file.arrayBuffer());
-  } catch {
-    say("Dosya okunamadı.", "err");
-    return;
-  }
-
-  if (isLum(bytes)) return openLum(bytes, file);
-
-  let bitmap;
-  try {
-    bitmap = await createImageBitmap(file);
-  } catch {
-    say("Bu dosya bir görüntü olarak açılamadı (bozuk veya desteklenmeyen biçim).", "err");
-    return;
-  }
-
-  const maxEdge = Number(el.maxedge.value);
-  const longest = Math.max(bitmap.width, bitmap.height);
-  const scale = maxEdge > 0 ? Math.min(1, maxEdge / longest) : 1;
-  const width = Math.max(1, Math.round(bitmap.width * scale));
-  const height = Math.max(1, Math.round(bitmap.height * scale));
-
-  // Read the intrinsic size before closing the bitmap: `close()` detaches it
-  // and later reads would be 0 × 0.
-  const naturalWidth = bitmap.width;
-  const naturalHeight = bitmap.height;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(bitmap, 0, 0, width, height);
-  if (bitmap.close) bitmap.close();
-  const sourcePixels = ctx.getImageData(0, 0, width, height);
-
-  const scaled = width !== naturalWidth || height !== naturalHeight;
-  const alpha = hasTransparency(sourcePixels);
-  state.lumOnly = null;
-  state.source = {
-    image: sourcePixels,
-    name: file.name || "yapıştırılan görüntü",
-    originalBytes: file.size,
-    width,
-    height,
-    originalWidth: naturalWidth,
-    originalHeight: naturalHeight,
-    scaled,
-    hasAlpha: alpha,
-    pixels: alpha ? rgbaCopy(sourcePixels) : toRgb(sourcePixels),
-  };
-
-  el.scaleNote.hidden = !scaled;
-  if (scaled) {
-    el.scaleNote.textContent =
-      `Görüntü ${naturalWidth} × ${naturalHeight}; ölçüm için ${width} × ${height} boyutuna indirildi. ` +
-      "Sebep: wasm'da thread yok ve kayıpsız kodlama bu tarayıcıda megapiksel başına ≈6,5 saniye sürüyor " +
-      `(ölçülen; bu kare ${(width * height / 1e6 * 6.5).toFixed(1)} s). Daha büyük ölçüm için yukarıdan ` +
-      "1024 px ya da 'tam boyut' seçin — süre uzar, sayılar aynı yöntemle ölçülür.";
-  }
-
-  drawPreviews(sourcePixels, sourcePixels);
-  await measureAll();
-}
-
-async function openLum(bytes, file) {
-  let info, image;
-  try {
-    info = Lumen.inspect(bytes);
-    const t0 = performance.now();
-    image = Lumen.decode(bytes);
-    const decodeMs = performance.now() - t0;
-    state.lum = { bytes, info, image, encodeMs: 0, decodeMs };
-    state.source = null;
-    state.lumOnly = { decodeMs };
-  } catch (err) {
-    say(`Bu .lum dosyası okunamadı: ${err.message}`, "err");
-    return;
-  }
-  drawPreviews(Lumen.toImageData(image), Lumen.toImageData(image));
-  el.capBefore.textContent = "çözülen dosya";
-  el.capAfter.textContent = info.lossy ? `LUMEN q${info.quality}` : "LUMEN kayıpsız";
-  el.meta.innerHTML =
-    `<span><b>${escapeHtml(file.name)}</b></span>` +
-    `<span class="chip">${info.width} × ${info.height}</span>` +
-    `<span class="chip">${["gri", "gri+alfa", "rgb", "rgba"][info.channels - 1] || info.channels + " kanal"}</span>` +
-    `<span class="chip ${info.lossy ? "warn" : ""}">${info.lossy ? `kayıplı q${info.quality}` : "kayıpsız"}</span>` +
-    `<span class="chip">v${info.version}</span>` +
-    `<span>dosya <b>${bytesText(bytes.length)}</b></span>`;
-
-  const raw = info.width * info.height * info.channels;
-  setCounter("c-save", null);
-  document.querySelector("#c-save .k").textContent = "Ham veri";
-  document.querySelector("#c-save .v small")?.remove();
-  $("c-save-sub").textContent = `${bytesText(raw)} → ${bytesText(bytes.length)}`;
-  // "Küçülme" is the share of the unpacked raster the container removes:
-  // 145.2 KB -> 24.7 KB is 83.0 % smaller (and 5.89x).
-  setCounter("c-ratio", (1 - bytes.length / raw) * 100, (x) => tr(x, 1));
-  document.querySelector("#c-ratio .v small").textContent = "%";
-  $("c-ratio-sub").textContent = `${tr(raw / bytes.length, 2)}× ham veriye göre`;
-  $("c-psnr").style.visibility = "hidden";
-  $("c-time").querySelector(".k").textContent = "Çözme";
-  setCounter("c-time", state.lumOnly.decodeMs, (x) => tr(x, 1));
-
-  el.tbody.innerHTML = "";
-  el.tableNote.textContent =
-    "Bu dosya zaten bir LUMEN container'ı: yeniden kodlamak yerine çözüldü. " +
-    "Karşılaştırma tablosu için bir PNG/JPEG bırakın.";
-  el.results.classList.add("on");
-  say("Hazır — dosya çözüldü.", "ok");
-}
-
-function setCounter(id, value, format = bytesText) {
-  const node = document.querySelector(`#${id} [data-v]`);
-  if (!node) return;
-  if (value === null || !isFinite(value)) {
-    // A count-up may still be running on this node; cancel it, otherwise it
-    // keeps writing over the dash.
-    if (node._raf) cancelAnimationFrame(node._raf);
-    node._raf = 0;
-    delete node.dataset.final;
-    node.textContent = value === null ? "—" : "∞";
-    return;
-  }
-  animate(node, value, format);
-}
-
-async function measureAll() {
-  const s = state.source;
-  const q = state.quality;
-  say("LUMEN kodlanıyor…", "busy");
-  await nextFrame();
-
-  const lossless = encodeLum(s.pixels, 0);
-  const lossy = q > 0 ? encodeLum(s.pixels, q) : null;
-  const chosen = lossy || lossless;
-
-  say("Tarayıcının kendi kodlayıcıları çalışıyor…", "busy");
-  await nextFrame();
-
-  const png = await browserEncode(s.image, "image/png");
-  const jpeg = await browserEncode(s.image, "image/jpeg", 0.9);
-  const webp = await browserEncode(s.image, "image/webp", 0.9);
-
-  const baseline = s.originalBytes || 0;
-  const rows = [
-    rowOf("LUMEN", "kayıpsız", true, {
-      bytes: lossless.bytes.length, encodeMs: lossless.encodeMs, decodeMs: lossless.decodeMs,
-      psnr: psnrRgb(s.image, lossless.rgba), alpha: alphaError(s.image, lossless.rgba),
-    }, baseline, "wasm"),
-  ];
-  if (lossy) {
-    rows.push(rowOf("LUMEN", `q${q}`, true, {
-      bytes: lossy.bytes.length, encodeMs: lossy.encodeMs, decodeMs: lossy.decodeMs,
-      psnr: psnrRgb(s.image, lossy.rgba), alpha: alphaError(s.image, lossy.rgba),
-    }, baseline, "wasm"));
-  }
-  if (png) rows.push(rowOf("PNG", "tarayıcı", false, png, baseline, "browser"));
-  if (jpeg) rows.push(rowOf("JPEG", "q90", false, jpeg, baseline, "browser"));
-  if (webp) rows.push(rowOf("WebP", "q90", false, webp, baseline, "browser"));
-
-  state.browserRows = rows.filter((r) => !r.subject);
-  state.lum = { ...chosen, info: Lumen.inspect(chosen.bytes) };
-
-  render({
-    source: s,
-    baseline,
-    rows,
-    chosen,
-    lossless,
-    quality: q,
-    alpha: s.hasAlpha,
-    capture: { png, jpeg, webp },
-  });
-
-  drawPreviews(s.image, lossy ? lossy.rgba : lossless.rgba);
-  el.capBefore.textContent = `kaynak · ${tr(s.width)} × ${tr(s.height)}`;
-  el.capAfter.textContent = lossy ? `LUMEN q${q}` : "LUMEN kayıpsız";
-  say(
-    `Ölçüm tamam — ${bytesShort(chosen.bytes.length)}, ${isFinite(psnrRgb(s.image, chosen.rgba)) ? tr(psnrRgb(s.image, chosen.rgba), 2) + " dB" : "kayıpsız (∞)"}, ${tr(chosen.encodeMs, 0)} ms.`,
-    "ok",
-  );
-}
-
-function render(ctx) {
-  const { source, baseline, rows, chosen, quality, alpha } = ctx;
-  const chosenPsnr = psnrRgb(source.image, chosen.rgba);
-  const saved = baseline - chosen.bytes.length;
-  const pct = baseline ? (saved / baseline) * 100 : 0;
-
-  document.querySelector("#c-save .k").textContent = "Tasarruf";
-  const saveNode = document.querySelector("#c-save .v");
-  if (!saveNode.querySelector("small")) saveNode.innerHTML = '<span data-v>—</span>';
-  const ratioNode = document.querySelector("#c-ratio .v");
-  if (!ratioNode.querySelector("small")) ratioNode.innerHTML = '<span data-v>—</span><small>%</small>';
-  $("c-psnr").style.visibility = "";
-  $("c-time").querySelector(".k").textContent = "Kodlama / çözme";
-
-  // animate() writes the number only, so the sign lives in its formatter.
-  animate(document.querySelector("#c-save .v [data-v]"), Math.abs(saved),
-    (x) => (saved < 0 ? "+" : "−") + bytesShort(x));
-  document.querySelector("#c-save").className = `counter ${saved >= 0 ? "good" : "bad"}`;
-  $("c-save-sub").textContent = `${bytesText(baseline)} → ${bytesText(chosen.bytes.length)}`;
-
-  animate(document.querySelector("#c-ratio .v [data-v]"), Math.abs(pct),
-    (x) => (pct < 0 ? "+" : "") + tr(x, 1));
-  document.querySelector("#c-ratio").className = `counter ${pct >= 0 ? "accent" : "bad"}`;
-  $("c-ratio-sub").textContent = `${tr(baseline / chosen.bytes.length, 2)}× orijinal dosyaya göre`;
-
-  const psnrNode = document.querySelector("#c-psnr .v [data-v]");
-  if (!isFinite(chosenPsnr)) {
-    psnrNode.textContent = "∞";
-    $("c-psnr-sub").textContent = "kayıpsız — pikseller birebir aynı";
-    document.querySelector("#c-psnr").className = "counter good";
-  } else {
-    animate(psnrNode, chosenPsnr, (x) => tr(x, 2));
-    $("c-psnr-sub").textContent =
-      chosenPsnr >= 40 ? "yüksek sadakat" : chosenPsnr >= 34 ? "iyi" : "ölçülü kayıp";
-    document.querySelector("#c-psnr").className = "counter accent";
-  }
-
-  animate(document.querySelector("#c-time .v [data-v]"), chosen.encodeMs, (x) => tr(x, 0));
-  $("c-time-sub").textContent = `çözme ${tr(chosen.decodeMs, 0)} ms · tek çekirdek`;
-
-  const chips = [
-    `<span><b>${escapeHtml(source.name)}</b></span>`,
-    `<span class="chip">${source.width} × ${source.height}</span>`,
-    `<span class="chip">${bytesText(baseline)} orijinal</span>`,
-    `<span class="chip">${alpha ? "saydamlık var" : "opak"}</span>`,
-    `<span class="chip">${quality > 0 ? `kayıplı q${quality}` : "kayıpsız"}</span>`,
-  ];
-  if (alpha) {
-    chips.push(`<span class="chip warn">alfa da kodlanıyor (kayıplı modda 4. düzlem)</span>`);
-  }
-  if (source.scaled) {
-    chips.push(`<span class="chip warn">${source.originalWidth} × ${source.originalHeight} → ${source.width} × ${source.height}</span>`);
-  }
-  el.meta.innerHTML = chips.join("");
-
-  const sorted = [...rows].sort((a, b) => a.bytes - b.bytes);
-  const smallest = sorted[0];
-  el.tbody.innerHTML = sorted.map((r) => {
-    const win = r === smallest;
-    const delta = baseline ? baseline - r.bytes : 0;
-    const deltaText = baseline
-      ? (delta === 0 ? "aynı" : `${delta > 0 ? "−" : "+"}${bytesText(Math.abs(delta))}`)
-      : "—";
-    const psnr = isFinite(r.psnr) ? `${tr(r.psnr, 2)} dB` : "∞";
-    const label = r.subject
-      ? `<span class="fmt"><b>LUMEN</b><span>${r.kind}</span>${r.note === "wasm" ? '<span class="badge wasm">wasm</span>' : ""}${win ? '<span class="badge win">en küçük</span>' : ""}</span>`
-      : `<span class="fmt"><b>${r.label}</b><span>${r.kind}</span>${win ? '<span class="badge win">en küçük</span>' : ""}</span>`;
-    return `<tr class="${r.subject ? "subject" : ""}">
-      <td>${label}</td>
-      <td class="num">${bytesText(r.bytes)}</td>
-      <td class="num">${deltaText}</td>
-      <td class="num">${psnr}</td>
-      <td class="num">${tr(r.meanMs, 1)} ms</td>
-    </tr>`;
-  }).join("");
-
-  const lumRow = rows.find((r) => r.subject && (quality > 0 ? r.kind === `q${quality}` : r.kind === "kayıpsız"));
-  const notes = [
-    "PSNR, kaynak pikseller ile çözülen pikseller arasında R, G, B üzerinden hesaplanır; alfa ayrı tutulur.",
-    "PNG/JPEG/WebP satırları bu tarayıcının kendi kodlayıcılarıyla, aynı piksellerden üretildi (JPEG ve WebP q90, tipik olarak 4:2:0). LUMEN kayıplı modda 4:4:4 çalışır — renk alt örneklemesi yapmaz.",
-    "“Orijinale göre” sütunu kaynak dosyanın baytlarına göredir; dosya zaten PNG ise PNG satırı ondan büyük çıkabilir, çünkü tarayıcı farklı bir kodlayıcı kullanır.",
-  ];
-  if (lumRow && lumRow.alpha && lumRow.alpha.differing) {
-    notes.push(`Bu görüntüde alfa kanalı da kodlandı: ${tr(lumRow.alpha.differing)} pikselde en fazla ${lumRow.alpha.worst} seviye fark.`);
-  }
-  if (!rows.some((r) => r.label === "WebP")) notes.push("Bu tarayıcı WebP kodlamayı desteklemedi, satır atlandı.");
-  el.tableNote.textContent = notes.join(" ");
-
-  el.results.classList.add("on");
-}
-
-function drawPreviews(before, after) {
-  el.before.width = before.width;
-  el.before.height = before.height;
-  el.before.getContext("2d").putImageData(before, 0, 0);
-
-  el.after.width = after.width;
-  el.after.height = after.height;
-  el.after.getContext("2d").putImageData(after, 0, 0);
-  applySplit();
-}
-
-function applySplit() {
-  const v = Number(el.split.value);
-  // The "after" layer is clipped from the left edge, so the right-hand side of
-  // the frame shows the source and the left-hand side shows the decoded result.
-  el.after.style.clipPath = `inset(0 0 0 ${v}%)`;
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-async function recomputeLumen() {
-  if (!state.source) return;
-  const s = state.source;
-  say(`LUMEN ${state.quality > 0 ? `q${state.quality}` : "kayıpsız"} kodlanıyor…`, "busy");
-  await nextFrame();
-  const lossless = encodeLum(s.pixels, 0);
-  const lossy = state.quality > 0 ? encodeLum(s.pixels, state.quality) : null;
-  const chosen = lossy || lossless;
-  state.lum = { ...chosen, info: Lumen.inspect(chosen.bytes) };
-
-  const lumRows = [
-    rowOf("LUMEN", "kayıpsız", true, {
-      bytes: lossless.bytes.length, encodeMs: lossless.encodeMs, decodeMs: lossless.decodeMs,
-      psnr: psnrRgb(s.image, lossless.rgba), alpha: alphaError(s.image, lossless.rgba),
-    }, s.originalBytes, "wasm"),
-  ];
-  if (lossy) {
-    lumRows.push(rowOf("LUMEN", `q${state.quality}`, true, {
-      bytes: lossy.bytes.length, encodeMs: lossy.encodeMs, decodeMs: lossy.decodeMs,
-      psnr: psnrRgb(s.image, lossy.rgba), alpha: alphaError(s.image, lossy.rgba),
-    }, s.originalBytes, "wasm"));
-  }
-  render({
-    source: s, baseline: s.originalBytes, rows: [...lumRows, ...state.browserRows],
-    chosen, lossless, quality: state.quality, alpha: s.hasAlpha,
-  });
-  drawPreviews(s.image, chosen.rgba);
-  el.capAfter.textContent = state.quality > 0 ? `LUMEN q${state.quality}` : "LUMEN kayıpsız";
-  say("Ölçüm güncellendi.", "ok");
-}
-
-// ------------------------------------------------------------------- events
-
-el.drop.addEventListener("click", (e) => {
-  if (e.target.closest("button")) return;
-  el.file.click();
-});
-el.pick.addEventListener("click", (e) => {
-  e.stopPropagation();
-  el.file.click();
-});
-el.file.addEventListener("change", () => {
-  if (el.file.files[0]) load(el.file.files[0]);
-});
-
-for (const type of ["dragenter", "dragover"]) {
-  el.drop.addEventListener(type, (e) => {
-    e.preventDefault();
-    el.drop.classList.add("over");
-  });
-}
-for (const type of ["dragleave", "drop"]) {
-  el.drop.addEventListener(type, () => el.drop.classList.remove("over"));
-}
-el.drop.addEventListener("drop", (e) => {
-  e.preventDefault();
-  const file = e.dataTransfer?.files?.[0];
-  if (file) load(file);
-});
-
-el.sample.addEventListener("click", async (e) => {
-  e.stopPropagation();
-  say("Örnek görüntü getiriliyor…", "busy");
-  try {
-    const res = await fetch("docs/assets/formats/png.png");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    await load(new File([blob], "ornek-kodak-kirpimi.png", { type: "image/png" }));
-  } catch (err) {
-    say(`Örnek yüklenemedi (${err.message}). Dosyayı elle bırakabilirsiniz.`, "err");
-  }
-});
-
-el.segs.addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-q]");
-  if (!btn) return;
-  state.quality = Number(btn.dataset.q);
-  for (const b of el.segs.querySelectorAll("button")) {
-    b.setAttribute("aria-pressed", String(b === btn));
-  }
-  recomputeLumen();
-});
-
-el.maxedge.addEventListener("change", () => {
-  if (state.file && !isLumFile()) load(state.file);
-});
-
-function isLumFile() {
-  return state.lumOnly && state.lum && state.lum.info && !state.source;
-}
-
-el.split.addEventListener("input", applySplit);
-
-el.dlLum.addEventListener("click", () => {
-  if (!state.lum) return;
-  download(new Blob([state.lum.bytes], { type: "image/lum" }), `${state.name}.lum`);
-});
-
-el.dlPng.addEventListener("click", async () => {
-  if (!state.source) return;
-  const canvas = drawTo(state.source.image);
-  canvas.toBlob((blob) => blob && download(blob, `${state.name}.png`), "image/png");
-});
-
-el.copy.addEventListener("click", async () => {
-  const snippet = `import { Lumen } from "./web/lum.js";
-await Lumen.init();
-const image = Lumen.decode(await (await fetch("foto.lum")).arrayBuffer());
-canvas.getContext("2d").putImageData(Lumen.toImageData(image), 0, 0);`;
-  try {
-    await navigator.clipboard.writeText(snippet);
-    el.copy.textContent = "Kopyalandı";
-    setTimeout(() => (el.copy.textContent = "JS örneğini kopyala"), 1600);
-  } catch {
-    say("Panoya kopyalama tarayıcı tarafından engellendi.", "err");
-  }
-});
-
-function download(blob, name) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-}
-
-// --------------------------------------------------------------------- boot
-
-(async function boot() {
-  for (const b of el.segs.querySelectorAll("button")) {
-    b.setAttribute("aria-pressed", String(Number(b.dataset.q) === state.quality));
-  }
-  try {
-    if (location.protocol === "file:") throw new Error("dosya:// protokolü wasm yükleyemez");
-    const t0 = performance.now();
-    await Lumen.init();
-    state.ready = true;
-    const ms = performance.now() - t0;
-    say(`Codec hazır (${tr(ms, 0)} ms · 253 KiB wasm). Bir görüntü bırakın ya da örneği deneyin.`, "ok");
-  } catch (err) {
-    say(
-      `Codec yüklenemedi: ${err.message}. Sayfayı bir HTTP sunucusundan açın — ` +
-      "`python3 -m http.server` — çünkü wasm dosyası fetch ile alınır.",
-      "err",
-    );
-  }
-})();
-
-// Expose a minimal hook so the site can be checked headlessly without a browser
-// driver: ?selftest runs one real encode/decode round trip and records numbers.
-window.__lumenSite = {
-  state,
-  Lumen,
-  el,
-  async selftest() {
-    for (let i = 0; i < 240 && !state.ready; i += 1) {
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    const res = await fetch("docs/assets/formats/png.png");
-    const blob = await res.blob();
-    const file = new File([blob], "selftest.png", { type: "image/png" });
-    await load(file);
-
-    const lossless = state.lum;
-    const psnr = state.source && lossless
-      ? psnrRgb(state.source.image, lossless.rgba)
-      : null;
-    const raster = state.source
-      ? {
-          name: state.source.name,
-          width: state.source.width,
-          height: state.source.height,
-          natural: [state.source.originalWidth, state.source.originalHeight],
-          alpha: state.source.hasAlpha,
-          bytes: state.source.originalBytes,
-          lumBytes: lossless?.bytes?.length ?? null,
-          psnrDb: psnr === null ? null : isFinite(psnr) ? Number(psnr.toFixed(3)) : "inf",
-          encodeMs: lossless ? Number(lossless.encodeMs.toFixed(2)) : null,
-          decodeMs: lossless ? Number(lossless.decodeMs.toFixed(2)) : null,
-          rows: (el.tbody.innerText || "").trim().slice(0, 800),
-          tableNote: el.tableNote.textContent,
-        }
-      : null;
-
-    // Round-trip the produced container back through the reader, the way a
-    // visitor would: the file path must work, not just the encode call.
-    const roundTrip = lossless
-      ? await load(new File([lossless.bytes], "selftest.lum", { type: "image/lum" }))
-        .then(() => ({
-          width: state.lum.info.width,
-          height: state.lum.info.height,
-          lossy: state.lum.info.lossy,
-          quality: state.lum.info.quality,
-        }))
-        .catch((err) => ({ error: String(err) }))
-      : null;
-
-    // The counters count up over 520 ms; let them land before reading the DOM.
-    await new Promise((r) => setTimeout(r, 700));
-
-    return {
-      ready: state.ready,
-      quality: state.quality,
-      raster,
-      roundTrip,
-      lumView: {
-        counters: (document.querySelector(".counters").innerText || "").trim(),
-        meta: (el.meta.innerText || "").trim(),
-      },
-    };
-  },
-};
-
-if (new URLSearchParams(location.search).has("selftest")) {
-  window.addEventListener("load", () => {
-    setTimeout(() => {
-      window.__lumenSite.selftest().then((r) => {
-        const pre = document.createElement("pre");
-        pre.id = "selftest-result";
-        pre.textContent = JSON.stringify(r);
-        document.body.appendChild(pre);
-      }).catch((err) => {
-        const pre = document.createElement("pre");
-        pre.id = "selftest-result";
-        pre.textContent = JSON.stringify({ error: String(err) });
-        document.body.appendChild(pre);
-      });
-    }, 50);
-  });
-}
-</script>
+<script type="module" src="web/site.js"></script>
 </body>
 </html>
